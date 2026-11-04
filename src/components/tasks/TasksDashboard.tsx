@@ -585,9 +585,9 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
           </div>
         </div>
 
-        {/* Horizontal Quick Tags Scrollbar */}
+        {/* Horizontal Quick Tags Scrollbar - Desktop only to save mobile screen real estate */}
         {allTags.length > 0 && (
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+          <div className="hidden sm:flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
             <button
               onClick={() => setSelectedTag(null)}
               className={`text-[11px] px-2 py-0.5 rounded transition-colors whitespace-nowrap ${

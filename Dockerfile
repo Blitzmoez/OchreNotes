@@ -27,6 +27,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV VAULT_PATH=/data/vault
+ENV CONFIG_PATH=/data/config
 
 # Install runtime dependencies only
 COPY package.json package-lock.json* ./
@@ -39,21 +40,18 @@ COPY --from=builder /app/dist ./dist
 COPY server.ts ./
 COPY tsconfig.json ./
 
-# Create default vault directory and ensure permissions for arbitrary UID (e.g. 2000:100)
-RUN mkdir -p /data/vault && chmod -R 777 /data/vault /app
+# Create default directories and give full write access so any UID (e.g. 2000:100) can run
+RUN mkdir -p /data/vault /data/config /app && chmod -R 777 /data /app
 
-# Declare persistence volume for markdown notes
-VOLUME ["/data/vault"]
+# Declare persistence volumes
+VOLUME ["/data/vault", "/data/config"]
 
-# Expose configurable port (default 3000, not restricted to port 80)
+# Expose configurable port (default 3000)
 EXPOSE 3000
 
 # Built-in healthcheck
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT:-3000}/api/system/health || exit 1
-
-# Run with non-root node user
-USER node
 
 # Start full-stack server
 CMD ["tsx", "server.ts"]

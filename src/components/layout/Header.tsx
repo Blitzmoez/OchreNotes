@@ -24,9 +24,11 @@ import {
   Info,
   Clock,
   Layers,
-  X
+  X,
+  Folder
 } from 'lucide-react';
 import { User, PaneType } from '../../types';
+import { useTranslation } from '../../services/i18n.tsx';
 
 interface HeaderProps {
   currentUser: User | null;
@@ -50,6 +52,7 @@ interface HeaderProps {
   canInstallPwa?: boolean;
   onInstallPwa?: () => void;
   appTitle?: string;
+  onToggleVaultMobile?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -74,7 +77,9 @@ export const Header: React.FC<HeaderProps> = ({
   canInstallPwa,
   onInstallPwa,
   appTitle = 'Ochre Suite',
+  onToggleVaultMobile,
 }) => {
+  const { t } = useTranslation();
   // Ochre Suite modular menu dropdown
   const [isSuiteMenuOpen, setIsSuiteMenuOpen] = useState(false);
   // User & actions menu dropdown
@@ -262,6 +267,19 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           )}
         </div>
+
+        {/* Mobile Vault Explorer Toggle Button */}
+        {onToggleVaultMobile && (
+          <button
+            type="button"
+            onClick={onToggleVaultMobile}
+            className="lg:hidden flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[#C87D20] text-[#C87D20] text-xs font-semibold shadow-2xs cursor-pointer active:scale-95"
+            title={t.vaultExplorer}
+          >
+            <Folder className="w-3.5 h-3.5 text-[#C87D20]" />
+            <span>Vault</span>
+          </button>
+        )}
       </div>
 
       {/* Zone 2: Navigation Modes (Notizen, Aufgaben, Graph) - Desktop View */}
@@ -273,10 +291,10 @@ export const Header: React.FC<HeaderProps> = ({
               ? 'bg-white dark:bg-[#2B2D31] text-[#C87D20] dark:text-[#E09228] font-bold shadow-xs'
               : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
           }`}
-          title="Notizen-Editor"
+          title={t.notes}
         >
           <BookOpen className="w-4 h-4" />
-          <span>Notizen</span>
+          <span>{t.notes}</span>
         </button>
 
         <button
@@ -286,10 +304,10 @@ export const Header: React.FC<HeaderProps> = ({
               ? 'bg-white dark:bg-[#2B2D31] text-[#C87D20] dark:text-[#E09228] font-bold shadow-xs'
               : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
           }`}
-          title="Aufgaben-Übersicht"
+          title={t.tasks}
         >
           <CheckSquare className="w-4 h-4" />
-          <span>Aufgaben</span>
+          <span>{t.tasks}</span>
         </button>
 
         <button
@@ -299,10 +317,10 @@ export const Header: React.FC<HeaderProps> = ({
               ? 'bg-white dark:bg-[#2B2D31] text-[#C87D20] dark:text-[#E09228] font-bold shadow-xs'
               : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
           }`}
-          title="Wissensgraph"
+          title={t.graph}
         >
           <Network className="w-4 h-4" />
-          <span>Graph</span>
+          <span>{t.graph}</span>
         </button>
       </div>
 
@@ -478,7 +496,7 @@ export const Header: React.FC<HeaderProps> = ({
                     <div className="w-7 h-7 rounded-lg bg-amber-500/10 flex items-center justify-center text-[#C87D20] group-hover:bg-[#C87D20] group-hover:text-white transition-colors">
                       <Share2 className="w-3.5 h-3.5" />
                     </div>
-                    <span>Notiz teilen</span>
+                    <span>{t.shareNote}</span>
                   </div>
                   <ChevronRight className="w-3.5 h-3.5 text-neutral-400" />
                 </button>
@@ -494,7 +512,7 @@ export const Header: React.FC<HeaderProps> = ({
                     <div className="w-7 h-7 rounded-lg bg-neutral-200 dark:bg-neutral-700 flex items-center justify-center text-neutral-600 dark:text-neutral-300 group-hover:bg-[#C87D20] group-hover:text-white transition-colors">
                       <Printer className="w-3.5 h-3.5" />
                     </div>
-                    <span>DIN A4 Druck / PDF</span>
+                    <span>{t.printA4}</span>
                   </div>
                   <ChevronRight className="w-3.5 h-3.5 text-neutral-400" />
                 </button>
@@ -510,7 +528,7 @@ export const Header: React.FC<HeaderProps> = ({
                     <div className="w-7 h-7 rounded-lg bg-neutral-200 dark:bg-neutral-700 flex items-center justify-center text-neutral-600 dark:text-neutral-300 group-hover:bg-[#C87D20] group-hover:text-white transition-colors">
                       <Server className="w-3.5 h-3.5" />
                     </div>
-                    <span>Docker Container & Diagnose</span>
+                    <span>{t.dockerDiagnostics}</span>
                   </div>
                   <ChevronRight className="w-3.5 h-3.5 text-neutral-400" />
                 </button>
@@ -526,7 +544,7 @@ export const Header: React.FC<HeaderProps> = ({
                     <div className="w-7 h-7 rounded-lg bg-neutral-200 dark:bg-neutral-700 flex items-center justify-center text-neutral-600 dark:text-neutral-300 group-hover:bg-[#C87D20] group-hover:text-white transition-colors">
                       <Settings className="w-3.5 h-3.5" />
                     </div>
-                    <span>Einstellungen & Vault-Backup</span>
+                    <span>{t.settings}</span>
                   </div>
                   <ChevronRight className="w-3.5 h-3.5 text-neutral-400" />
                 </button>
@@ -542,26 +560,27 @@ export const Header: React.FC<HeaderProps> = ({
                     <div className="w-7 h-7 rounded-lg bg-neutral-200 dark:bg-neutral-700 flex items-center justify-center text-neutral-600 dark:text-neutral-300">
                       {isDarkMode ? <Sun className="w-3.5 h-3.5 text-amber-500" /> : <Moon className="w-3.5 h-3.5 text-indigo-500" />}
                     </div>
-                    <span>Design: {isDarkMode ? 'Dunkelmodus' : 'Hellmodus'}</span>
+                    <span>{t.themeToggle}: {isDarkMode ? t.darkMode : t.lightMode}</span>
                   </div>
                   <span className="text-[10px] text-neutral-400">Umschalten</span>
                 </button>
 
+                {/* PWA App Install: Only appears on mobile devices */}
                 {canInstallPwa && onInstallPwa && (
                   <button
                     onClick={() => {
                       onInstallPwa();
                       setIsUserMenuOpen(false);
                     }}
-                    className="w-full flex items-center justify-between p-2.5 text-xs rounded-xl border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-[#C87D20] dark:text-[#E09228] font-medium transition-all text-left cursor-pointer"
+                    className="lg:hidden w-full flex items-center justify-between p-2.5 text-xs rounded-xl border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-[#C87D20] dark:text-[#E09228] font-medium transition-all text-left cursor-pointer"
                   >
                     <div className="flex items-center gap-2.5">
                       <div className="w-7 h-7 rounded-lg bg-[#C87D20] text-white flex items-center justify-center">
                         <Download className="w-3.5 h-3.5" />
                       </div>
-                      <span>App installieren (PWA)</span>
+                      <span>{t.installPwa}</span>
                     </div>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#C87D20] text-white">Neu</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#C87D20] text-white">App</span>
                   </button>
                 )}
 

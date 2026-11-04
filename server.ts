@@ -9,6 +9,8 @@ const __dirname = path.dirname(__filename);
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const VAULT_PATH = process.env.VAULT_PATH || path.resolve(__dirname, 'vault_data');
+// CONFIG_PATH can be mounted separately (e.g. /data/config or /srv/NASDRIVE/Files/OchreSuite/config)
+const CONFIG_PATH = process.env.CONFIG_PATH || (fs.existsSync('/data/config') ? '/data/config' : VAULT_PATH);
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 // In-memory structured logs buffer
@@ -120,6 +122,11 @@ async function initVaultDirectory() {
       await fsp.mkdir(VAULT_PATH, { recursive: true, mode: 0o775 });
     }
 
+    if (CONFIG_PATH !== VAULT_PATH && !fs.existsSync(CONFIG_PATH)) {
+      log('info', `Erstelle Config-Verzeichnis unter: ${CONFIG_PATH}`, 'STORAGE');
+      await fsp.mkdir(CONFIG_PATH, { recursive: true, mode: 0o775 });
+    }
+
     // Ensure User base directory exists for NAS / user volumes
     const userBase = path.join(VAULT_PATH, 'User');
     if (!fs.existsSync(userBase)) {
@@ -133,16 +140,18 @@ async function initVaultDirectory() {
     await fsp.unlink(testFile);
     log('info', `Docker Volume Schreibprüfung erfolgreich für: ${VAULT_PATH}`, 'DOCKER');
 
-    // Users file
-    const usersFile = path.join(VAULT_PATH, 'users.json');
-    if (!fs.existsSync(usersFile)) {
+    // Users file (check CONFIG_PATH first, then VAULT_PATH)
+    const usersFile = path.join(CONFIG_PATH, 'users.json');
+    const legacyUsersFile = path.join(VAULT_PATH, 'users.json');
+    if (!fs.existsSync(usersFile) && !fs.existsSync(legacyUsersFile)) {
       await fsp.writeFile(usersFile, JSON.stringify(DEFAULT_USERS, null, 2), 'utf-8');
       log('info', `Benutzerdatenbank initialisiert mit ${DEFAULT_USERS.length} Profilen.`, 'AUTH');
     }
 
     // Shares file
-    const sharesFile = path.join(VAULT_PATH, 'shares.json');
-    if (!fs.existsSync(sharesFile)) {
+    const sharesFile = path.join(CONFIG_PATH, 'shares.json');
+    const legacySharesFile = path.join(VAULT_PATH, 'shares.json');
+    if (!fs.existsSync(sharesFile) && !fs.existsSync(legacySharesFile)) {
       const initialShares: ShareRecord[] = [
         {
           id: 'share_1',
@@ -332,9 +341,17 @@ Willkommen im persönlichen Bereich!
   }
 }
 
+function getConfigFile(filename: string): string {
+  const inConfig = path.join(CONFIG_PATH, filename);
+  if (fs.existsSync(inConfig)) return inConfig;
+  const inVault = path.join(VAULT_PATH, filename);
+  if (fs.existsSync(inVault)) return inVault;
+  return inConfig;
+}
+
 async function getUsers(): Promise<StoredUser[]> {
   try {
-    const file = path.join(VAULT_PATH, 'users.json');
+    const file = getConfigFile('users.json');
     if (!fs.existsSync(file)) return DEFAULT_USERS;
     const raw = await fsp.readFile(file, 'utf-8');
     return JSON.parse(raw);
@@ -344,13 +361,13 @@ async function getUsers(): Promise<StoredUser[]> {
 }
 
 async function saveUsers(users: StoredUser[]) {
-  const file = path.join(VAULT_PATH, 'users.json');
+  const file = getConfigFile('users.json');
   await fsp.writeFile(file, JSON.stringify(users, null, 2), 'utf-8');
 }
 
 async function getAppConfig(): Promise<{ appTitle: string }> {
   try {
-    const file = path.join(VAULT_PATH, 'config.json');
+    const file = getConfigFile('config.json');
     if (!fs.existsSync(file)) return { appTitle: 'OchreNotes' };
     const raw = await fsp.readFile(file, 'utf-8');
     return JSON.parse(raw);
@@ -360,14 +377,14 @@ async function getAppConfig(): Promise<{ appTitle: string }> {
 }
 
 async function saveAppConfig(config: { appTitle: string }) {
-  const file = path.join(VAULT_PATH, 'config.json');
+  const file = getConfigFile('config.json');
   await fsp.writeFile(file, JSON.stringify(config, null, 2), 'utf-8');
 }
 
 // Helper: read shares
 async function getShares(): Promise<ShareRecord[]> {
   try {
-    const file = path.join(VAULT_PATH, 'shares.json');
+    const file = getConfigFile('shares.json');
     if (!fs.existsSync(file)) return [];
     const raw = await fsp.readFile(file, 'utf-8');
     return JSON.parse(raw);
@@ -378,7 +395,7 @@ async function getShares(): Promise<ShareRecord[]> {
 
 // Helper: save shares
 async function saveShares(shares: ShareRecord[]) {
-  const file = path.join(VAULT_PATH, 'shares.json');
+  const file = getConfigFile('shares.json');
   await fsp.writeFile(file, JSON.stringify(shares, null, 2), 'utf-8');
 }
 

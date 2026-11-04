@@ -1,0 +1,28 @@
+GNU AFFERO GENERAL PUBLIC LICENSE
+Version 3, 19 November 2007
+
+Copyright (C) 2026 OchreSuite Contributors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+========================================================================
+Summary / Plain-English Explanation:
+- Copyleft & Anti-Closed-Source: Anyone modifying, hosting, or running this
+  software as a network/cloud service MUST make the complete source code of
+  all modifications openly available under the same AGPLv3 license.
+- Prevents Commercial Expropriation & "SaaS-Lock-in": Proprietary closed-source
+  commercialization without contributing changes back is strictly forbidden.
+- Community Freedom: Personal, educational, and community hosting is 100% free
+  and fully encouraged.
+========================================================================

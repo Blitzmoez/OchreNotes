@@ -1,6 +1,11 @@
 # OchreNotes 📙 – Selbst-gehosteter Docker Obsidian Markdown & Task Hub
 
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Docker](https://img.shields.io/badge/Docker-Compatible-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
+
 OchreNotes ist eine Docker-native Knowledgebase- und Aufgaben-Plattform im Look & Feel von Obsidian. Alle Daten werden als transparente `.md`-Dateien in einem gemounteten Docker-Volume gespeichert.
+
+Unterliegt der **GNU Affero General Public License (AGPLv3)**: Frei nutzbar und quelloffen für alle, schützt vor geschlossener kommerzieller Aneignung („Cloud-SaaS-Lock-in“ ohne Code-Rückgabe).
 
 ---
 
@@ -102,3 +107,18 @@ Die Backend-Architektur ist für mobile Clients optimiert:
 ## 🖨️ DIN A4 Druck & PDF-Export
 
 Klicke in der oberen Menüleiste auf das Drucker-Symbol (oder drücke `Strg+P`). Die Notiz wird ohne störende Menüs, Schaltflächen oder Seitenleisten perfekt für DIN A4 formatiert, inklusive sauberer Seitenumbrüche und Tabellen-Layout.
+
+---
+
+## 📜 Lizenz & Open-Source-Schutz
+
+Dieses Projekt steht unter der **GNU Affero General Public License v3.0 (AGPLv3)**.
+- **Freie Nutzung:** Privat, für Vereine, Familien und Open-Source-Teams vollkommen frei.
+- **Copyleft-Schutz:** Niemand darf den Quellcode schließen, als proprietäre Cloud-Software (SaaS) vermarkten oder modifizieren, ohne die Änderungen wieder frei und öffentlich unter derselben AGPLv3-Lizenz bereitzustellen.
+
+### Zu GitHub pushen
+```bash
+git add .
+git commit -m "feat: add AGPLv3 license, Docker UID 2000:100 NAS volume split and mobile gestures"
+git push origin main
+```

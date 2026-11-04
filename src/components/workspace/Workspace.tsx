@@ -403,7 +403,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             </button>
           </div>
 
-          {/* Werkzeuge Bubble Button */}
+          {/* Werkzeuge Bubble Button mit dynamischem Pfeil */}
           <button
             onClick={() => setShowToolbar(!showToolbar)}
             className={`w-8 h-8 rounded-full flex items-center justify-center shadow-xs border transition-all shrink-0 cursor-pointer ${
@@ -411,9 +411,13 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                 ? 'bg-white dark:bg-[#25272C] border-[#C87D20] text-[#C87D20]'
                 : 'bg-white dark:bg-[#25272C] border-[#E5E3DC] dark:border-[#2F3136] text-neutral-500 hover:text-neutral-800'
             }`}
-            title={showToolbar ? 'Werkzeugleiste ausblenden' : 'Werkzeugleiste einblenden'}
+            title={showToolbar ? 'Werkzeugleiste ausblenden (▲)' : 'Werkzeugleiste einblenden (▼)'}
           >
-            <Layers className="w-4 h-4" />
+            {showToolbar ? (
+              <ChevronDown className="w-4 h-4 rotate-180 transition-transform" />
+            ) : (
+              <ChevronDown className="w-4 h-4 transition-transform text-[#C87D20]" />
+            )}
           </button>
         </div>
 
@@ -599,7 +603,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
           {/* Action: Open Split Pane / Reset 50-50 / Toggle Toolbar */}
           <div className="flex items-center gap-1.5">
-            {/* Toolbar Toggle button moved into header bar with circular bubble */}
+            {/* Toolbar Toggle button moved into header bar with circular bubble and arrow */}
             <button
               onClick={() => setShowToolbar(!showToolbar)}
               className={`w-7 h-7 rounded-full flex items-center justify-center border shadow-2xs transition-colors cursor-pointer ${
@@ -607,9 +611,13 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                   ? 'bg-white dark:bg-[#25272C] border-[#C87D20] text-[#C87D20]'
                   : 'bg-white dark:bg-[#25272C] border-[#E5E3DC] dark:border-[#2F3136] text-neutral-500 hover:text-neutral-800'
               }`}
-              title={showToolbar ? 'Werkzeugleiste ausblenden' : 'Werkzeugleiste einblenden'}
+              title={showToolbar ? 'Werkzeugleiste ausblenden (▲)' : 'Werkzeugleiste einblenden (▼)'}
             >
-              <Layers className="w-3.5 h-3.5" />
+              {showToolbar ? (
+                <ChevronDown className="w-3.5 h-3.5 rotate-180 transition-transform" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 transition-transform text-[#C87D20]" />
+              )}
             </button>
 
             {secondaryNotePath ? (

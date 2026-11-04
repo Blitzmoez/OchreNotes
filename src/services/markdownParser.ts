@@ -328,3 +328,70 @@ export function parseInlineTokens(text: string): InlineToken[] {
 
   return tokens;
 }
+
+export function parseMarkdownToHtml(markdown: string): string {
+  const blocks = parseMarkdown(markdown);
+  return blocks.map((b) => {
+    switch (b.type) {
+      case 'heading': {
+        const lvl = b.level || 1;
+        return `<h${lvl}>${escapeHtml(b.content || '')}</h${lvl}>`;
+      }
+      case 'paragraph':
+        return `<p>${renderInlineHtml(b.content || '')}</p>`;
+      case 'task':
+        return `<p class="task-line"><span class="task-box ${b.taskCompleted ? 'task-checked' : ''}">${b.taskCompleted ? '✓' : ''}</span> ${renderInlineHtml(b.content || '')}</p>`;
+      case 'code':
+        return `<pre><code>${escapeHtml(b.content || '')}</code></pre>`;
+      case 'callout':
+        return `<blockquote><strong>${escapeHtml(b.calloutTitle || 'Info')}</strong><p>${renderInlineHtml(b.content || '')}</p></blockquote>`;
+      case 'hr':
+        return `<hr/>`;
+      case 'table': {
+        const headers = (b.tableHeaders || []).map((h) => `<th>${escapeHtml(h)}</th>`).join('');
+        const rows = (b.tableRows || []).map((r) => `<tr>${r.map((c) => `<td>${renderInlineHtml(c)}</td>`).join('')}</tr>`).join('');
+        return `<table><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table>`;
+      }
+      case 'youtube':
+        return `<p><a href="${escapeHtml(b.youtubeUrl || '')}">${escapeHtml(b.youtubeUrl || '')}</a></p>`;
+      case 'list':
+        return `<ul><li>${renderInlineHtml(b.content || '')}</li></ul>`;
+      default:
+        return `<p>${escapeHtml(b.content || '')}</p>`;
+    }
+  }).join('\n');
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function renderInlineHtml(text: string): string {
+  const tokens = parseInlineTokens(text);
+  return tokens.map((t) => {
+    switch (t.type) {
+      case 'bold':
+        return `<strong>${escapeHtml(t.value)}</strong>`;
+      case 'italic':
+        return `<em>${escapeHtml(t.value)}</em>`;
+      case 'code':
+        return `<code>${escapeHtml(t.value)}</code>`;
+      case 'wikilink':
+        return `<u>[[${escapeHtml(t.value)}]]</u>`;
+      case 'tag':
+        return `<code>${escapeHtml(t.value)}</code>`;
+      case 'link':
+        return `<a href="${escapeHtml(t.target || '')}">${escapeHtml(t.value)}</a>`;
+      case 'dueDate':
+      case 'completedTag':
+      case 'priority':
+        return `<span style="color:#C87D20; font-weight:600;">${escapeHtml(t.value)}</span>`;
+      default:
+        return escapeHtml(t.value);
+    }
+  }).join('');
+}

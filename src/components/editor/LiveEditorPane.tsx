@@ -481,16 +481,31 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
               })}
             </div>
 
-            {/* Collapse Toolbar Button */}
+            {/* Collapse Toolbar Button with arrow */}
             <button
               type="button"
               onClick={toggleToolbar}
-              className="w-8 h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] shadow-2xs flex items-center justify-center text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 ml-1.5 shrink-0 cursor-pointer"
-              title="Werkzeuge einklappen"
+              className="w-8 h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] shadow-2xs flex items-center justify-center text-neutral-400 hover:text-[#C87D20] dark:hover:text-[#E09228] ml-1.5 shrink-0 cursor-pointer"
+              title="Werkzeuge einklappen (▲)"
             >
-              <ChevronUp className="w-3.5 h-3.5" />
+              <ChevronUp className="w-4 h-4 text-[#C87D20]" />
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Expand Handle when Toolbar is Collapsed */}
+      {!isReadOnly && !showToolbar && (
+        <div className="w-full flex justify-center py-1 select-none z-10">
+          <button
+            type="button"
+            onClick={toggleToolbar}
+            className="flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-white/90 dark:bg-[#202226]/90 border border-[#E5E3DC] dark:border-[#2F3136] text-[11px] font-medium text-neutral-500 hover:text-[#C87D20] shadow-2xs hover:shadow-xs hover:border-[#C87D20] transition-all cursor-pointer backdrop-blur-xs"
+            title="Werkzeuge einblenden (▼)"
+          >
+            <span>Werkzeuge einblenden</span>
+            <ChevronDown className="w-3.5 h-3.5 text-[#C87D20]" />
+          </button>
         </div>
       )}
 

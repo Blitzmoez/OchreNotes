@@ -8,7 +8,8 @@ import { ShareModal } from './components/modals/ShareModal';
 import { SystemLogsModal } from './components/modals/SystemLogsModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { LoginScreen } from './components/auth/LoginScreen';
-import { BookOpen, CheckSquare, Network, ChevronRight, ChevronLeft, X } from 'lucide-react';
+import { BookOpen, CheckSquare, Network, ChevronRight, ChevronLeft, X, Folder } from 'lucide-react';
+import { printNoteA4 } from './services/printService';
 
 export default function App() {
   // Theme State
@@ -21,9 +22,10 @@ export default function App() {
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
-  // Vault Notes State
+  // Vault Notes & Folders State
   const [notes, setNotes] = useState<NoteMetadata[]>([]);
   const [sharedNotes, setSharedNotes] = useState<NoteMetadata[]>([]);
+  const [folders, setFolders] = useState<string[]>([]);
   const [activeNotePath, setActiveNotePath] = useState<string | null>(null);
   const [activeNoteTitle, setActiveNoteTitle] = useState<string>('Willkommen');
   const [activeNoteContent, setActiveNoteContent] = useState<string>('');
@@ -144,12 +146,14 @@ export default function App() {
   const loadVaultData = useCallback(async () => {
     if (!currentUser) return;
     try {
-      const [userNotes, shared] = await Promise.all([
+      const [userNotes, shared, userFolders] = await Promise.all([
         api.fetchNotes(currentUser.username),
         api.fetchSharedWithMe(currentUser.username),
+        api.fetchFolders(currentUser.username),
       ]);
       setNotes(userNotes);
       setSharedNotes(shared);
+      setFolders(userFolders);
 
       // Open first note if none opened
       if (!activeNotePath && userNotes.length > 0) {
@@ -337,9 +341,9 @@ export default function App() {
     setActiveNotePath(null);
   };
 
-  // A4 Print Handler
+  // A4 Print Handler (Direct clean print of active note)
   const handlePrintA4 = () => {
-    window.print();
+    printNoteA4(activeNoteTitle, activeNoteContent);
   };
 
   // Document statistics computation
@@ -350,12 +354,19 @@ export default function App() {
     return { lines: lines.length, words, chars };
   }, [activeNoteContent]);
 
-  // Window-level touch gesture listeners for smooth mobile vault swipe
+  // Window-level touch gesture listeners for mobile vault swipe anywhere
   useEffect(() => {
     const onTouchStart = (e: TouchEvent) => {
       const target = e.target as HTMLElement | null;
       // Do not trigger Vault swipe gesture when interacting with tabs bar, toolbar, header or inputs
-      if (target?.closest('[data-no-swipe]') || target?.closest('header') || target?.closest('button') || target?.closest('input') || target?.closest('select')) {
+      if (
+        target?.closest('[data-no-swipe]') ||
+        target?.closest('header') ||
+        target?.closest('button') ||
+        target?.closest('input') ||
+        target?.closest('select') ||
+        target?.closest('textarea')
+      ) {
         touchStartXRef.current = null;
         touchStartYRef.current = null;
         return;
@@ -369,10 +380,10 @@ export default function App() {
       const deltaX = e.changedTouches[0].clientX - touchStartXRef.current;
       const deltaY = e.changedTouches[0].clientY - touchStartYRef.current;
 
-      // Horizontal swipe recognition (only when mostly horizontal)
+      // Horizontal swipe recognition (swiping anywhere on mobile screen)
       if (Math.abs(deltaX) > Math.abs(deltaY) * 1.3) {
-        // Swipe right (left to right) -> open vault
-        if (deltaX > 45 && touchStartXRef.current < 120) {
+        // Swipe right (left to right) -> open vault anywhere
+        if (deltaX > 45 && !isMobileSidebarOpen) {
           setIsMobileSidebarOpen(true);
         }
         // Swipe left (right to left) when vault is open -> close vault
@@ -412,37 +423,39 @@ export default function App() {
         onPrintA4={handlePrintA4}
         onOpenSystemLogs={() => setIsSystemLogsModalOpen(true)}
         onOpenSettings={() => setIsSettingsModalOpen(true)}
-        onOpenUserSwitch={() => setIsLoginModalOpen(true)}
-        onLogout={() => setIsLoginModalOpen(true)}
+        onOpenUserSwitch={async () => {
+          const fresh = await api.fetchUsers();
+          setAllUsers(fresh);
+          setIsLoginModalOpen(true);
+        }}
+        onLogout={async () => {
+          const fresh = await api.fetchUsers();
+          setAllUsers(fresh);
+          setIsLoginModalOpen(true);
+        }}
         canInstallPwa={true}
         onInstallPwa={handleInstallPwa}
         appTitle={appTitle}
+        onToggleVaultMobile={() => setIsMobileSidebarOpen((prev) => !prev)}
       />
 
       {/* Main Workspace Frame */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Mobile Edge Pull-out Tab: Half-circle on left screen edge with alternating arrows */}
+        {/* Mobile Vault Floating Button: Placed on right side, away from screen edge */}
         <button
           onClick={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
-          className={`lg:hidden fixed top-1/2 -translate-y-1/2 z-40 h-16 w-6.5 flex items-center justify-center bg-[#C87D20] text-white shadow-xl transition-all duration-300 active:scale-95 cursor-pointer ${
-            isMobileSidebarOpen 
-              ? 'left-[280px] rounded-r-lg' 
-              : 'left-0 rounded-r-full'
-          }`}
-          title={isMobileSidebarOpen ? 'Vault einklappen' : 'Vault Explorer ausfahren'}
+          className="lg:hidden fixed bottom-22 right-5 z-40 w-12 h-12 rounded-full bg-white dark:bg-[#1E1F23] border border-[#E5E3DC] dark:border-[#2F3136] shadow-xl text-[#C87D20] flex items-center justify-center hover:scale-105 active:scale-95 transition-all cursor-pointer"
+          title={isMobileSidebarOpen ? 'Vault einklappen' : 'Vault Explorer öffnen'}
           aria-label="Vault Explorer umschalten"
         >
-          {isMobileSidebarOpen ? (
-            <ChevronLeft className="w-4 h-4" />
-          ) : (
-            <ChevronRight className="w-4 h-4" />
-          )}
+          <Folder className="w-5 h-5 text-[#C87D20]" />
         </button>
 
-        {/* Sidebar with Drag & Drop and Folder Plus */}
+        {/* Sidebar with Drag & Drop, Folders, and In-place Folder Creation */}
         <Sidebar
           notes={notes}
           sharedNotes={sharedNotes}
+          folders={folders}
           activeNotePath={activeNotePath}
           activeIsShared={activeIsShared}
           onSelectNote={openNote}
@@ -595,6 +608,12 @@ export default function App() {
           onClose={() => setIsSettingsModalOpen(false)}
           currentUser={currentUser}
           onRefreshVault={loadVaultData}
+          onUpdateUser={(updatedUser) => {
+            setCurrentUser(updatedUser);
+            setAllUsers((prev) =>
+              prev.map((u) => (u.username === updatedUser.username ? updatedUser : u))
+            );
+          }}
           appTitle={appTitle}
           onUpdateAppTitle={handleUpdateAppTitle}
           activeNoteTitle={activeNoteTitle}
