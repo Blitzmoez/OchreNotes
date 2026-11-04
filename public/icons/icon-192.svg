@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <defs>
+    <linearGradient id="ochreGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E09228" />
+      <stop offset="100%" stop-color="#A86415" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+  <!-- Background -->
+  <rect width="192" height="192" rx="42" fill="#18191B" />
+  <!-- Notebook Cover with shadow -->
+  <rect x="36" y="28" width="120" height="136" rx="14" fill="url(#ochreGrad)" filter="url(#shadow)" />
+  <!-- Binding Spine Strip -->
+  <rect x="36" y="28" width="22" height="136" rx="6" fill="#8E520D" opacity="0.6" />
+  <!-- Spiral Rings -->
+  <ellipse cx="47" cy="48" rx="6" ry="3.5" fill="#FFFFFF" opacity="0.95" />
+  <ellipse cx="47" cy="72" rx="6" ry="3.5" fill="#FFFFFF" opacity="0.95" />
+  <ellipse cx="47" cy="96" rx="6" ry="3.5" fill="#FFFFFF" opacity="0.95" />
+  <ellipse cx="47" cy="120" rx="6" ry="3.5" fill="#FFFFFF" opacity="0.95" />
+  <ellipse cx="47" cy="144" rx="6" ry="3.5" fill="#FFFFFF" opacity="0.95" />
+  <!-- Ruled Paper Lines -->
+  <rect x="68" y="52" width="68" height="5" rx="2.5" fill="#FFFFFF" opacity="0.95" />
+  <rect x="68" y="68" width="56" height="4" rx="2" fill="#FFFFFF" opacity="0.75" />
+  <rect x="68" y="82" width="62" height="4" rx="2" fill="#FFFFFF" opacity="0.75" />
+  <rect x="68" y="96" width="48" height="4" rx="2" fill="#FFFFFF" opacity="0.6" />
+  <!-- Checkmark -->
+  <circle cx="124" cy="128" r="14" fill="#FFFFFF" />
+  <path d="M118 128 l4 4 l8 -8" stroke="#A86415" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+</svg>

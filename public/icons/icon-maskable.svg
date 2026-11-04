@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="ochreGradM" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E09228" />
+      <stop offset="100%" stop-color="#A86415" />
+    </linearGradient>
+  </defs>
+  <!-- Full Bleed Maskable Background -->
+  <rect width="512" height="512" fill="#18191B" />
+  <!-- Scaled Center (Safe Zone) -->
+  <g transform="translate(51, 51) scale(0.8)">
+    <rect x="96" y="74" width="320" height="364" rx="36" fill="url(#ochreGradM)" />
+    <rect x="96" y="74" width="60" height="364" rx="16" fill="#8E520D" opacity="0.6" />
+    <ellipse cx="126" cy="128" rx="16" ry="9" fill="#FFFFFF" opacity="0.95" />
+    <ellipse cx="126" cy="192" rx="16" ry="9" fill="#FFFFFF" opacity="0.95" />
+    <ellipse cx="126" cy="256" rx="16" ry="9" fill="#FFFFFF" opacity="0.95" />
+    <ellipse cx="126" cy="320" rx="16" ry="9" fill="#FFFFFF" opacity="0.95" />
+    <ellipse cx="126" cy="384" rx="16" ry="9" fill="#FFFFFF" opacity="0.95" />
+    <rect x="180" y="140" width="180" height="14" rx="7" fill="#FFFFFF" opacity="0.95" />
+    <rect x="180" y="180" width="150" height="11" rx="5.5" fill="#FFFFFF" opacity="0.8" />
+    <rect x="180" y="218" width="165" height="11" rx="5.5" fill="#FFFFFF" opacity="0.8" />
+    <circle cx="330" cy="340" r="38" fill="#FFFFFF" />
+    <path d="M314 340 l11 11 l21 -21" stroke="#A86415" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+  </g>
+</svg>

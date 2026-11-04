@@ -1,0 +1,6 @@
+{
+  "name": "OchreNotes - Docker Obsidian Markdown & Task Hub",
+  "description": "Modulare Ochre Suite - Selbst-gehosteter Obsidian Markdown Editor mit Tasks, Wissensgraph und Offline-PWA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
