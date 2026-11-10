@@ -27,7 +27,7 @@ import {
   X,
   Folder
 } from 'lucide-react';
-import { User, PaneType } from '../../types';
+import { User, PaneType, SuiteModuleId, EnabledModules } from '../../types';
 import { useTranslation } from '../../services/i18n.tsx';
 
 interface HeaderProps {
@@ -53,6 +53,9 @@ interface HeaderProps {
   onInstallPwa?: () => void;
   appTitle?: string;
   onToggleVaultMobile?: () => void;
+  activeSuiteModule: SuiteModuleId;
+  onSelectSuiteModule: (mod: SuiteModuleId) => void;
+  enabledModules: EnabledModules;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -78,6 +81,9 @@ export const Header: React.FC<HeaderProps> = ({
   onInstallPwa,
   appTitle = 'Ochre Suite',
   onToggleVaultMobile,
+  activeSuiteModule,
+  onSelectSuiteModule,
+  enabledModules,
 }) => {
   const { t } = useTranslation();
   // Ochre Suite modular menu dropdown
@@ -141,26 +147,36 @@ export const Header: React.FC<HeaderProps> = ({
             title="Modulauswahl der Ochre Suite öffnen"
             aria-label="Modulauswahl"
           >
-            {/* Ringblock Icon */}
-            <div className="w-6.5 h-6.5 rounded-lg bg-gradient-to-br from-[#D98B26] to-[#A86415] text-white flex items-center justify-center shadow-xs relative overflow-hidden shrink-0">
-              {/* Spiral rings */}
-              <div className="absolute left-0.5 top-0 bottom-0 flex flex-col justify-around py-0.5">
-                <span className="w-1 h-0.5 rounded-full bg-white/90 shadow-2xs"></span>
-                <span className="w-1 h-0.5 rounded-full bg-white/90 shadow-2xs"></span>
-                <span className="w-1 h-0.5 rounded-full bg-white/90 shadow-2xs"></span>
+            {/* Active Module Icon Badge */}
+            {activeSuiteModule === 'notes' && (
+              <div className="w-6.5 h-6.5 rounded-lg bg-gradient-to-br from-[#D98B26] to-[#A86415] text-white flex items-center justify-center shadow-xs relative overflow-hidden shrink-0">
+                <div className="absolute left-0.5 top-0 bottom-0 flex flex-col justify-around py-0.5">
+                  <span className="w-1 h-0.5 rounded-full bg-white/90 shadow-2xs"></span>
+                  <span className="w-1 h-0.5 rounded-full bg-white/90 shadow-2xs"></span>
+                  <span className="w-1 h-0.5 rounded-full bg-white/90 shadow-2xs"></span>
+                </div>
+                <div className="ml-1.5 flex flex-col gap-0.5 w-3">
+                  <div className="h-0.5 bg-white/95 rounded-full w-full"></div>
+                  <div className="h-0.5 bg-white/75 rounded-full w-3/4"></div>
+                  <div className="h-0.5 bg-white/60 rounded-full w-2/3"></div>
+                </div>
               </div>
-              {/* Lined paper lines inside Ringblock */}
-              <div className="ml-1.5 flex flex-col gap-0.5 w-3">
-                <div className="h-0.5 bg-white/95 rounded-full w-full"></div>
-                <div className="h-0.5 bg-white/75 rounded-full w-3/4"></div>
-                <div className="h-0.5 bg-white/60 rounded-full w-2/3"></div>
+            )}
+            {activeSuiteModule === 'recipes' && (
+              <div className="w-6.5 h-6.5 rounded-lg bg-emerald-600 text-white flex items-center justify-center shadow-xs shrink-0">
+                <Utensils className="w-3.5 h-3.5" />
               </div>
-            </div>
+            )}
+            {activeSuiteModule === 'finance' && (
+              <div className="w-6.5 h-6.5 rounded-lg bg-blue-600 text-white flex items-center justify-center shadow-xs shrink-0">
+                <BarChart3 className="w-3.5 h-3.5" />
+              </div>
+            )}
 
-            {/* In Daily Business: Only clean Module Name (e.g. "Notes") in bubble with subtle dropdown chevron */}
+            {/* Active Module Name */}
             <div className="flex items-center gap-1 min-w-0">
               <span className="font-bold text-xs md:text-sm tracking-tight text-neutral-900 dark:text-neutral-100 whitespace-nowrap">
-                Notes
+                {activeSuiteModule === 'notes' ? 'Notes' : activeSuiteModule === 'recipes' ? 'Kochbuch' : 'Finanzen'}
               </span>
               <ChevronDown className={`w-3.5 h-3.5 text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 transition-transform duration-200 ${isSuiteMenuOpen ? 'rotate-180' : ''}`} />
             </div>
@@ -193,10 +209,20 @@ export const Header: React.FC<HeaderProps> = ({
                 </button>
               </div>
 
-              {/* Module Items with rounded box cards for optimal mobile & desktop touch */}
+              {/* Module Items with rounded box cards for switching */}
               <div className="space-y-2">
-                {/* Active Module: Notes */}
-                <div className="flex items-center justify-between p-3 rounded-2xl bg-amber-500/10 border-2 border-[#C87D20] text-xs">
+                {/* Module 1: Notes (Always available) */}
+                <div 
+                  onClick={() => {
+                    onSelectSuiteModule('notes');
+                    setIsSuiteMenuOpen(false);
+                  }}
+                  className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
+                    activeSuiteModule === 'notes'
+                      ? 'bg-amber-500/10 border-2 border-[#C87D20]'
+                      : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-[#C87D20] bg-white dark:bg-[#202225]'
+                  }`}
+                >
                   <div className="flex items-center gap-2.5">
                     <div className="w-8 h-8 rounded-xl bg-[#C87D20] text-white flex items-center justify-center font-bold text-sm shadow-xs">
                       📝
@@ -206,80 +232,95 @@ export const Header: React.FC<HeaderProps> = ({
                       <span className="text-[11px] text-neutral-500">Obsidian Markdown & Aufgaben</span>
                     </div>
                   </div>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#C87D20] text-white font-semibold">
-                    Aktiv
-                  </span>
+                  {activeSuiteModule === 'notes' && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#C87D20] text-white font-semibold">
+                      Aktiv
+                    </span>
+                  )}
                 </div>
 
-                {/* Future Module: Kochbuch */}
-                <div className="flex items-center justify-between p-3 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-neutral-50/70 dark:bg-neutral-800/40 text-xs opacity-75 hover:opacity-100 transition-opacity">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-xs">
-                      <Utensils className="w-4 h-4" />
+                {/* Module 2: Kochbuch (Enabled or Disabled) */}
+                {enabledModules.recipes ? (
+                  <div 
+                    onClick={() => {
+                      onSelectSuiteModule('recipes');
+                      setIsSuiteMenuOpen(false);
+                    }}
+                    className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
+                      activeSuiteModule === 'recipes'
+                        ? 'bg-emerald-500/10 border-2 border-emerald-600'
+                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-emerald-600 bg-white dark:bg-[#202225]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-xs">
+                        <Utensils className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">Kochbuch</span>
+                        <span className="text-[11px] text-neutral-500">Tellergerichte & Essenszyklus</span>
+                      </div>
                     </div>
-                    <div>
-                      <span className="font-semibold text-neutral-800 dark:text-neutral-200 block">Kochbuch</span>
-                      <span className="text-[11px] text-neutral-400">Rezepte & Essensplaner</span>
-                    </div>
+                    {activeSuiteModule === 'recipes' ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-600 text-white font-semibold">
+                        Aktiv
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-neutral-400">Öffnen →</span>
+                    )}
                   </div>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-neutral-200 dark:bg-neutral-800 text-neutral-500 font-medium">
-                    Demnächst
-                  </span>
-                </div>
+                ) : null}
 
-                {/* Future Module: Analytics */}
-                <div className="flex items-center justify-between p-3 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-neutral-50/70 dark:bg-neutral-800/40 text-xs opacity-75 hover:opacity-100 transition-opacity">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-xs">
-                      <BarChart3 className="w-4 h-4" />
+                {/* Module 3: Finanzen (Enabled or Disabled) */}
+                {enabledModules.finance ? (
+                  <div 
+                    onClick={() => {
+                      onSelectSuiteModule('finance');
+                      setIsSuiteMenuOpen(false);
+                    }}
+                    className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
+                      activeSuiteModule === 'finance'
+                        ? 'bg-blue-500/10 border-2 border-blue-600'
+                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-blue-600 bg-white dark:bg-[#202225]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-xs">
+                        <BarChart3 className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">Finanzen</span>
+                        <span className="text-[11px] text-neutral-500">CSV Bankimport & Barzahlung</span>
+                      </div>
                     </div>
-                    <div>
-                      <span className="font-semibold text-neutral-800 dark:text-neutral-200 block">Analytics</span>
-                      <span className="text-[11px] text-neutral-400">Statistiken & Fokus</span>
-                    </div>
+                    {activeSuiteModule === 'finance' ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-600 text-white font-semibold">
+                        Aktiv
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-neutral-400">Öffnen →</span>
+                    )}
                   </div>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-neutral-200 dark:bg-neutral-800 text-neutral-500 font-medium">
-                    Geplant
-                  </span>
-                </div>
-
-                {/* Future Module: Cloud Sync */}
-                <div className="flex items-center justify-between p-3 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-neutral-50/70 dark:bg-neutral-800/40 text-xs opacity-75 hover:opacity-100 transition-opacity">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-xl bg-purple-600 text-white flex items-center justify-center shadow-xs">
-                      <HardDrive className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <span className="font-semibold text-neutral-800 dark:text-neutral-200 block">Vault Sync</span>
-                      <span className="text-[11px] text-neutral-400">End-to-End P2P Sync</span>
-                    </div>
-                  </div>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-neutral-200 dark:bg-neutral-800 text-neutral-500 font-medium">
-                    Geplant
-                  </span>
-                </div>
+                ) : null}
               </div>
 
-              <div className="pt-2 border-t border-[#E5E3DC] dark:border-[#2F3136] px-1 text-[11px] text-neutral-400 flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-[#C87D20]" />
-                <span>More to come... Modulare Suite</span>
+              {/* Module Management Link */}
+              <div className="pt-2 border-t border-[#E5E3DC] dark:border-[#2F3136] px-1 flex items-center justify-between text-[11px]">
+                <button
+                  onClick={() => {
+                    setIsSuiteMenuOpen(false);
+                    onOpenSettings();
+                  }}
+                  className="text-[#C87D20] hover:underline flex items-center gap-1 cursor-pointer font-medium"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>Module verwalten (Settings)</span>
+                </button>
+                <span className="text-neutral-400">Ochre Suite</span>
               </div>
             </div>
           )}
         </div>
-
-        {/* Mobile Vault Explorer Toggle Button */}
-        {onToggleVaultMobile && (
-          <button
-            type="button"
-            onClick={onToggleVaultMobile}
-            className="lg:hidden flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[#C87D20] text-[#C87D20] text-xs font-semibold shadow-2xs cursor-pointer active:scale-95"
-            title={t.vaultExplorer}
-          >
-            <Folder className="w-3.5 h-3.5 text-[#C87D20]" />
-            <span>Vault</span>
-          </button>
-        )}
       </div>
 
       {/* Zone 2: Navigation Modes (Notizen, Aufgaben, Graph) - Desktop View */}

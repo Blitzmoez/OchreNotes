@@ -1,0 +1,26 @@
+[
+  {
+    "id": "user_michael",
+    "username": "michael",
+    "displayName": "Michael",
+    "avatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+    "role": "admin",
+    "description": "Hauptbenutzer (Docker Admin & Notizen)"
+  },
+  {
+    "id": "user_sarah",
+    "username": "sarah",
+    "displayName": "Sarah",
+    "avatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80",
+    "role": "family",
+    "description": "Partnerin (Freigegebene Notizen & Familie)"
+  },
+  {
+    "id": "user_alex",
+    "username": "alex",
+    "displayName": "Alex",
+    "avatar": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80",
+    "role": "user",
+    "description": "Projekt-Team / Entwickler"
+  }
+]

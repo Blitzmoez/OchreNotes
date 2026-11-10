@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { User, NoteMetadata, NoteContent, PaneType } from './types';
+import { User, NoteMetadata, NoteContent, PaneType, SuiteModuleId, EnabledModules } from './types';
 import { api } from './services/api';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { Workspace } from './components/workspace/Workspace';
+import { CookbookView } from './components/recipes/CookbookView';
+import { FinanceView } from './components/finance/FinanceView';
 import { ShareModal } from './components/modals/ShareModal';
 import { SystemLogsModal } from './components/modals/SystemLogsModal';
 import { SettingsModal } from './components/modals/SettingsModal';
@@ -16,6 +18,28 @@ export default function App() {
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     return localStorage.getItem('ochrenotes_theme') === 'dark';
   });
+
+  // Ochre Suite Active Module: 'notes' | 'recipes' | 'finance'
+  const [activeSuiteModule, setActiveSuiteModule] = useState<SuiteModuleId>('notes');
+
+  // Enabled Suite Modules State (persisted per device/browser)
+  const [enabledModules, setEnabledModules] = useState<EnabledModules>(() => {
+    const saved = localStorage.getItem('ochre_enabled_modules');
+    return saved ? JSON.parse(saved) : { notes: true, recipes: true, finance: true };
+  });
+
+  const handleToggleModule = (moduleId: SuiteModuleId) => {
+    if (moduleId === 'notes') return; // Notes is always base
+    setEnabledModules(prev => {
+      const next = { ...prev, [moduleId]: !prev[moduleId] };
+      localStorage.setItem('ochre_enabled_modules', JSON.stringify(next));
+      // If active module was turned off, switch back to notes
+      if (activeSuiteModule === moduleId && !next[moduleId]) {
+        setActiveSuiteModule('notes');
+      }
+      return next;
+    });
+  };
 
   // User State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -437,152 +461,181 @@ export default function App() {
         onInstallPwa={handleInstallPwa}
         appTitle={appTitle}
         onToggleVaultMobile={() => setIsMobileSidebarOpen((prev) => !prev)}
+        activeSuiteModule={activeSuiteModule}
+        onSelectSuiteModule={setActiveSuiteModule}
+        enabledModules={enabledModules}
       />
 
-      {/* Main Workspace Frame */}
-      <div className="flex-1 flex overflow-hidden relative">
-        {/* Mobile Vault Floating Button: Placed on right side, away from screen edge */}
-        <button
-          onClick={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
-          className="lg:hidden fixed bottom-22 right-5 z-40 w-12 h-12 rounded-full bg-white dark:bg-[#1E1F23] border border-[#E5E3DC] dark:border-[#2F3136] shadow-xl text-[#C87D20] flex items-center justify-center hover:scale-105 active:scale-95 transition-all cursor-pointer"
-          title={isMobileSidebarOpen ? 'Vault einklappen' : 'Vault Explorer öffnen'}
-          aria-label="Vault Explorer umschalten"
-        >
-          <Folder className="w-5 h-5 text-[#C87D20]" />
-        </button>
+      {/* Main Container: Renders active Suite Module (Notes, Recipes, Finance) */}
+      {activeSuiteModule === 'recipes' && (
+        <div className="flex-1 flex overflow-hidden">
+          <CookbookView />
+        </div>
+      )}
 
-        {/* Sidebar with Drag & Drop, Folders, and In-place Folder Creation */}
-        <Sidebar
-          notes={notes}
-          sharedNotes={sharedNotes}
-          folders={folders}
-          activeNotePath={activeNotePath}
-          activeIsShared={activeIsShared}
-          onSelectNote={openNote}
-          onCreateNote={handleCreateNote}
-          onCreateFolder={handleCreateFolder}
-          onDeleteNote={handleDeleteNote}
-          onDeleteFolder={handleDeleteFolder}
-          onMoveNote={handleMoveNote}
-          isOpen={isMobileSidebarOpen}
-          onCloseMobile={() => setIsMobileSidebarOpen(false)}
-        />
+      {activeSuiteModule === 'finance' && (
+        <div className="flex-1 flex overflow-hidden">
+          <FinanceView />
+        </div>
+      )}
 
-        {/* Central Workspace Pane */}
-        <Workspace
-          viewMode={viewMode}
-          content={activeNoteContent}
-          onContentChange={handleContentChange}
-          isReadOnly={activePermission === 'read'}
-          onSave={() => {
-            if (currentUser && activeNotePath) {
-              api.saveNote(currentUser.username, activeNotePath, activeNoteContent, activeIsShared, activeSharedFrom);
-              setLastSaved(Date.now());
-            }
-          }}
-          lastSaved={lastSaved}
-          onToggleTask={handleToggleTask}
-          onWikilinkClick={openNoteByTitle}
-          onTagClick={(tag) => {
-            setViewMode('tasks');
-          }}
-          username={currentUser?.username || 'michael'}
-          onOpenNoteByTitle={openNoteByTitle}
-          allNotes={[...notes, ...sharedNotes]}
-          activeNotePath={activeNotePath}
-          activeNoteTitle={activeNoteTitle}
-          onSelectPrimaryNote={openNote}
-          onRenameNote={handleRenameNote}
-          onCreateNote={handleCreateNote}
-        />
-      </div>
+      {activeSuiteModule === 'notes' && (
+        <div className="flex-1 flex overflow-hidden relative">
+          {/* Mobile Left Screen Edge Swipe Indicator & Vault Toggle Button */}
+          <button
+            onClick={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
+            className={`lg:hidden fixed top-1/2 -translate-y-1/2 z-40 h-14 flex items-center justify-center transition-all duration-300 active:scale-95 cursor-pointer shadow-lg ${
+              isMobileSidebarOpen 
+                ? 'left-[280px] w-7 rounded-r-xl bg-[#C87D20] text-white' 
+                : 'left-0 w-5 rounded-r-xl bg-[#C87D20]/90 hover:bg-[#C87D20] text-white/90 hover:w-6.5'
+            }`}
+            title={isMobileSidebarOpen ? 'Vault schließen' : 'Vault Explorer (nach rechts wischen oder tippen)'}
+            aria-label="Vault Explorer umschalten"
+          >
+            {isMobileSidebarOpen ? (
+              <ChevronLeft className="w-4 h-4" />
+            ) : (
+              <div className="flex flex-col items-center gap-1 py-1">
+                <ChevronRight className="w-3.5 h-3.5 animate-pulse" />
+                <span className="w-1 h-3 rounded-full bg-white/70"></span>
+              </div>
+            )}
+          </button>
 
-      {/* Mobile Floating Action Navigation: Backdrop when open, Centered Pill, Themed Warm Colors */}
-      {isMobileNavExpanded && (
+          {/* Sidebar with Drag & Drop, Folders, and In-place Folder Creation */}
+          <Sidebar
+            notes={notes}
+            sharedNotes={sharedNotes}
+            folders={folders}
+            activeNotePath={activeNotePath}
+            activeIsShared={activeIsShared}
+            onSelectNote={openNote}
+            onCreateNote={handleCreateNote}
+            onCreateFolder={handleCreateFolder}
+            onDeleteNote={handleDeleteNote}
+            onDeleteFolder={handleDeleteFolder}
+            onMoveNote={handleMoveNote}
+            isOpen={isMobileSidebarOpen}
+            onCloseMobile={() => setIsMobileSidebarOpen(false)}
+          />
+
+          {/* Central Workspace Pane */}
+          <Workspace
+            viewMode={viewMode}
+            content={activeNoteContent}
+            onContentChange={handleContentChange}
+            isReadOnly={activePermission === 'read'}
+            onSave={() => {
+              if (currentUser && activeNotePath) {
+                api.saveNote(currentUser.username, activeNotePath, activeNoteContent, activeIsShared, activeSharedFrom);
+                setLastSaved(Date.now());
+              }
+            }}
+            lastSaved={lastSaved}
+            onToggleTask={handleToggleTask}
+            onWikilinkClick={openNoteByTitle}
+            onTagClick={(tag) => {
+              setViewMode('tasks');
+            }}
+            username={currentUser?.username || 'michael'}
+            onOpenNoteByTitle={openNoteByTitle}
+            allNotes={[...notes, ...sharedNotes]}
+            activeNotePath={activeNotePath}
+            activeNoteTitle={activeNoteTitle}
+            onSelectPrimaryNote={openNote}
+            onRenameNote={handleRenameNote}
+            onCreateNote={handleCreateNote}
+          />
+        </div>
+      )}
+
+      {/* Mobile Floating Action Navigation (Only in Notes module): Positioned reliably on the right */}
+      {activeSuiteModule === 'notes' && isMobileNavExpanded && (
         <div 
           onClick={() => setIsMobileNavExpanded(false)}
           className="fixed inset-0 bg-[#C87D20]/10 dark:bg-black/50 backdrop-blur-2xs z-40 lg:hidden animate-in fade-in duration-150"
         />
       )}
 
-      {/* Floating Nav Button / Bottom-Right Expanded Capsule (Icons only, no text) */}
-      <div className="lg:hidden select-none">
-        {isMobileNavExpanded ? (
-          <div className="fixed bottom-6 right-5 z-50 h-14 px-2 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 border-[#D98B26] flex items-center gap-1.5 text-neutral-800 dark:text-neutral-200 animate-in fade-in zoom-in-95 duration-200">
-            <button
-              onClick={() => {
-                setViewMode('editor');
-                setIsMobileNavExpanded(false);
-              }}
-              className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 ${
-                viewMode === 'editor'
-                  ? 'bg-[#D98B26] text-white shadow-xs'
-                  : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
-              }`}
-              title="Notizen-Editor"
-              aria-label="Notizen"
-            >
-              <BookOpen className="w-4.5 h-4.5" />
-            </button>
+      {/* Floating Nav Button / Bottom-Right Expanded Capsule */}
+      {activeSuiteModule === 'notes' && (
+        <div className="lg:hidden select-none">
+          {isMobileNavExpanded ? (
+            <div className="fixed bottom-5 right-4 z-50 h-14 px-2.5 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 border-[#D98B26] flex items-center gap-1.5 text-neutral-800 dark:text-neutral-200 animate-in fade-in zoom-in-95 duration-200">
+              <button
+                onClick={() => {
+                  setViewMode('editor');
+                  setIsMobileNavExpanded(false);
+                }}
+                className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 ${
+                  viewMode === 'editor'
+                    ? 'bg-[#D98B26] text-white shadow-xs'
+                    : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
+                }`}
+                title="Notizen-Editor"
+                aria-label="Notizen"
+              >
+                <BookOpen className="w-4.5 h-4.5" />
+              </button>
 
-            <button
-              onClick={() => {
-                setViewMode('tasks');
-                setIsMobileNavExpanded(false);
-              }}
-              className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 ${
-                viewMode === 'tasks'
-                  ? 'bg-[#D98B26] text-white shadow-xs'
-                  : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
-              }`}
-              title="Aufgaben & Listen"
-              aria-label="Aufgaben"
-            >
-              <CheckSquare className="w-4.5 h-4.5" />
-            </button>
+              <button
+                onClick={() => {
+                  setViewMode('tasks');
+                  setIsMobileNavExpanded(false);
+                }}
+                className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 ${
+                  viewMode === 'tasks'
+                    ? 'bg-[#D98B26] text-white shadow-xs'
+                    : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
+                }`}
+                title="Aufgaben & Listen"
+                aria-label="Aufgaben"
+              >
+                <CheckSquare className="w-4.5 h-4.5" />
+              </button>
 
-            <button
-              onClick={() => {
-                setViewMode('graph');
-                setIsMobileNavExpanded(false);
-              }}
-              className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 ${
-                viewMode === 'graph'
-                  ? 'bg-[#D98B26] text-white shadow-xs'
-                  : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
-              }`}
-              title="Wissensgraph"
-              aria-label="Graph"
-            >
-              <Network className="w-4.5 h-4.5" />
-            </button>
+              <button
+                onClick={() => {
+                  setViewMode('graph');
+                  setIsMobileNavExpanded(false);
+                }}
+                className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 ${
+                  viewMode === 'graph'
+                    ? 'bg-[#D98B26] text-white shadow-xs'
+                    : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
+                }`}
+                title="Wissensgraph"
+                aria-label="Graph"
+              >
+                <Network className="w-4.5 h-4.5" />
+              </button>
 
-            {/* Close button with subtle divider */}
-            <div className="w-px h-5 bg-[#E5E3DC] dark:bg-[#2F3136] mx-0.5"></div>
+              <div className="w-px h-5 bg-[#E5E3DC] dark:bg-[#2F3136] mx-0.5"></div>
 
+              <button
+                onClick={() => setIsMobileNavExpanded(false)}
+                className="w-10 h-10 rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 flex items-center justify-center cursor-pointer shadow-2xs active:scale-95"
+                aria-label="Navigation schließen"
+                title="Navigation schließen"
+              >
+                <X className="w-4.5 h-4.5" />
+              </button>
+            </div>
+          ) : (
             <button
-              onClick={() => setIsMobileNavExpanded(false)}
-              className="w-10 h-10 rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 flex items-center justify-center cursor-pointer shadow-2xs active:scale-95"
-              aria-label="Navigation schließen"
-              title="Navigation schließen"
+              onClick={() => setIsMobileNavExpanded(true)}
+              className="fixed bottom-5 right-4 z-40 w-13 h-13 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] text-[#D98B26] shadow-2xl border-2 border-[#D98B26] flex items-center justify-center transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
+              title="Navigation umschalten (Notizen, Aufgaben, Graph)"
+              aria-label="Navigation umschalten"
             >
-              <X className="w-4.5 h-4.5" />
+              {viewMode === 'editor' && <BookOpen className="w-5 h-5 text-[#D98B26]" />}
+              {viewMode === 'tasks' && <CheckSquare className="w-5 h-5 text-[#D98B26]" />}
+              {viewMode === 'graph' && <Network className="w-5 h-5 text-[#D98B26]" />}
+              <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-[#D98B26] rounded-full border-2 border-white dark:border-[#1E1F23]"></span>
             </button>
-          </div>
-        ) : (
-          <button
-            onClick={() => setIsMobileNavExpanded(true)}
-            className="fixed bottom-6 right-5 z-40 w-13 h-13 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] text-[#D98B26] shadow-2xl border-2 border-[#D98B26] flex items-center justify-center transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer relative"
-            title="Navigation öffnen (Notizen, Aufgaben, Graph)"
-            aria-label="Navigation öffnen"
-          >
-            {viewMode === 'editor' && <BookOpen className="w-5 h-5 text-[#D98B26]" />}
-            {viewMode === 'tasks' && <CheckSquare className="w-5 h-5 text-[#D98B26]" />}
-            {viewMode === 'graph' && <Network className="w-5 h-5 text-[#D98B26]" />}
-            <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-[#D98B26] rounded-full border-2 border-white dark:border-[#1E1F23]"></span>
-          </button>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
       {/* Modals */}
       {currentUser && (
@@ -618,6 +671,8 @@ export default function App() {
           onUpdateAppTitle={handleUpdateAppTitle}
           activeNoteTitle={activeNoteTitle}
           activeNoteContent={activeNoteContent}
+          enabledModules={enabledModules}
+          onToggleModule={handleToggleModule}
         />
       )}
 

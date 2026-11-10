@@ -33,7 +33,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ username, onSelectNote }) 
       const width = canvasRef.current?.width || 800;
       const height = canvasRef.current?.height || 600;
 
-      const nodes = graph.nodes.map((n, i) => {
+      const nodes = graph.nodes.map((n: any, i: number) => {
         const angle = (i / Math.max(1, graph.nodes.length)) * 2 * Math.PI;
         const radius = 100 + Math.random() * 150;
         return {

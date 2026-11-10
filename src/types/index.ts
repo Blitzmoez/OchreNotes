@@ -112,3 +112,78 @@ export interface GraphData {
   nodes: GraphNode[];
   links: GraphLink[];
 }
+
+export type SuiteModuleId = 'notes' | 'recipes' | 'finance';
+
+export interface EnabledModules {
+  notes: boolean;
+  recipes: boolean;
+  finance: boolean;
+}
+
+// Recipes & Meal Planning Types
+export interface RecipeIngredient {
+  id: string;
+  name: string;
+  amount: string;
+}
+
+export interface Recipe {
+  id: string;
+  title: string;
+  category: 'Frühstück' | 'Mittagessen' | 'Abendessen' | 'Snack' | 'Dessert';
+  prepTimeMinutes: number;
+  portions: number;
+  description: string;
+  instructions: string[];
+  ingredients: RecipeIngredient[];
+  tags: string[];
+  color?: string;
+}
+
+export interface MealCycleDay {
+  dayIndex: number; // 0 to cycleLength - 1
+  label: string; // e.g. "Tag 1"
+  recipeIds: string[]; // Assigned recipe ids for this cycle day
+}
+
+export interface MealCycle {
+  id: string;
+  name: string;
+  cycleLengthDays: number; // e.g. 7, 14, 21
+  startDate: string; // YYYY-MM-DD
+  days: MealCycleDay[];
+}
+
+export interface MealCalendarOverride {
+  date: string; // YYYY-MM-DD
+  recipeIds: string[]; // Specific recipes for this single date
+  note?: string;
+  isOneTimeChange: boolean;
+}
+
+// Finance & CSV Creditor Types
+export interface CreditorCategory {
+  id: string;
+  name: string;
+  color: string;
+  icon?: string;
+}
+
+export interface CreditorRule {
+  id: string;
+  matchPattern: string; // Keyword or regex to match creditor in CSV
+  creditorName: string;
+  categoryId: string;
+}
+
+export interface FinanceTransaction {
+  id: string;
+  date: string; // YYYY-MM-DD
+  creditor: string;
+  categoryId: string;
+  amount: number; // Positive = income, Negative = expense
+  description: string;
+  type: 'card' | 'transfer' | 'cash' | 'direct_debit';
+  isCash?: boolean;
+}

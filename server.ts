@@ -7,7 +7,8 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = parseInt(process.env.PORT || '3000', 10);
+// Environment constraint: Dev server must run on port 3000. In production/Docker, allow process.env.PORT.
+const PORT = process.env.NODE_ENV === 'production' && process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const VAULT_PATH = process.env.VAULT_PATH || path.resolve(__dirname, 'vault_data');
 // CONFIG_PATH can be mounted separately (e.g. /data/config or /srv/NASDRIVE/Files/OchreSuite/config)
 const CONFIG_PATH = process.env.CONFIG_PATH || (fs.existsSync('/data/config') ? '/data/config' : VAULT_PATH);

@@ -601,26 +601,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             </select>
           </div>
 
-          {/* Action: Open Split Pane / Reset 50-50 / Toggle Toolbar */}
+          {/* Action: Reset 50-50 when secondary split is open & toggle toolbar */}
           <div className="flex items-center gap-1.5">
-            {/* Toolbar Toggle button moved into header bar with circular bubble and arrow */}
-            <button
-              onClick={() => setShowToolbar(!showToolbar)}
-              className={`w-7 h-7 rounded-full flex items-center justify-center border shadow-2xs transition-colors cursor-pointer ${
-                showToolbar
-                  ? 'bg-white dark:bg-[#25272C] border-[#C87D20] text-[#C87D20]'
-                  : 'bg-white dark:bg-[#25272C] border-[#E5E3DC] dark:border-[#2F3136] text-neutral-500 hover:text-neutral-800'
-              }`}
-              title={showToolbar ? 'Werkzeugleiste ausblenden (▲)' : 'Werkzeugleiste einblenden (▼)'}
-            >
-              {showToolbar ? (
-                <ChevronDown className="w-3.5 h-3.5 rotate-180 transition-transform" />
-              ) : (
-                <ChevronDown className="w-3.5 h-3.5 transition-transform text-[#C87D20]" />
-              )}
-            </button>
-
-            {secondaryNotePath ? (
+            {secondaryNotePath && (
               <button
                 onClick={() => setSplitRatio(50)}
                 className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-white dark:bg-[#2A2C31] border border-[#E5E3DC] dark:border-[#2F3136] text-[11px] text-neutral-600 dark:text-neutral-400 hover:border-[#C87D20] transition-colors cursor-pointer shadow-2xs"
@@ -629,16 +612,18 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                 <Columns2 className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">50/50</span>
               </button>
-            ) : (
-              <button
-                onClick={handleOpenSplit}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-white dark:bg-[#2A2C31] border border-[#E5E3DC] dark:border-[#2F3136] text-[11px] text-neutral-700 dark:text-neutral-300 hover:border-[#C87D20] transition-colors cursor-pointer shadow-2xs"
-                title="Geteilte Notiz öffnen (+ Split Pane)"
-              >
-                <Plus className="w-3.5 h-3.5 text-[#C87D20]" />
-                <span className="hidden sm:inline">Split</span>
-              </button>
             )}
+            <button
+              onClick={() => setShowToolbar(!showToolbar)}
+              className={`w-6 h-6 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-2xs ${
+                showToolbar
+                  ? 'bg-white dark:bg-[#2A2C31] border-[#C87D20] text-[#C87D20]'
+                  : 'bg-white dark:bg-[#2A2C31] border-[#E5E3DC] dark:border-[#2F3136] text-neutral-500 hover:text-neutral-800'
+              }`}
+              title={showToolbar ? 'Werkzeugleiste ausblenden (▲)' : 'Werkzeugleiste einblenden (▼)'}
+            >
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showToolbar ? 'rotate-180 text-[#C87D20]' : 'text-neutral-400'}`} />
+            </button>
           </div>
         </div>
 
