@@ -96,8 +96,7 @@ try {
   process.umask(0o002);
 } catch {}
 
-export function getUserVaultDir(username: string): string {
-  // Supports NAS volume mount: /srv/NASDRIVE/Files/OchreSuite/User -> /vault/User
+export function getUserBaseDir(username: string): string {
   const userFolder = path.join(VAULT_PATH, 'User', username);
   const legacyFolder = path.join(VAULT_PATH, username);
 
@@ -114,6 +113,56 @@ export function getUserVaultDir(username: string): string {
     }
   }
   return userFolder;
+}
+
+export function ensureUserProfileStructure(username: string): { profile1: string; profile2: string; wiki: string; cookbook: string } {
+  const baseDir = getUserBaseDir(username);
+  const p1Dir = path.join(baseDir, 'Profil_1');
+  const p2Dir = path.join(baseDir, 'Profil_2');
+  const wikiDir = path.join(baseDir, 'Wiki');
+  const cookbookDir = path.join(baseDir, 'Cookbook');
+
+  if (!fs.existsSync(baseDir)) {
+    fs.mkdirSync(baseDir, { recursive: true, mode: 0o775 });
+  }
+
+  // One-time migration: if legacy notes/folders exist directly in User/<username>/, move them into Profil_1
+  if (!fs.existsSync(p1Dir)) {
+    fs.mkdirSync(p1Dir, { recursive: true, mode: 0o775 });
+    try {
+      const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name === 'Profil_1' || entry.name === 'Profil_2' || entry.name === 'Wiki' || entry.name === 'Cookbook' || entry.name.startsWith('.')) {
+          continue;
+        }
+        const src = path.join(baseDir, entry.name);
+        const dest = path.join(p1Dir, entry.name);
+        try {
+          fs.renameSync(src, dest);
+        } catch {}
+      }
+    } catch {}
+  }
+
+  if (!fs.existsSync(p2Dir)) {
+    fs.mkdirSync(p2Dir, { recursive: true, mode: 0o775 });
+  }
+
+  if (!fs.existsSync(wikiDir)) {
+    fs.mkdirSync(wikiDir, { recursive: true, mode: 0o775 });
+    fs.mkdirSync(path.join(wikiDir, 'assets'), { recursive: true, mode: 0o775 });
+  }
+
+  if (!fs.existsSync(cookbookDir)) {
+    fs.mkdirSync(cookbookDir, { recursive: true, mode: 0o775 });
+  }
+
+  return { profile1: p1Dir, profile2: p2Dir, wiki: wikiDir, cookbook: cookbookDir };
+}
+
+export function getUserVaultDir(username: string, profile: string = 'profile1'): string {
+  const dirs = ensureUserProfileStructure(username);
+  return profile === 'profile2' ? dirs.profile2 : dirs.profile1;
 }
 
 async function initVaultDirectory() {
@@ -170,19 +219,61 @@ async function initVaultDirectory() {
       log('info', `Freigabe-Datenbank initialisiert.`, 'SHARING');
     }
 
-    // Seed sample notes for Michael and Sarah
+    // Seed sample notes for Michael and Sarah (and ensure Profil_1 / Profil_2 / Wiki exist)
     await seedUserVault('michael', true);
     await seedUserVault('sarah', false);
+    ensureUserProfileStructure('alex');
   } catch (err: any) {
     log('error', `Fehler beim Initialisieren des Vault-Verzeichnisses: ${err.message}`, 'STORAGE');
   }
 }
 
 async function seedUserVault(username: string, isMichael: boolean) {
-  const userVault = getUserVaultDir(username);
-  if (fs.existsSync(userVault)) return;
+  const dirs = ensureUserProfileStructure(username);
+  const userVault = dirs.profile1;
+  const existingEntries = fs.readdirSync(userVault);
 
-  log('info', `Erstelle Initial-Vault für Benutzer '${username}'...`, 'SEED');
+  // Seed initial Wiki article if Wiki folder has no .md files yet
+  const wikiFiles = fs.readdirSync(dirs.wiki).filter((f) => f.endsWith('.md'));
+  if (wikiFiles.length === 0 && isMichael) {
+    const sampleWiki = `---
+title: "Docker & NAS Backup Anleitung"
+category: "Server & Docker"
+tags: ["docker", "nas", "anleitung"]
+updatedAt: "${new Date().toISOString()}"
+---
+
+Diese Wiki-Seite wird nach dem **offenen Markdown-Standard** mit YAML-Frontmatter direkt im Ordner \`User/${username}/Wiki/\` gespeichert.
+
+1. Öffne das Terminal auf deinem NAS oder Docker-Host.
+2. Prüfe die Berechtigungen für \`UID:GID 2000:100\`.
+3. Führe das Backup-Kommando aus der Code-Ablage unten per Copy & Paste aus.
+
+## 💻 Code-Ablage
+
+### Docker Compose Volume Prüfung
+\`\`\`yaml
+services:
+  ochresuite:
+    image: ochrenotes:latest
+    user: "2000:100"
+    volumes:
+      - /srv/NASDRIVE/Files/OchreSuite/User:/data/vault/User
+      - /srv/NASDRIVE/Files/OchreSuite/config:/data/config
+\`\`\`
+
+### Berechtigungen auf NAS setzen
+\`\`\`bash
+chown -R 2000:100 /srv/NASDRIVE/Files/OchreSuite
+chmod -R 775 /srv/NASDRIVE/Files/OchreSuite
+\`\`\`
+`;
+    await fsp.writeFile(path.join(dirs.wiki, 'docker-nas-backup-anleitung.md'), sampleWiki, 'utf-8');
+  }
+
+  if (existingEntries.length > 0) return;
+
+  log('info', `Erstelle Initial-Vault für Benutzer '${username}' in Profil_1 (Profil_2 bleibt leer)...`, 'SEED');
   await fsp.mkdir(path.join(userVault, 'Projekte'), { recursive: true });
   await fsp.mkdir(path.join(userVault, 'Journal'), { recursive: true });
 
@@ -413,8 +504,8 @@ interface ScannedNote {
   completedTasksCount: number;
 }
 
-async function scanUserNotes(username: string): Promise<ScannedNote[]> {
-  const userVault = getUserVaultDir(username);
+async function scanUserNotes(username: string, profile: string = 'profile1'): Promise<ScannedNote[]> {
+  const userVault = getUserVaultDir(username, profile);
   if (!fs.existsSync(userVault)) return [];
 
   const notes: ScannedNote[] = [];
@@ -672,14 +763,48 @@ async function createServer() {
     res.json(config);
   });
 
-  // Notes API for Current User
-  app.get('/api/vault/notes', async (req, res) => {
+  // Per-User Suite Profile & Module Settings
+  app.get('/api/system/profile-settings', async (req, res) => {
     const username = (req.query.username as string) || 'michael';
     try {
-      const notes = await scanUserNotes(username);
+      const file = getConfigFile('profile_settings.json');
+      if (!fs.existsSync(file)) return res.json(null);
+      const raw = await fsp.readFile(file, 'utf-8');
+      const all = JSON.parse(raw);
+      res.json(all[username] || null);
+    } catch {
+      res.json(null);
+    }
+  });
+
+  app.post('/api/system/profile-settings', async (req, res) => {
+    const { username, profileSettings, enabledModules } = req.body;
+    if (!username) return res.status(400).json({ error: 'Benutzername fehlt' });
+    try {
+      const file = getConfigFile('profile_settings.json');
+      let all: Record<string, any> = {};
+      if (fs.existsSync(file)) {
+        try {
+          all = JSON.parse(await fsp.readFile(file, 'utf-8'));
+        } catch {}
+      }
+      all[username] = { profileSettings, enabledModules };
+      await fsp.writeFile(file, JSON.stringify(all, null, 2), 'utf-8');
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Notes API for Current User & Profile
+  app.get('/api/vault/notes', async (req, res) => {
+    const username = (req.query.username as string) || 'michael';
+    const profile = (req.query.profile as string) || 'profile1';
+    try {
+      const notes = await scanUserNotes(username, profile);
       res.json(notes);
     } catch (err: any) {
-      log('error', `Fehler beim Laden der Notizen für '${username}': ${err.message}`, 'VAULT');
+      log('error', `Fehler beim Laden der Notizen für '${username}' (${profile}): ${err.message}`, 'VAULT');
       res.status(500).json({ error: err.message });
     }
   });
@@ -737,6 +862,7 @@ async function createServer() {
   // Read single note
   app.get('/api/vault/notes/read', async (req, res) => {
     const username = (req.query.username as string) || 'michael';
+    const profile = (req.query.profile as string) || 'profile1';
     const notePath = req.query.path as string;
     const isShared = req.query.isShared === 'true';
     const sharedFrom = req.query.sharedFrom as string;
@@ -745,7 +871,8 @@ async function createServer() {
 
     try {
       const targetUser = isShared && sharedFrom ? sharedFrom : username;
-      const fullPath = path.join(getUserVaultDir(targetUser), notePath);
+      const targetProfile = isShared ? 'profile1' : profile;
+      const fullPath = path.join(getUserVaultDir(targetUser, targetProfile), notePath);
 
       if (!fs.existsSync(fullPath)) {
         return res.status(404).json({ error: 'Notiz nicht gefunden' });
@@ -772,7 +899,7 @@ async function createServer() {
 
   // Save / Update Note
   app.post('/api/vault/notes', async (req, res) => {
-    const { username, path: notePath, content, isShared, sharedFrom } = req.body;
+    const { username, profile = 'profile1', path: notePath, content, isShared, sharedFrom } = req.body;
 
     if (!username || !notePath || content === undefined) {
       return res.status(400).json({ error: 'Fehlende Parameter' });
@@ -780,7 +907,8 @@ async function createServer() {
 
     try {
       const targetUser = isShared && sharedFrom ? sharedFrom : username;
-      const fullPath = path.join(getUserVaultDir(targetUser), notePath);
+      const targetProfile = isShared ? 'profile1' : profile;
+      const fullPath = path.join(getUserVaultDir(targetUser, targetProfile), notePath);
       const dir = path.dirname(fullPath);
 
       if (!fs.existsSync(dir)) {
@@ -789,7 +917,7 @@ async function createServer() {
 
       await fsp.writeFile(fullPath, content, 'utf-8');
       const stat = await fsp.stat(fullPath);
-      log('info', `Notiz gespeichert: '${targetUser}/${notePath}' (${stat.size} Bytes)`, 'VAULT');
+      log('info', `Notiz gespeichert: '${targetUser}/${targetProfile}/${notePath}' (${stat.size} Bytes)`, 'VAULT');
 
       res.json({ success: true, mtime: stat.mtimeMs, size: stat.size });
     } catch (err: any) {
@@ -801,6 +929,7 @@ async function createServer() {
   // Delete Note
   app.delete('/api/vault/notes', async (req, res) => {
     const username = req.query.username as string;
+    const profile = (req.query.profile as string) || 'profile1';
     const notePath = req.query.path as string;
 
     if (!username || !notePath) {
@@ -808,10 +937,10 @@ async function createServer() {
     }
 
     try {
-      const fullPath = path.join(getUserVaultDir(username), notePath);
+      const fullPath = path.join(getUserVaultDir(username, profile), notePath);
       if (fs.existsSync(fullPath)) {
         await fsp.unlink(fullPath);
-        log('info', `Notiz gelöscht: '${username}/${notePath}'`, 'VAULT');
+        log('info', `Notiz gelöscht: '${username}/${profile}/${notePath}'`, 'VAULT');
 
         // Also remove any shares for this note
         const shares = await getShares();
@@ -831,14 +960,14 @@ async function createServer() {
 
   // Move / Rename Note (Drag & Drop support in Vault Explorer)
   app.post('/api/vault/notes/move', async (req, res) => {
-    const { username, oldPath, newPath } = req.body;
+    const { username, profile = 'profile1', oldPath, newPath } = req.body;
     if (!username || !oldPath || !newPath) {
       return res.status(400).json({ error: 'Fehlende Parameter (username, oldPath, newPath)' });
     }
 
     try {
-      const sourceFile = path.join(getUserVaultDir(username), oldPath);
-      const targetFile = path.join(getUserVaultDir(username), newPath);
+      const sourceFile = path.join(getUserVaultDir(username, profile), oldPath);
+      const targetFile = path.join(getUserVaultDir(username, profile), newPath);
 
       if (!fs.existsSync(sourceFile)) {
         return res.status(404).json({ error: 'Ursprüngliche Notiz nicht gefunden' });
@@ -850,7 +979,7 @@ async function createServer() {
       }
 
       await fsp.rename(sourceFile, targetFile);
-      log('info', `Notiz verschoben: '${username}/${oldPath}' -> '${username}/${newPath}'`, 'VAULT');
+      log('info', `Notiz verschoben: '${username}/${profile}/${oldPath}' -> '${username}/${profile}/${newPath}'`, 'VAULT');
 
       // Update any shares
       const shares = await getShares();
@@ -876,8 +1005,9 @@ async function createServer() {
   // List all folders in Vault (including empty folders)
   app.get('/api/vault/folders', async (req, res) => {
     const username = (req.query.username as string) || 'michael';
+    const profile = (req.query.profile as string) || 'profile1';
     try {
-      const userVault = getUserVaultDir(username);
+      const userVault = getUserVaultDir(username, profile);
       if (!fs.existsSync(userVault)) return res.json([]);
 
       const folderList: string[] = [];
@@ -902,16 +1032,16 @@ async function createServer() {
 
   // Create Folder in Vault
   app.post('/api/vault/folders', async (req, res) => {
-    const { username, folderPath } = req.body;
+    const { username, profile = 'profile1', folderPath } = req.body;
     if (!username || !folderPath) {
       return res.status(400).json({ error: 'Fehlende Parameter' });
     }
 
     try {
-      const targetDir = path.join(getUserVaultDir(username), folderPath);
+      const targetDir = path.join(getUserVaultDir(username, profile), folderPath);
       if (!fs.existsSync(targetDir)) {
         await fsp.mkdir(targetDir, { recursive: true });
-        log('info', `Ordner erstellt: '${username}/${folderPath}'`, 'VAULT');
+        log('info', `Ordner erstellt: '${username}/${profile}/${folderPath}'`, 'VAULT');
       }
       res.json({ success: true, folderPath });
     } catch (err: any) {
@@ -923,6 +1053,7 @@ async function createServer() {
   // Delete Folder in Vault (Safety: only if 0 notes inside)
   app.delete('/api/vault/folders', async (req, res) => {
     const username = req.query.username as string;
+    const profile = (req.query.profile as string) || 'profile1';
     const folderPath = req.query.folderPath as string;
 
     if (!username || !folderPath) {
@@ -935,7 +1066,7 @@ async function createServer() {
     }
 
     try {
-      const targetDir = path.join(getUserVaultDir(username), cleanFolder);
+      const targetDir = path.join(getUserVaultDir(username, profile), cleanFolder);
       if (!fs.existsSync(targetDir)) {
         return res.status(404).json({ error: 'Ordner nicht gefunden' });
       }
@@ -966,7 +1097,7 @@ async function createServer() {
       }
 
       await fsp.rm(targetDir, { recursive: true, force: true });
-      log('info', `Leerer Ordner gelöscht: '${username}/${cleanFolder}'`, 'VAULT');
+      log('info', `Leerer Ordner gelöscht: '${username}/${profile}/${cleanFolder}'`, 'VAULT');
       res.json({ success: true, folderPath: cleanFolder });
     } catch (err: any) {
       log('error', `Fehler beim Löschen des Ordners '${cleanFolder}': ${err.message}`, 'VAULT');
@@ -1047,13 +1178,14 @@ async function createServer() {
   // Global Tasks Hub
   app.get('/api/tasks', async (req, res) => {
     const username = (req.query.username as string) || 'michael';
+    const profile = (req.query.profile as string) || 'profile1';
     try {
       const allTasks: ParsedTask[] = [];
 
-      // Scan personal notes
-      const notes = await scanUserNotes(username);
+      // Scan personal notes for active profile
+      const notes = await scanUserNotes(username, profile);
       for (const note of notes) {
-        const fullPath = path.join(getUserVaultDir(username), note.path);
+        const fullPath = path.join(getUserVaultDir(username, profile), note.path);
         if (fs.existsSync(fullPath)) {
           const content = await fsp.readFile(fullPath, 'utf-8');
           const noteTasks = parseTasksFromContent(content, note.path, note.title, false);
@@ -1061,18 +1193,20 @@ async function createServer() {
         }
       }
 
-      // Also scan notes shared with this user
-      const users = await getUsers();
-      const currentUser = users.find((u) => u.username === username);
-      if (currentUser) {
-        const shares = await getShares();
-        const myShares = shares.filter((s) => s.sharedWithUserId === currentUser.id);
-        for (const share of myShares) {
-          const fullPath = path.join(getUserVaultDir(share.ownerUsername), share.notePath);
-          if (fs.existsSync(fullPath)) {
-            const content = await fsp.readFile(fullPath, 'utf-8');
-            const noteTasks = parseTasksFromContent(content, share.notePath, path.basename(share.notePath, '.md'), true, share.ownerDisplayName);
-            allTasks.push(...noteTasks);
+      // Also scan notes shared with this user (on profile1)
+      if (profile === 'profile1') {
+        const users = await getUsers();
+        const currentUser = users.find((u) => u.username === username);
+        if (currentUser) {
+          const shares = await getShares();
+          const myShares = shares.filter((s) => s.sharedWithUserId === currentUser.id);
+          for (const share of myShares) {
+            const fullPath = path.join(getUserVaultDir(share.ownerUsername, 'profile1'), share.notePath);
+            if (fs.existsSync(fullPath)) {
+              const content = await fsp.readFile(fullPath, 'utf-8');
+              const noteTasks = parseTasksFromContent(content, share.notePath, path.basename(share.notePath, '.md'), true, share.ownerDisplayName);
+              allTasks.push(...noteTasks);
+            }
           }
         }
       }
@@ -1086,7 +1220,7 @@ async function createServer() {
 
   // Toggle Task line in Markdown file
   app.patch('/api/tasks/toggle', async (req, res) => {
-    const { username, notePath, lineIndex, completed, isShared, sharedFrom } = req.body;
+    const { username, profile = 'profile1', notePath, lineIndex, completed, isShared, sharedFrom } = req.body;
 
     if (!notePath || lineIndex === undefined || completed === undefined) {
       return res.status(400).json({ error: 'Fehlende Parameter' });
@@ -1094,7 +1228,8 @@ async function createServer() {
 
     try {
       const targetUser = isShared && sharedFrom ? sharedFrom : username;
-      const fullPath = path.join(getUserVaultDir(targetUser), notePath);
+      const targetProfile = isShared ? 'profile1' : profile;
+      const fullPath = path.join(getUserVaultDir(targetUser, targetProfile), notePath);
 
       if (!fs.existsSync(fullPath)) {
         return res.status(404).json({ error: 'Notizdatei nicht gefunden' });
@@ -1112,19 +1247,17 @@ async function createServer() {
 
       let newLine = currentLine;
       if (completed) {
-        // Mark as completed: replace - [ ] with - [x] and optionally append completion date
         newLine = currentLine.replace(/^([ \t]*- \[)[ ](\])/, '$1x$2');
         if (!newLine.includes('✅')) {
           newLine = `${newLine} ✅ ${today}`;
         }
       } else {
-        // Unmark: replace - [x] with - [ ] and remove completion tag
         newLine = currentLine.replace(/^([ \t]*- \[)[xX](\])/, '$1 $2').replace(/✅\s*\d{4}-\d{2}-\d{2}/, '').trimEnd();
       }
 
       lines[lineIndex] = newLine;
       await fsp.writeFile(fullPath, lines.join('\n'), 'utf-8');
-      log('info', `Aufgabe in '${targetUser}/${notePath}' Zeile ${lineIndex + 1} auf ${completed ? 'ERLEDIGT' : 'OFFEN'} gesetzt`, 'TASKS');
+      log('info', `Aufgabe in '${targetUser}/${targetProfile}/${notePath}' Zeile ${lineIndex + 1} auf ${completed ? 'ERLEDIGT' : 'OFFEN'} gesetzt`, 'TASKS');
 
       res.json({ success: true, updatedLine: newLine });
     } catch (err: any) {
@@ -1136,13 +1269,13 @@ async function createServer() {
   // Knowledge Graph Data
   app.get('/api/graph', async (req, res) => {
     const username = (req.query.username as string) || 'michael';
+    const profile = (req.query.profile as string) || 'profile1';
     try {
-      const notes = await scanUserNotes(username);
+      const notes = await scanUserNotes(username, profile);
       const nodes: any[] = [];
       const links: any[] = [];
       const nodeIds = new Set<string>();
 
-      // Add note nodes
       for (const note of notes) {
         nodeIds.add(note.title);
         nodes.push({
@@ -1154,13 +1287,11 @@ async function createServer() {
         });
       }
 
-      // Scan for [[wikilinks]] and #tags
       for (const note of notes) {
-        const fullPath = path.join(getUserVaultDir(username), note.path);
+        const fullPath = path.join(getUserVaultDir(username, profile), note.path);
         if (fs.existsSync(fullPath)) {
           const content = await fsp.readFile(fullPath, 'utf-8');
 
-          // Wikilinks: [[Target Note]]
           const wikiMatches = content.match(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g) || [];
           for (const raw of wikiMatches) {
             const targetTitle = raw.replace(/^\[\[/, '').replace(/\]\]$/, '').split('|')[0].trim();
@@ -1181,7 +1312,6 @@ async function createServer() {
             }
           }
 
-          // Tags: #tag
           for (const tag of note.tags) {
             const tagNodeId = `#${tag}`;
             if (!nodeIds.has(tagNodeId)) {
@@ -1208,15 +1338,597 @@ async function createServer() {
     }
   });
 
+  // =========================================================================
+  // OPEN-STANDARD WIKI API (Standard Markdown + YAML Frontmatter + Local Assets)
+  // =========================================================================
+  function parseWikiMarkdown(slug: string, raw: string) {
+    let title = slug;
+    let category = 'Allgemein';
+    let tags: string[] = [];
+    let updatedAt = new Date().toISOString();
+    let content = raw;
+
+    const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+    if (fmMatch) {
+      const fmBlock = fmMatch[1];
+      content = raw.slice(fmMatch[0].length);
+      const tMatch = fmBlock.match(/^title:\s*"?([^"\n]+)"?/m);
+      if (tMatch) title = tMatch[1].trim();
+      const cMatch = fmBlock.match(/^category:\s*"?([^"\n]+)"?/m);
+      if (cMatch) category = cMatch[1].trim();
+      const uMatch = fmBlock.match(/^updatedAt:\s*"?([^"\n]+)"?/m);
+      if (uMatch) updatedAt = uMatch[1].trim();
+      const tagsMatch = fmBlock.match(/^tags:\s*\[(.*)\]/m);
+      if (tagsMatch) {
+        tags = tagsMatch[1]
+          .split(',')
+          .map((t) => t.trim().replace(/^["']|["']$/g, ''))
+          .filter(Boolean);
+      }
+    }
+
+    // Split optional Fotos & Code-Ablage sections while keeping standard Markdown format
+    let body = content;
+    const images: Array<{ id: string; url: string; alt: string; caption?: string }> = [];
+    const snippets: Array<{ id: string; title: string; language: string; code: string }> = [];
+
+    const imgSectionMarker = '\n## 📸 Fotos & Abbildungen\n';
+    const codeSectionMarker = '\n## 💻 Code-Ablage\n';
+
+    const codeIdx = body.indexOf(codeSectionMarker);
+    let codeSection = '';
+    if (codeIdx !== -1) {
+      codeSection = body.slice(codeIdx + codeSectionMarker.length);
+      body = body.slice(0, codeIdx);
+    }
+
+    const imgIdx = body.indexOf(imgSectionMarker);
+    let imgSection = '';
+    if (imgIdx !== -1) {
+      imgSection = body.slice(imgIdx + imgSectionMarker.length);
+      body = body.slice(0, imgIdx);
+    }
+
+    // Parse images from imgSection
+    if (imgSection) {
+      const imgLines = imgSection.split(/\r?\n/);
+      imgLines.forEach((line, i) => {
+        const m = line.match(/^!\[([^\]]*)\]\(([^)]+)\)(?:\s*<!--\s*caption:(.*?)\s*-->)?/);
+        if (m) {
+          images.push({
+            id: `img_${i}_${Date.now()}`,
+            alt: m[1] || 'Foto',
+            url: m[2],
+            caption: m[3] ? m[3].trim() : undefined,
+          });
+        }
+      });
+    }
+
+    // Parse code snippets from codeSection (### Title \n ```lang \n code \n ```)
+    if (codeSection) {
+      const snippetRegex = /###\s+([^\r\n]+)\r?\n```([a-zA-Z0-9_-]*)\r?\n([\s\S]*?)```/g;
+      let match;
+      let idx = 0;
+      while ((match = snippetRegex.exec(codeSection)) !== null) {
+        snippets.push({
+          id: `snip_${idx++}_${Date.now()}`,
+          title: match[1].trim(),
+          language: match[2].trim() || 'bash',
+          code: match[3].replace(/\r?\n$/, ''),
+        });
+      }
+    }
+
+    return {
+      slug,
+      title,
+      category,
+      tags,
+      updatedAt,
+      body: body.trim(),
+      images,
+      snippets,
+      rawMarkdown: raw,
+    };
+  }
+
+  function serializeWikiMarkdown(article: any): string {
+    const safeTitle = (article.title || 'Unbenannt').replace(/"/g, '\\"');
+    const safeCategory = (article.category || 'Allgemein').replace(/"/g, '\\"');
+    const tagsArr = Array.isArray(article.tags) ? article.tags : [];
+    const tagsYaml = `[${tagsArr.map((t: string) => `"${String(t).replace(/"/g, '')}"`).join(', ')}]`;
+    const updatedAt = article.updatedAt || new Date().toISOString();
+
+    let md = `---\ntitle: "${safeTitle}"\ncategory: "${safeCategory}"\ntags: ${tagsYaml}\nupdatedAt: "${updatedAt}"\n---\n\n${(article.body || '').trim()}\n`;
+
+    if (Array.isArray(article.images) && article.images.length > 0) {
+      md += `\n## 📸 Fotos & Abbildungen\n\n`;
+      for (const img of article.images) {
+        const capComment = img.caption ? ` <!-- caption:${img.caption} -->` : '';
+        md += `![${img.alt || 'Anleitungsfoto'}](${img.url})${capComment}\n`;
+      }
+    }
+
+    if (Array.isArray(article.snippets) && article.snippets.length > 0) {
+      md += `\n## 💻 Code-Ablage\n`;
+      for (const snip of article.snippets) {
+        md += `\n### ${snip.title || 'Code-Snippet'}\n\`\`\`${snip.language || 'bash'}\n${snip.code || ''}\n\`\`\`\n`;
+      }
+    }
+
+    return md;
+  }
+
+  app.get('/api/wiki/articles', async (req, res) => {
+    const username = (req.query.username as string) || 'michael';
+    try {
+      const dirs = ensureUserProfileStructure(username);
+      const files = await fsp.readdir(dirs.wiki);
+      const articles = [];
+      for (const f of files) {
+        if (f.endsWith('.md')) {
+          const slug = f.replace(/\.md$/, '');
+          const raw = await fsp.readFile(path.join(dirs.wiki, f), 'utf-8');
+          articles.push(parseWikiMarkdown(slug, raw));
+        }
+      }
+      articles.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      res.json(articles);
+    } catch (err: any) {
+      log('error', `Fehler beim Laden der Wiki-Artikel: ${err.message}`, 'WIKI');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/wiki/articles', async (req, res) => {
+    const { username = 'michael', article, oldSlug } = req.body;
+    if (!article || !article.title) {
+      return res.status(400).json({ error: 'Artikel oder Titel fehlt' });
+    }
+    try {
+      const dirs = ensureUserProfileStructure(username);
+      const slugBase = (article.slug || article.title)
+        .toLowerCase()
+        .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+        .replace(/[^a-z0-9\-_]+/g, '-')
+        .replace(/^-+|-+$/g, '') || `wiki-${Date.now()}`;
+
+      const updatedArticle = {
+        ...article,
+        slug: slugBase,
+        updatedAt: new Date().toISOString(),
+      };
+      const mdContent = serializeWikiMarkdown(updatedArticle);
+      const targetPath = path.join(dirs.wiki, `${slugBase}.md`);
+      await fsp.writeFile(targetPath, mdContent, 'utf-8');
+
+      if (oldSlug && oldSlug !== slugBase) {
+        const oldPath = path.join(dirs.wiki, `${oldSlug}.md`);
+        if (fs.existsSync(oldPath)) {
+          await fsp.unlink(oldPath).catch(() => {});
+        }
+      }
+
+      log('info', `Wiki-Artikel gespeichert (Markdown): '${username}/Wiki/${slugBase}.md'`, 'WIKI');
+      res.json({ ...updatedArticle, rawMarkdown: mdContent });
+    } catch (err: any) {
+      log('error', `Fehler beim Speichern des Wiki-Artikels: ${err.message}`, 'WIKI');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/wiki/articles', async (req, res) => {
+    const username = (req.query.username as string) || 'michael';
+    const slug = req.query.slug as string;
+    if (!slug) return res.status(400).json({ error: 'Slug fehlt' });
+    try {
+      const dirs = ensureUserProfileStructure(username);
+      const safeSlug = path.basename(slug);
+      const fullPath = path.join(dirs.wiki, `${safeSlug}.md`);
+      if (fs.existsSync(fullPath)) {
+        await fsp.unlink(fullPath);
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/wiki/upload', async (req, res) => {
+    const { username = 'michael', filename = 'photo.png', dataUrl } = req.body;
+    if (!dataUrl || typeof dataUrl !== 'string') {
+      return res.status(400).json({ error: 'Bilddaten fehlen' });
+    }
+    try {
+      const match = dataUrl.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
+      if (!match) {
+        return res.status(400).json({ error: 'Ungültiges Bildformat' });
+      }
+      const extMap: Record<string, string> = {
+        jpeg: 'jpg',
+        jpg: 'jpg',
+        png: 'png',
+        webp: 'webp',
+        gif: 'gif',
+        'svg+xml': 'svg',
+      };
+      const ext = extMap[match[1].toLowerCase()] || 'png';
+      const baseName = path.basename(filename, path.extname(filename))
+        .replace(/[^a-zA-Z0-9\-_]/g, '_')
+        .slice(0, 40) || 'foto';
+      const savedName = `${Date.now()}_${baseName}.${ext}`;
+
+      const dirs = ensureUserProfileStructure(username);
+      const assetsDir = path.join(dirs.wiki, 'assets');
+      if (!fs.existsSync(assetsDir)) await fsp.mkdir(assetsDir, { recursive: true });
+
+      const buffer = Buffer.from(match[2], 'base64');
+      await fsp.writeFile(path.join(assetsDir, savedName), buffer);
+
+      const url = `/api/wiki/assets/${encodeURIComponent(username)}/${encodeURIComponent(savedName)}`;
+      log('info', `Wiki-Foto hochgeladen: ${savedName} (${buffer.length} Bytes)`, 'WIKI');
+      res.json({ success: true, url, filename: savedName });
+    } catch (err: any) {
+      log('error', `Fehler beim Wiki-Fotoupload: ${err.message}`, 'WIKI');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/wiki/assets/:username/:filename', async (req, res) => {
+    const { username, filename } = req.params;
+    try {
+      const dirs = ensureUserProfileStructure(path.basename(username));
+      const safeFile = path.basename(filename);
+      const fullPath = path.join(dirs.wiki, 'assets', safeFile);
+      if (!fs.existsSync(fullPath)) {
+        return res.status(404).send('Asset not found');
+      }
+      res.sendFile(fullPath);
+    } catch {
+      res.status(404).send('Asset not found');
+    }
+  });
+
+  // Share a Wiki article in-app to another user's Wiki folder (copying .md + local images)
+  app.post('/api/wiki/share', async (req, res) => {
+    const { fromUsername, toUsername, slug } = req.body;
+    if (!fromUsername || !toUsername || !slug) {
+      return res.status(400).json({ error: 'fromUsername, toUsername oder slug fehlt' });
+    }
+    try {
+      const srcDirs = ensureUserProfileStructure(path.basename(fromUsername));
+      const destDirs = ensureUserProfileStructure(path.basename(toUsername));
+      const safeSlug = path.basename(slug);
+      const srcFile = path.join(srcDirs.wiki, `${safeSlug}.md`);
+      if (!fs.existsSync(srcFile)) {
+        return res.status(404).json({ error: 'Wiki-Artikel nicht gefunden' });
+      }
+      let raw = await fsp.readFile(srcFile, 'utf-8');
+      const assetPrefix = `/api/wiki/assets/${encodeURIComponent(fromUsername)}/`;
+      const destAssetPrefix = `/api/wiki/assets/${encodeURIComponent(toUsername)}/`;
+      // Copy referenced images if stored in sender's Wiki/assets
+      const assetDirDest = path.join(destDirs.wiki, 'assets');
+      if (!fs.existsSync(assetDirDest)) await fsp.mkdir(assetDirDest, { recursive: true });
+      const regex = new RegExp(assetPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '([^)\\s]+)', 'g');
+      let match;
+      const toCopy = new Set<string>();
+      while ((match = regex.exec(raw)) !== null) {
+        toCopy.add(decodeURIComponent(match[1]));
+      }
+      for (const imgName of toCopy) {
+        const srcImg = path.join(srcDirs.wiki, 'assets', path.basename(imgName));
+        const destImg = path.join(assetDirDest, path.basename(imgName));
+        if (fs.existsSync(srcImg)) {
+          await fsp.copyFile(srcImg, destImg);
+        }
+      }
+      raw = raw.split(assetPrefix).join(destAssetPrefix);
+      const targetSlug = `${safeSlug}-von-${path.basename(fromUsername)}`;
+      await fsp.writeFile(path.join(destDirs.wiki, `${targetSlug}.md`), raw, 'utf-8');
+      log('info', `Wiki-Artikel '${safeSlug}' von '${fromUsername}' an '${toUsername}' geteilt`, 'WIKI');
+      res.json({ success: true, targetSlug });
+    } catch (err: any) {
+      log('error', `Fehler beim Teilen des Wiki-Artikels: ${err.message}`, 'WIKI');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // =========================================================================
+  // PER-USER COOKBOOK API (Independent Catalog, Cycle, Calendar & Sharing)
+  // =========================================================================
+  const DEFAULT_COOKBOOK_CATEGORIES = ['Frühstück', 'Mittagessen', 'Abendessen', 'Snack', 'Dessert', 'Vegetarisch', 'Schnelle Küche'];
+
+  function getDefaultRecipesForUser(username: string) {
+    if (username !== 'michael') return [];
+    return [
+      {
+        id: 'r_1',
+        title: 'Cremiges Kichererbsen-Curry mit Kokos',
+        category: 'Mittagessen',
+        prepTimeMinutes: 25,
+        portions: 3,
+        description: 'Aromatisches Curry mit Kokosmilch, frischem Spinat und Limette. Perfekt für Meal-Prep.',
+        instructions: [
+          'Zwiebeln, Knoblauch und Ingwer fein würfeln und in Kokosöl anbraten.',
+          'Currypulver, Kreuzkümmel und Kurkuma kurz mitrösten.',
+          'Kichererbsen und stückige Tomaten sowie Kokosmilch dazugeben, 15 Min köcheln lassen.',
+          'Frischen Blattspinat unterheben bis er zusammenfällt, mit Limettensaft und Salz abschmecken.'
+        ],
+        ingredients: [
+          { id: 'i1', name: 'Kichererbsen (Dose)', amount: '1 Dose (400g)' },
+          { id: 'i2', name: 'Kokosmilch', amount: '250ml' },
+          { id: 'i3', name: 'Babyspinat', amount: '150g' },
+          { id: 'i4', name: 'Basmatireis', amount: '200g' }
+        ],
+        tags: ['vegetarisch', 'schnell', 'meal-prep'],
+      },
+      {
+        id: 'r_2',
+        title: 'Mediterrane Ofengemüse-Bowl mit Feta',
+        category: 'Abendessen',
+        prepTimeMinutes: 30,
+        portions: 2,
+        description: 'Buntes Blechgemüse mit Rosmarin, Olivenöl und goldbraun gebackenem Feta.',
+        instructions: [
+          'Backofen auf 200°C Ober-/Unterhitze vorheizen.',
+          'Zucchini, Paprika und rote Zwiebeln in mundgerechte Stücke schneiden.',
+          'Mit Olivenöl, Rosmarin, Salz und Pfeffer auf einem Blech verteilen.',
+          'Feta in die Mitte legen und 25-30 Minuten im Ofen backen.'
+        ],
+        ingredients: [
+          { id: 'i5', name: 'Feta', amount: '200g' },
+          { id: 'i6', name: 'Zucchini', amount: '1 Stück' },
+          { id: 'i7', name: 'Paprika (rot & gelb)', amount: '2 Stück' },
+          { id: 'i8', name: 'Olivenöl extra vergine', amount: '3 EL' }
+        ],
+        tags: ['mediterran', 'low-carb', 'ofen'],
+      },
+      {
+        id: 'r_3',
+        title: 'Overnight Oats mit Beeren & Chiasamen',
+        category: 'Frühstück',
+        prepTimeMinutes: 5,
+        portions: 1,
+        description: 'Energiespendendes Frühstück, am Vorabend zusammengerührt.',
+        instructions: [
+          'Haferflocken, Chiasamen und Mandelmilch in einem Glas verrühren.',
+          'Mit einer Prise Zimt und Ahornsirup verfeinern.',
+          'Über Nacht im Kühlschrank quellen lassen.',
+          'Morgens mit frischen Beeren und Nüssen garnieren.'
+        ],
+        ingredients: [
+          { id: 'i9', name: 'Zarte Haferflocken', amount: '60g' },
+          { id: 'i10', name: 'Mandelmilch', amount: '140ml' },
+          { id: 'i11', name: 'Chiasamen', amount: '1 EL' },
+          { id: 'i12', name: 'Waldbeeren', amount: '50g' }
+        ],
+        tags: ['frühstück', 'protein', 'vegan'],
+      },
+      {
+        id: 'r_4',
+        title: 'Pasta mit Tomaten-Basilikum-Sugo',
+        category: 'Schnelle Küche',
+        prepTimeMinutes: 20,
+        portions: 2,
+        description: 'Klassische italienische Pasta mit sonnengereiften Tomaten und frischem Parmesan.',
+        instructions: [
+          'Nudeln in reichlich Salzwasser al dente kochen.',
+          'Knoblauch in Olivenöl sanft anbraten, gehackte Tomaten hinzugeben.',
+          '10 Minuten köcheln lassen, frischen Basilikum einrühren.',
+          'Pasta untermengen und mit frisch geriebenem Parmesan servieren.'
+        ],
+        ingredients: [
+          { id: 'i13', name: 'Spaghetti oder Penne', amount: '250g' },
+          { id: 'i14', name: 'San Marzano Tomaten', amount: '1 Dose' },
+          { id: 'i15', name: 'Frischer Basilikum', amount: '1 Bund' },
+          { id: 'i16', name: 'Parmigiano Reggiano', amount: '40g' }
+        ],
+        tags: ['italienisch', 'klassiker', 'schnell'],
+      }
+    ];
+  }
+
+  function getDefaultCycleForUser(username: string) {
+    const startDate = new Date().toISOString().split('T')[0];
+    if (username === 'michael') {
+      return {
+        id: 'c_default',
+        name: 'Standard-Wochenzyklus',
+        cycleLengthDays: 7,
+        startDate,
+        days: [
+          { dayIndex: 0, label: 'Tag 1 (Mo)', recipeIds: ['r_1'] },
+          { dayIndex: 1, label: 'Tag 2 (Di)', recipeIds: ['r_2'] },
+          { dayIndex: 2, label: 'Tag 3 (Mi)', recipeIds: ['r_4'] },
+          { dayIndex: 3, label: 'Tag 4 (Do)', recipeIds: ['r_1'] },
+          { dayIndex: 4, label: 'Tag 5 (Fr)', recipeIds: ['r_2'] },
+          { dayIndex: 5, label: 'Tag 6 (Sa)', recipeIds: ['r_3', 'r_4'] },
+          { dayIndex: 6, label: 'Tag 7 (So)', recipeIds: ['r_2'] },
+        ],
+      };
+    }
+    return {
+      id: `c_${username}`,
+      name: 'Mein Essenszyklus',
+      cycleLengthDays: 7,
+      startDate,
+      days: Array.from({ length: 7 }, (_, i) => ({
+        dayIndex: i,
+        label: `Tag ${i + 1}`,
+        recipeIds: [],
+      })),
+    };
+  }
+
+  async function readUserCookbookData(username: string) {
+    const dirs = ensureUserProfileStructure(username);
+    const recipesFile = path.join(dirs.cookbook, 'recipes.json');
+    const categoriesFile = path.join(dirs.cookbook, 'categories.json');
+    const cycleFile = path.join(dirs.cookbook, 'cycle.json');
+    const overridesFile = path.join(dirs.cookbook, 'overrides.json');
+    const sharingFile = path.join(dirs.cookbook, 'sharing.json');
+
+    let recipes: any[] = [];
+    if (fs.existsSync(recipesFile)) {
+      recipes = JSON.parse(await fsp.readFile(recipesFile, 'utf-8'));
+    } else {
+      recipes = getDefaultRecipesForUser(username);
+      await fsp.writeFile(recipesFile, JSON.stringify(recipes, null, 2), 'utf-8');
+    }
+
+    let categories: string[] = [...DEFAULT_COOKBOOK_CATEGORIES];
+    if (fs.existsSync(categoriesFile)) {
+      categories = JSON.parse(await fsp.readFile(categoriesFile, 'utf-8'));
+    } else {
+      await fsp.writeFile(categoriesFile, JSON.stringify(categories, null, 2), 'utf-8');
+    }
+
+    let cycle: any;
+    if (fs.existsSync(cycleFile)) {
+      cycle = JSON.parse(await fsp.readFile(cycleFile, 'utf-8'));
+    } else {
+      cycle = getDefaultCycleForUser(username);
+      await fsp.writeFile(cycleFile, JSON.stringify(cycle, null, 2), 'utf-8');
+    }
+
+    let overrides: Record<string, any> = {};
+    if (fs.existsSync(overridesFile)) {
+      overrides = JSON.parse(await fsp.readFile(overridesFile, 'utf-8'));
+    } else {
+      await fsp.writeFile(overridesFile, JSON.stringify(overrides, null, 2), 'utf-8');
+    }
+
+    let sharing = {
+      shareCatalog: false,
+      catalogSharedWith: ['*'],
+      shareCycleAndCalendar: false,
+      cycleSharedWith: ['*'],
+    };
+    if (fs.existsSync(sharingFile)) {
+      sharing = { ...sharing, ...JSON.parse(await fsp.readFile(sharingFile, 'utf-8')) };
+    } else {
+      await fsp.writeFile(sharingFile, JSON.stringify(sharing, null, 2), 'utf-8');
+    }
+
+    return { recipes, categories, cycle, overrides, sharing };
+  }
+
+  app.get('/api/cookbook', async (req, res) => {
+    const username = (req.query.username as string) || 'michael';
+    try {
+      const ownData = await readUserCookbookData(username);
+      const users = await getUsers();
+      const sharedCatalogs: any[] = [];
+      const sharedPlans: any[] = [];
+
+      for (const u of users) {
+        if (u.username === username) continue;
+        const other = await readUserCookbookData(u.username);
+        const catalogAllowed =
+          other.sharing.shareCatalog &&
+          (other.sharing.catalogSharedWith.includes('*') || other.sharing.catalogSharedWith.includes(username));
+        if (catalogAllowed) {
+          sharedCatalogs.push({
+            ownerUsername: u.username,
+            ownerDisplayName: u.displayName,
+            recipes: other.recipes.map((r: any) => ({ ...r, sharedFrom: u.displayName })),
+            categories: other.categories,
+          });
+        }
+
+        const planAllowed =
+          other.sharing.shareCycleAndCalendar &&
+          (other.sharing.cycleSharedWith.includes('*') || other.sharing.cycleSharedWith.includes(username));
+        if (planAllowed) {
+          sharedPlans.push({
+            ownerUsername: u.username,
+            ownerDisplayName: u.displayName,
+            cycle: other.cycle,
+            overrides: other.overrides,
+            recipes: other.recipes,
+          });
+        }
+      }
+
+      res.json({
+        ...ownData,
+        sharedCatalogs,
+        sharedPlans,
+      });
+    } catch (err: any) {
+      log('error', `Fehler beim Laden des Kochbuchs: ${err.message}`, 'COOKBOOK');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/cookbook/save', async (req, res) => {
+    const { username = 'michael', recipes, categories, cycle, overrides, sharing } = req.body;
+    try {
+      const dirs = ensureUserProfileStructure(username);
+      if (recipes !== undefined) {
+        await fsp.writeFile(path.join(dirs.cookbook, 'recipes.json'), JSON.stringify(recipes, null, 2), 'utf-8');
+      }
+      if (categories !== undefined) {
+        await fsp.writeFile(path.join(dirs.cookbook, 'categories.json'), JSON.stringify(categories, null, 2), 'utf-8');
+      }
+      if (cycle !== undefined) {
+        await fsp.writeFile(path.join(dirs.cookbook, 'cycle.json'), JSON.stringify(cycle, null, 2), 'utf-8');
+      }
+      if (overrides !== undefined) {
+        await fsp.writeFile(path.join(dirs.cookbook, 'overrides.json'), JSON.stringify(overrides, null, 2), 'utf-8');
+      }
+      if (sharing !== undefined) {
+        await fsp.writeFile(path.join(dirs.cookbook, 'sharing.json'), JSON.stringify(sharing, null, 2), 'utf-8');
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      log('error', `Fehler beim Speichern des Kochbuchs: ${err.message}`, 'COOKBOOK');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/cookbook/share-recipe', async (req, res) => {
+    const { fromUsername, toUsername, recipe } = req.body;
+    if (!fromUsername || !toUsername || !recipe) {
+      return res.status(400).json({ error: 'fromUsername, toUsername oder recipe fehlt' });
+    }
+    try {
+      const senderUsers = await getUsers();
+      const sender = senderUsers.find((u) => u.username === fromUsername);
+      const destData = await readUserCookbookData(toUsername);
+      const copiedRecipe = {
+        ...recipe,
+        id: `r_shared_${Date.now()}`,
+        sharedFrom: sender?.displayName || fromUsername,
+      };
+      const updatedRecipes = [...destData.recipes, copiedRecipe];
+      const dirs = ensureUserProfileStructure(toUsername);
+      await fsp.writeFile(path.join(dirs.cookbook, 'recipes.json'), JSON.stringify(updatedRecipes, null, 2), 'utf-8');
+
+      if (recipe.category && !destData.categories.includes(recipe.category)) {
+        const updatedCats = [...destData.categories, recipe.category];
+        await fsp.writeFile(path.join(dirs.cookbook, 'categories.json'), JSON.stringify(updatedCats, null, 2), 'utf-8');
+      }
+
+      log('info', `Rezept '${recipe.title}' von '${fromUsername}' an '${toUsername}' geteilt`, 'COOKBOOK');
+      res.json({ success: true, recipe: copiedRecipe });
+    } catch (err: any) {
+      log('error', `Fehler beim Teilen des Rezepts: ${err.message}`, 'COOKBOOK');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Vault Backup & Restore
   app.get('/api/vault/backup', async (req, res) => {
     const username = (req.query.username as string) || 'michael';
+    const profile = (req.query.profile as string) || 'profile1';
     try {
-      const notes = await scanUserNotes(username);
+      const notes = await scanUserNotes(username, profile);
       const backupNotes: { path: string; content: string; mtime: number }[] = [];
 
       for (const note of notes) {
-        const fullPath = path.join(getUserVaultDir(username), note.path);
+        const fullPath = path.join(getUserVaultDir(username, profile), note.path);
         if (fs.existsSync(fullPath)) {
           const content = await fsp.readFile(fullPath, 'utf-8');
           backupNotes.push({ path: note.path, content, mtime: note.mtime });
@@ -1230,14 +1942,15 @@ async function createServer() {
         version: '1.0',
         timestamp: new Date().toISOString(),
         username,
+        profile,
         vaultPath: VAULT_PATH,
         notesCount: backupNotes.length,
         notes: backupNotes,
         shares: userShares,
       };
 
-      log('info', `Backup für '${username}' erstellt mit ${backupNotes.length} Notizen`, 'BACKUP');
-      res.setHeader('Content-Disposition', `attachment; filename="ochrenotes_backup_${username}_${Date.now()}.json"`);
+      log('info', `Backup für '${username}' (${profile}) erstellt mit ${backupNotes.length} Notizen`, 'BACKUP');
+      res.setHeader('Content-Disposition', `attachment; filename="ochrenotes_backup_${username}_${profile}_${Date.now()}.json"`);
       res.setHeader('Content-Type', 'application/json');
       res.json(payload);
     } catch (err: any) {
@@ -1247,13 +1960,13 @@ async function createServer() {
   });
 
   app.post('/api/vault/restore', async (req, res) => {
-    const { username, backup } = req.body;
+    const { username, profile = 'profile1', backup } = req.body;
     if (!username || !backup || !Array.isArray(backup.notes)) {
       return res.status(400).json({ error: 'Ungültiges Backup-Format' });
     }
 
     try {
-      const userVault = getUserVaultDir(username);
+      const userVault = getUserVaultDir(username, profile);
       let restoredCount = 0;
 
       for (const item of backup.notes) {
@@ -1265,7 +1978,7 @@ async function createServer() {
         }
       }
 
-      log('info', `Backup erfolgreich wiederhergestellt: ${restoredCount} Notizen für '${username}'`, 'RESTORE');
+      log('info', `Backup erfolgreich wiederhergestellt: ${restoredCount} Notizen für '${username}' (${profile})`, 'RESTORE');
       res.json({ success: true, restoredCount });
     } catch (err: any) {
       log('error', `Fehler beim Wiederherstellen des Backups: ${err.message}`, 'RESTORE');
@@ -1323,7 +2036,10 @@ async function createServer() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
+        allowedHosts: true,
         hmr: false,
+        ws: false,
+        watch: null,
       },
       appType: 'spa',
     });

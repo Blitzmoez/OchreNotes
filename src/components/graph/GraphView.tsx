@@ -1,14 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../../services/api';
-import { GraphData, GraphNode, GraphLink } from '../../types';
+import { GraphData, GraphNode, GraphLink, NoteProfileId } from '../../types';
 import { Network, ZoomIn, ZoomOut, RotateCcw, FileText, Hash, Eye, EyeOff } from 'lucide-react';
 
 interface GraphViewProps {
   username: string;
+  noteProfile?: NoteProfileId;
+  accentColor?: string;
   onSelectNote: (noteTitle: string) => void;
 }
 
-export const GraphView: React.FC<GraphViewProps> = ({ username, onSelectNote }) => {
+export const GraphView: React.FC<GraphViewProps> = ({
+  username,
+  noteProfile = 'profile1',
+  accentColor = '#C87D20',
+  onSelectNote,
+}) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [data, setData] = useState<GraphData>({ nodes: [], links: [] });
   const [loading, setLoading] = useState(true);
@@ -29,7 +36,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ username, onSelectNote }) 
   const loadGraph = async () => {
     setLoading(true);
     try {
-      const graph = await api.fetchGraph(username);
+      const graph = await api.fetchGraph(username, noteProfile);
       const width = canvasRef.current?.width || 800;
       const height = canvasRef.current?.height || 600;
 
@@ -57,7 +64,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ username, onSelectNote }) 
 
   useEffect(() => {
     loadGraph();
-  }, [username]);
+  }, [username, noteProfile]);
 
   // Simulation & Rendering loop
   useEffect(() => {
@@ -181,7 +188,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ username, onSelectNote }) 
         if (node.type === 'tag') {
           ctx.fillStyle = isDark ? '#E5E7EB' : '#6B7280';
         } else {
-          ctx.fillStyle = '#C87D20';
+          ctx.fillStyle = accentColor;
         }
         ctx.fill();
 
@@ -211,7 +218,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ username, onSelectNote }) 
       isRunning = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [hoveredNode, showTags]);
+  }, [hoveredNode, showTags, accentColor]);
 
   // Handle Resize
   useEffect(() => {
@@ -327,7 +334,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ username, onSelectNote }) 
       {/* Top Graph Controls Bar */}
       <div className="h-10 px-4 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between z-10 bg-[#FBFBFA]/80 dark:bg-[#18191B]/80 backdrop-blur-xs">
         <div className="flex items-center gap-2">
-          <Network className="w-4 h-4 text-[#C87D20]" />
+          <Network className="w-4 h-4 text-[var(--ochre-accent)]" />
           <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200">
             Wissensgraph
           </span>
@@ -342,7 +349,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ username, onSelectNote }) 
             onClick={() => setShowTags(!showTags)}
             className={`flex items-center gap-1 px-2 py-1 text-xs rounded border transition-colors ${
               showTags
-                ? 'bg-amber-50 dark:bg-amber-950/30 text-[#C87D20] border-[#C87D20]/40 font-medium'
+                ? 'bg-amber-50 dark:bg-amber-950/30 text-[var(--ochre-accent)] border-[var(--ochre-accent)]/40 font-medium'
                 : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-500 border-[#E5E3DC] dark:border-neutral-700'
             }`}
             title={showTags ? '#-Tags im Graph ausblenden' : '#-Tags im Graph einblenden'}
@@ -402,7 +409,7 @@ export const GraphView: React.FC<GraphViewProps> = ({ username, onSelectNote }) 
         {hoveredNode && (
           <div className="absolute bottom-4 left-4 p-2.5 rounded-lg bg-neutral-900/90 text-white text-xs shadow-lg backdrop-blur-xs flex items-center gap-2 pointer-events-none">
             {hoveredNode.type === 'note' ? (
-              <FileText className="w-3.5 h-3.5 text-[#C87D20]" />
+              <FileText className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
             ) : (
               <Hash className="w-3.5 h-3.5 text-neutral-300" />
             )}

@@ -1,17 +1,43 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { User, NoteMetadata, NoteContent, PaneType, SuiteModuleId, EnabledModules } from './types';
+import { User, NoteMetadata, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId, WikiArticle, Recipe } from './types';
 import { api } from './services/api';
+import { DEFAULT_ENABLED_MODULES, DEFAULT_PROFILE_SETTINGS } from './services/profileDefaults';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { Workspace } from './components/workspace/Workspace';
-import { CookbookView } from './components/recipes/CookbookView';
+import { WikiView } from './components/wiki/WikiView';
+import { CookbookView, CookbookSnapshot } from './components/recipes/CookbookView';
 import { FinanceView } from './components/finance/FinanceView';
 import { ShareModal } from './components/modals/ShareModal';
 import { SystemLogsModal } from './components/modals/SystemLogsModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { LoginScreen } from './components/auth/LoginScreen';
-import { BookOpen, CheckSquare, Network, ChevronRight, ChevronLeft, X, Folder } from 'lucide-react';
-import { printNoteA4 } from './services/printService';
+import { BookOpen, CheckSquare, Network, ChevronRight, ChevronLeft, X } from 'lucide-react';
+import { printNoteA4, printWikiArticleA4, printMealPlanA4 } from './services/printService';
+
+const mergeProfileSettings = (raw?: Partial<SuiteProfileSettings> | null): SuiteProfileSettings => {
+  if (!raw) return DEFAULT_PROFILE_SETTINGS;
+  return {
+    enableSecondProfile: raw.enableSecondProfile ?? DEFAULT_PROFILE_SETTINGS.enableSecondProfile,
+    activeProfileId: raw.activeProfileId === 'profile2' ? 'profile2' : 'profile1',
+    profile1: {
+      id: 'profile1',
+      name: raw.profile1?.name ?? DEFAULT_PROFILE_SETTINGS.profile1.name,
+      colors: {
+        ...DEFAULT_PROFILE_SETTINGS.profile1.colors,
+        ...(raw.profile1?.colors || {}),
+      },
+    },
+    profile2: {
+      id: 'profile2',
+      name: raw.profile2?.name ?? DEFAULT_PROFILE_SETTINGS.profile2.name,
+      colors: {
+        ...DEFAULT_PROFILE_SETTINGS.profile2.colors,
+        ...(raw.profile2?.colors || {}),
+      },
+    },
+  };
+};
 
 export default function App() {
   // Theme State
@@ -19,27 +45,28 @@ export default function App() {
     return localStorage.getItem('ochrenotes_theme') === 'dark';
   });
 
-  // Ochre Suite Active Module: 'notes' | 'recipes' | 'finance'
+  // Ochre Suite Active Module: 'notes' | 'wiki' | 'recipes' | 'finance'
   const [activeSuiteModule, setActiveSuiteModule] = useState<SuiteModuleId>('notes');
 
-  // Enabled Suite Modules State (persisted per device/browser)
+  // Enabled Suite Modules State (persisted per device & server)
   const [enabledModules, setEnabledModules] = useState<EnabledModules>(() => {
-    const saved = localStorage.getItem('ochre_enabled_modules');
-    return saved ? JSON.parse(saved) : { notes: true, recipes: true, finance: true };
+    try {
+      const saved = localStorage.getItem('ochre_enabled_modules');
+      return saved ? { ...DEFAULT_ENABLED_MODULES, ...JSON.parse(saved) } : DEFAULT_ENABLED_MODULES;
+    } catch {
+      return DEFAULT_ENABLED_MODULES;
+    }
   });
 
-  const handleToggleModule = (moduleId: SuiteModuleId) => {
-    if (moduleId === 'notes') return; // Notes is always base
-    setEnabledModules(prev => {
-      const next = { ...prev, [moduleId]: !prev[moduleId] };
-      localStorage.setItem('ochre_enabled_modules', JSON.stringify(next));
-      // If active module was turned off, switch back to notes
-      if (activeSuiteModule === moduleId && !next[moduleId]) {
-        setActiveSuiteModule('notes');
-      }
-      return next;
-    });
-  };
+  // Dual-Profile Settings & Per-Profile Ochre Colors
+  const [profileSettings, setProfileSettings] = useState<SuiteProfileSettings>(() => {
+    try {
+      const saved = localStorage.getItem('ochre_profile_settings');
+      return saved ? mergeProfileSettings(JSON.parse(saved)) : DEFAULT_PROFILE_SETTINGS;
+    } catch {
+      return DEFAULT_PROFILE_SETTINGS;
+    }
+  });
 
   // User State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -67,10 +94,14 @@ export default function App() {
   // Mobile Floating Ellipse Navigation State
   const [isMobileNavExpanded, setIsMobileNavExpanded] = useState(false);
 
-  // Modals
+  // Modals & Active Module Snapshots (Wiki, Cookbook)
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [isSystemLogsModalOpen, setIsSystemLogsModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [activeWikiArticle, setActiveWikiArticle] = useState<WikiArticle | null>(null);
+  const [shareModalRecipe, setShareModalRecipe] = useState<Recipe | null>(null);
+  const [cookbookRefreshKey, setCookbookRefreshKey] = useState<number>(0);
+  const cookbookSnapshotRef = useRef<CookbookSnapshot | null>(null);
 
   // Online / Sync State
   const [isOnline, setIsOnline] = useState<boolean>(api.getOnlineStatus());
@@ -166,14 +197,82 @@ export default function App() {
     document.title = `${newTitle} - Notes`;
   };
 
-  // Load vault notes when user changes
+  // Active Profile & Dynamic Ochre Color Computation
+  const activeProfileId: NoteProfileId = profileSettings.enableSecondProfile
+    ? profileSettings.activeProfileId
+    : 'profile1';
+  const activeProfile = profileSettings[activeProfileId] || profileSettings.profile1;
+  const activeAccentColor =
+    activeSuiteModule === 'notes'
+      ? activeProfile.colors.notes
+      : profileSettings.profile1.colors[activeSuiteModule] || activeProfile.colors.notes;
+
+  const handleUpdateProfileSettings = (next: SuiteProfileSettings) => {
+    setProfileSettings(next);
+    localStorage.setItem('ochre_profile_settings', JSON.stringify(next));
+    if (currentUser) {
+      localStorage.setItem(`ochre_profile_settings_${currentUser.username}`, JSON.stringify(next));
+      api.saveProfileSettings(currentUser.username, next, enabledModules).catch(console.error);
+    }
+  };
+
+  const handleSwitchProfile = (pid: NoteProfileId) => {
+    if (pid === activeProfileId) return;
+    const next: SuiteProfileSettings = { ...profileSettings, activeProfileId: pid };
+    handleUpdateProfileSettings(next);
+    setActiveNotePath(null);
+    setActiveNoteTitle(next[pid].name);
+    setActiveNoteContent('');
+    setActiveIsShared(false);
+    setActiveSharedFrom(undefined);
+    setActivePermission('write');
+  };
+
+  const handleToggleModule = (moduleId: SuiteModuleId) => {
+    if (moduleId === 'notes') return; // Notes is always base
+    setEnabledModules(prev => {
+      const next = { ...prev, [moduleId]: !prev[moduleId] };
+      localStorage.setItem('ochre_enabled_modules', JSON.stringify(next));
+      if (currentUser) {
+        api.saveProfileSettings(currentUser.username, profileSettings, next).catch(console.error);
+      }
+      if (activeSuiteModule === moduleId && !next[moduleId]) {
+        setActiveSuiteModule('notes');
+      }
+      return next;
+    });
+  };
+
+  // Load saved profile settings whenever currentUser changes
+  useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    api.fetchProfileSettings(currentUser.username).then((data) => {
+      if (cancelled) return;
+      if (data?.profileSettings) {
+        const merged = mergeProfileSettings(data.profileSettings);
+        setProfileSettings(merged);
+        localStorage.setItem('ochre_profile_settings', JSON.stringify(merged));
+      }
+      if (data?.enabledModules) {
+        const mergedMods = { ...DEFAULT_ENABLED_MODULES, ...data.enabledModules };
+        setEnabledModules(mergedMods);
+        localStorage.setItem('ochre_enabled_modules', JSON.stringify(mergedMods));
+      }
+    }).catch((err) => console.error('Failed to load profile settings', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
+  // Load vault notes when user or active profile changes
   const loadVaultData = useCallback(async () => {
     if (!currentUser) return;
     try {
       const [userNotes, shared, userFolders] = await Promise.all([
-        api.fetchNotes(currentUser.username),
+        api.fetchNotes(currentUser.username, activeProfileId),
         api.fetchSharedWithMe(currentUser.username),
-        api.fetchFolders(currentUser.username),
+        api.fetchFolders(currentUser.username, activeProfileId),
       ]);
       setNotes(userNotes);
       setSharedNotes(shared);
@@ -182,11 +281,14 @@ export default function App() {
       // Open first note if none opened
       if (!activeNotePath && userNotes.length > 0) {
         openNote(userNotes[0].path, false);
+      } else if (userNotes.length === 0 && !activeNotePath) {
+        setActiveNoteTitle(`${activeProfile.name} (leer)`);
+        setActiveNoteContent('');
       }
     } catch (e) {
       console.error('Error loading vault data', e);
     }
-  }, [currentUser, activeNotePath]);
+  }, [currentUser, activeNotePath, activeProfileId, activeProfile.name]);
 
   useEffect(() => {
     if (currentUser) {
@@ -198,7 +300,7 @@ export default function App() {
   const openNote = async (notePath: string, isShared = false, sharedFrom = '') => {
     if (!currentUser) return;
     try {
-      const data = await api.readNote(currentUser.username, notePath, isShared, sharedFrom);
+      const data = await api.readNote(currentUser.username, notePath, isShared, sharedFrom, activeProfileId);
       setActiveNotePath(data.path);
       setActiveNoteTitle(data.title);
       setActiveNoteContent(data.content);
@@ -228,7 +330,7 @@ export default function App() {
     } else {
       // Create new note with this title if not found
       const newPath = `${cleanTitle}.md`;
-      await api.createNote(currentUser.username, newPath, `# ${cleanTitle}\n\n`);
+      await api.createNote(currentUser.username, newPath, `# ${cleanTitle}\n\n`, activeProfileId);
       await loadVaultData();
       await openNote(newPath);
     }
@@ -245,7 +347,8 @@ export default function App() {
       activeNotePath,
       newContent,
       activeIsShared,
-      activeSharedFrom
+      activeSharedFrom,
+      activeProfileId
     ).then(() => {
       setLastSaved(Date.now());
       setPendingSyncCount(api.getPendingSyncCount());
@@ -264,7 +367,7 @@ export default function App() {
     }
 
     const defaultContent = `# ${title} ${counter > 1 ? counter : ''}\n\nSchreibe hier...`;
-    await api.createNote(currentUser.username, path, defaultContent);
+    await api.createNote(currentUser.username, path, defaultContent, activeProfileId);
     await loadVaultData();
     await openNote(path);
   };
@@ -273,7 +376,7 @@ export default function App() {
   const handleCreateFolder = async (folderPath: string) => {
     if (!currentUser || !folderPath.trim()) return false;
     const clean = folderPath.trim().replace(/^\/+|\/+$/g, '');
-    const ok = await api.createFolder(currentUser.username, clean);
+    const ok = await api.createFolder(currentUser.username, clean, activeProfileId);
     if (ok) {
       await loadVaultData();
     }
@@ -283,7 +386,7 @@ export default function App() {
   // Delete folder in vault (safe: only empty)
   const handleDeleteFolder = async (folderPath: string) => {
     if (!currentUser || !folderPath) return false;
-    const res = await api.deleteFolder(currentUser.username, folderPath);
+    const res = await api.deleteFolder(currentUser.username, folderPath, activeProfileId);
     if (res.success) {
       await loadVaultData();
       return true;
@@ -297,7 +400,7 @@ export default function App() {
   const handleMoveNote = async (oldPath: string, newPath: string) => {
     if (!currentUser) return;
     try {
-      await api.moveNote(currentUser.username, oldPath, newPath);
+      await api.moveNote(currentUser.username, oldPath, newPath, activeProfileId);
       await loadVaultData();
       if (activeNotePath === oldPath) {
         setActiveNotePath(newPath);
@@ -318,7 +421,7 @@ export default function App() {
     if (newPath === oldPath) return;
 
     try {
-      await api.moveNote(currentUser.username, oldPath, newPath);
+      await api.moveNote(currentUser.username, oldPath, newPath, activeProfileId);
       await loadVaultData();
       await openNote(newPath);
     } catch (e) {
@@ -329,7 +432,7 @@ export default function App() {
   // Delete note
   const handleDeleteNote = async (notePath: string) => {
     if (!currentUser) return;
-    await api.deleteNote(currentUser.username, notePath);
+    await api.deleteNote(currentUser.username, notePath, activeProfileId);
     await loadVaultData();
     if (activeNotePath === notePath) {
       const remaining = notes.filter((n) => n.path !== notePath);
@@ -352,7 +455,8 @@ export default function App() {
       lineIndex,
       completed,
       activeIsShared,
-      activeSharedFrom
+      activeSharedFrom,
+      activeProfileId
     );
     loadVaultData();
   };
@@ -365,9 +469,31 @@ export default function App() {
     setActiveNotePath(null);
   };
 
-  // A4 Print Handler (Direct clean print of active note)
+  // A4 Print Handler (Module-aware: Notes, Wiki Article, Cookbook Weekly Plan)
   const handlePrintA4 = () => {
-    printNoteA4(activeNoteTitle, activeNoteContent);
+    if (activeSuiteModule === 'wiki') {
+      if (activeWikiArticle) {
+        printWikiArticleA4(activeWikiArticle, profileSettings.profile1.colors.wiki);
+      }
+      return;
+    }
+    if (activeSuiteModule === 'recipes') {
+      if (cookbookSnapshotRef.current) {
+        printMealPlanA4({
+          cycle: cookbookSnapshotRef.current.cycle,
+          recipes: cookbookSnapshotRef.current.recipes,
+          overrides: cookbookSnapshotRef.current.overrides,
+          weekOffset: cookbookSnapshotRef.current.weekOffset,
+          ownerName: cookbookSnapshotRef.current.ownerName,
+          accentColor: profileSettings.profile1.colors.recipes,
+        });
+      }
+      return;
+    }
+    if (activeSuiteModule === 'finance') {
+      return;
+    }
+    printNoteA4(activeNoteTitle, activeNoteContent, activeProfile.colors.notes);
   };
 
   // Document statistics computation
@@ -428,8 +554,11 @@ export default function App() {
   }, [isMobileSidebarOpen]);
 
   return (
-    <div className={`flex flex-col h-screen w-screen overflow-hidden ${isDarkMode ? 'dark' : ''} bg-[#FBFBFA] dark:bg-[#18191B] text-neutral-900 dark:text-neutral-100 font-sans`}>
-      {/* Top Bar Header with Modular Ochre Suite Logo & Consolidated Menus */}
+    <div
+      style={{ '--ochre-accent': activeAccentColor } as React.CSSProperties}
+      className={`flex flex-col h-screen w-screen overflow-hidden ${isDarkMode ? 'dark' : ''} bg-[#FBFBFA] dark:bg-[#18191B] text-neutral-900 dark:text-neutral-100 font-sans`}
+    >
+      {/* Top Bar Header with Modular Ochre Suite Logo, Profile Slider & Consolidated Menus */}
       <Header
         currentUser={currentUser}
         activeNoteTitle={activeNoteTitle}
@@ -443,7 +572,16 @@ export default function App() {
         pendingSyncCount={pendingSyncCount}
         lastSaved={lastSaved}
         documentStats={documentStats}
-        onOpenShareModal={() => setIsShareModalOpen(true)}
+        onOpenShareModal={() => {
+          if (activeSuiteModule === 'recipes') {
+            setShareModalRecipe(
+              cookbookSnapshotRef.current?.selectedRecipe ||
+                cookbookSnapshotRef.current?.recipes?.[0] ||
+                null
+            );
+          }
+          setIsShareModalOpen(true);
+        }}
         onPrintA4={handlePrintA4}
         onOpenSystemLogs={() => setIsSystemLogsModalOpen(true)}
         onOpenSettings={() => setIsSettingsModalOpen(true)}
@@ -464,18 +602,50 @@ export default function App() {
         activeSuiteModule={activeSuiteModule}
         onSelectSuiteModule={setActiveSuiteModule}
         enabledModules={enabledModules}
+        profileSettings={profileSettings}
+        onSwitchProfile={handleSwitchProfile}
       />
 
-      {/* Main Container: Renders active Suite Module (Notes, Recipes, Finance) */}
+      {/* Main Container: Renders active Suite Module (Notes, Wiki, Recipes, Finance) */}
+      {activeSuiteModule === 'wiki' && (
+        <div className="flex-1 flex overflow-hidden">
+          <WikiView
+            username={currentUser?.username || 'michael'}
+            accentColor={profileSettings.profile1.colors.wiki}
+            onActiveArticleChange={setActiveWikiArticle}
+          />
+        </div>
+      )}
+
       {activeSuiteModule === 'recipes' && (
         <div className="flex-1 flex overflow-hidden">
-          <CookbookView />
+          <CookbookView
+            currentUser={
+              currentUser || {
+                id: 'user_michael',
+                username: 'michael',
+                displayName: 'Michael',
+                avatar: '',
+                role: 'admin',
+              }
+            }
+            allUsers={allUsers}
+            accentColor={profileSettings.profile1.colors.recipes}
+            refreshKey={cookbookRefreshKey}
+            onSnapshotChange={(snap) => {
+              cookbookSnapshotRef.current = snap;
+            }}
+            onShareRecipe={(rec) => {
+              setShareModalRecipe(rec);
+              setIsShareModalOpen(true);
+            }}
+          />
         </div>
       )}
 
       {activeSuiteModule === 'finance' && (
         <div className="flex-1 flex overflow-hidden">
-          <FinanceView />
+          <FinanceView accentColor={profileSettings.profile1.colors.finance} />
         </div>
       )}
 
@@ -484,10 +654,11 @@ export default function App() {
           {/* Mobile Left Screen Edge Swipe Indicator & Vault Toggle Button */}
           <button
             onClick={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
-            className={`lg:hidden fixed top-1/2 -translate-y-1/2 z-40 h-14 flex items-center justify-center transition-all duration-300 active:scale-95 cursor-pointer shadow-lg ${
+            style={{ backgroundColor: activeProfile.colors.notes }}
+            className={`lg:hidden fixed top-1/2 -translate-y-1/2 z-40 h-14 flex items-center justify-center transition-all duration-300 active:scale-95 cursor-pointer shadow-lg text-white ${
               isMobileSidebarOpen 
-                ? 'left-[280px] w-7 rounded-r-xl bg-[#C87D20] text-white' 
-                : 'left-0 w-5 rounded-r-xl bg-[#C87D20]/90 hover:bg-[#C87D20] text-white/90 hover:w-6.5'
+                ? 'left-[280px] w-7 rounded-r-xl' 
+                : 'left-0 w-5 rounded-r-xl opacity-90 hover:opacity-100 hover:w-6.5'
             }`}
             title={isMobileSidebarOpen ? 'Vault schließen' : 'Vault Explorer (nach rechts wischen oder tippen)'}
             aria-label="Vault Explorer umschalten"
@@ -496,7 +667,7 @@ export default function App() {
               <ChevronLeft className="w-4 h-4" />
             ) : (
               <div className="flex flex-col items-center gap-1 py-1">
-                <ChevronRight className="w-3.5 h-3.5 animate-pulse" />
+                <ChevronRight className="w-3.5 h-3.5" />
                 <span className="w-1 h-3 rounded-full bg-white/70"></span>
               </div>
             )}
@@ -517,6 +688,7 @@ export default function App() {
             onMoveNote={handleMoveNote}
             isOpen={isMobileSidebarOpen}
             onCloseMobile={() => setIsMobileSidebarOpen(false)}
+            activeProfileName={profileSettings.enableSecondProfile ? activeProfile.name : undefined}
           />
 
           {/* Central Workspace Pane */}
@@ -527,17 +699,19 @@ export default function App() {
             isReadOnly={activePermission === 'read'}
             onSave={() => {
               if (currentUser && activeNotePath) {
-                api.saveNote(currentUser.username, activeNotePath, activeNoteContent, activeIsShared, activeSharedFrom);
+                api.saveNote(currentUser.username, activeNotePath, activeNoteContent, activeIsShared, activeSharedFrom, activeProfileId);
                 setLastSaved(Date.now());
               }
             }}
             lastSaved={lastSaved}
             onToggleTask={handleToggleTask}
             onWikilinkClick={openNoteByTitle}
-            onTagClick={(tag) => {
+            onTagClick={() => {
               setViewMode('tasks');
             }}
             username={currentUser?.username || 'michael'}
+            noteProfile={activeProfileId}
+            accentColor={activeProfile.colors.notes}
             onOpenNoteByTitle={openNoteByTitle}
             allNotes={[...notes, ...sharedNotes]}
             activeNotePath={activeNotePath}
@@ -553,7 +727,7 @@ export default function App() {
       {activeSuiteModule === 'notes' && isMobileNavExpanded && (
         <div 
           onClick={() => setIsMobileNavExpanded(false)}
-          className="fixed inset-0 bg-[#C87D20]/10 dark:bg-black/50 backdrop-blur-2xs z-40 lg:hidden animate-in fade-in duration-150"
+          className="fixed inset-0 bg-black/25 dark:bg-black/50 backdrop-blur-2xs z-40 lg:hidden animate-in fade-in duration-150"
         />
       )}
 
@@ -561,15 +735,19 @@ export default function App() {
       {activeSuiteModule === 'notes' && (
         <div className="lg:hidden select-none">
           {isMobileNavExpanded ? (
-            <div className="fixed bottom-5 right-4 z-50 h-14 px-2.5 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 border-[#D98B26] flex items-center gap-1.5 text-neutral-800 dark:text-neutral-200 animate-in fade-in zoom-in-95 duration-200">
+            <div
+              style={{ borderColor: activeProfile.colors.notes }}
+              className="fixed bottom-5 right-4 z-50 h-14 px-2.5 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center gap-1.5 text-neutral-800 dark:text-neutral-200 animate-in fade-in zoom-in-95 duration-200"
+            >
               <button
                 onClick={() => {
                   setViewMode('editor');
                   setIsMobileNavExpanded(false);
                 }}
+                style={viewMode === 'editor' ? { backgroundColor: activeProfile.colors.notes } : undefined}
                 className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 ${
                   viewMode === 'editor'
-                    ? 'bg-[#D98B26] text-white shadow-xs'
+                    ? 'text-white shadow-xs'
                     : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
                 }`}
                 title="Notizen-Editor"
@@ -583,9 +761,10 @@ export default function App() {
                   setViewMode('tasks');
                   setIsMobileNavExpanded(false);
                 }}
+                style={viewMode === 'tasks' ? { backgroundColor: activeProfile.colors.notes } : undefined}
                 className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 ${
                   viewMode === 'tasks'
-                    ? 'bg-[#D98B26] text-white shadow-xs'
+                    ? 'text-white shadow-xs'
                     : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
                 }`}
                 title="Aufgaben & Listen"
@@ -599,9 +778,10 @@ export default function App() {
                   setViewMode('graph');
                   setIsMobileNavExpanded(false);
                 }}
+                style={viewMode === 'graph' ? { backgroundColor: activeProfile.colors.notes } : undefined}
                 className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 ${
                   viewMode === 'graph'
-                    ? 'bg-[#D98B26] text-white shadow-xs'
+                    ? 'text-white shadow-xs'
                     : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
                 }`}
                 title="Wissensgraph"
@@ -624,14 +804,18 @@ export default function App() {
           ) : (
             <button
               onClick={() => setIsMobileNavExpanded(true)}
-              className="fixed bottom-5 right-4 z-40 w-13 h-13 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] text-[#D98B26] shadow-2xl border-2 border-[#D98B26] flex items-center justify-center transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
+              style={{ borderColor: activeProfile.colors.notes, color: activeProfile.colors.notes }}
+              className="fixed bottom-5 right-4 z-40 w-13 h-13 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center justify-center transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
               title="Navigation umschalten (Notizen, Aufgaben, Graph)"
               aria-label="Navigation umschalten"
             >
-              {viewMode === 'editor' && <BookOpen className="w-5 h-5 text-[#D98B26]" />}
-              {viewMode === 'tasks' && <CheckSquare className="w-5 h-5 text-[#D98B26]" />}
-              {viewMode === 'graph' && <Network className="w-5 h-5 text-[#D98B26]" />}
-              <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-[#D98B26] rounded-full border-2 border-white dark:border-[#1E1F23]"></span>
+              {viewMode === 'editor' && <BookOpen className="w-5 h-5" />}
+              {viewMode === 'tasks' && <CheckSquare className="w-5 h-5" />}
+              {viewMode === 'graph' && <Network className="w-5 h-5" />}
+              <span
+                style={{ backgroundColor: activeProfile.colors.notes }}
+                className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white dark:border-[#1E1F23]"
+              ></span>
             </button>
           )}
         </div>
@@ -642,9 +826,20 @@ export default function App() {
         <ShareModal
           isOpen={isShareModalOpen}
           onClose={() => setIsShareModalOpen(false)}
+          mode={
+            activeSuiteModule === 'wiki'
+              ? 'wiki'
+              : activeSuiteModule === 'recipes'
+                ? 'recipe'
+                : 'note'
+          }
+          accentColor={activeAccentColor}
           noteTitle={activeNoteTitle}
           notePath={activeNotePath || ''}
           noteContent={activeNoteContent}
+          wikiArticle={activeWikiArticle}
+          activeRecipe={shareModalRecipe || cookbookSnapshotRef.current?.selectedRecipe || null}
+          recipesList={cookbookSnapshotRef.current?.recipes || []}
           currentUser={currentUser}
           allUsers={allUsers}
         />
@@ -660,6 +855,7 @@ export default function App() {
           isOpen={isSettingsModalOpen}
           onClose={() => setIsSettingsModalOpen(false)}
           currentUser={currentUser}
+          allUsers={allUsers}
           onRefreshVault={loadVaultData}
           onUpdateUser={(updatedUser) => {
             setCurrentUser(updatedUser);
@@ -673,6 +869,10 @@ export default function App() {
           activeNoteContent={activeNoteContent}
           enabledModules={enabledModules}
           onToggleModule={handleToggleModule}
+          profileSettings={profileSettings}
+          onUpdateProfileSettings={handleUpdateProfileSettings}
+          initialModuleContext={activeSuiteModule}
+          onCookbookUpdated={() => setCookbookRefreshKey((k) => k + 1)}
         />
       )}
 

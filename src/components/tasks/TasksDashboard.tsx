@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { TaskItem } from '../../types';
+import { TaskItem, NoteProfileId } from '../../types';
 import { api } from '../../services/api';
 import { useTranslation } from '../../services/i18n';
 import { 
@@ -23,6 +23,7 @@ import {
 
 interface TasksDashboardProps {
   username: string;
+  noteProfile?: NoteProfileId;
   onOpenNote: (noteTitle: string) => void;
   onTaskToggled?: () => void;
 }
@@ -40,6 +41,7 @@ interface CustomTaskList {
 
 export const TasksDashboard: React.FC<TasksDashboardProps> = ({
   username,
+  noteProfile = 'profile1',
   onOpenNote,
   onTaskToggled,
 }) => {
@@ -138,7 +140,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
   const loadTasks = async () => {
     setLoading(true);
     try {
-      const data = await api.fetchTasks(username);
+      const data = await api.fetchTasks(username, noteProfile);
       setTasks(data);
     } catch (e) {
       console.error('Failed to load tasks', e);
@@ -149,7 +151,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
 
   useEffect(() => {
     loadTasks();
-  }, [username]);
+  }, [username, noteProfile]);
 
   const handleToggle = async (task: TaskItem) => {
     const newStatus = !task.completed;
@@ -163,7 +165,8 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
       task.lineIndex,
       newStatus,
       task.isShared,
-      task.sharedFrom
+      task.sharedFrom,
+      noteProfile
     );
 
     if (onTaskToggled) onTaskToggled();
@@ -285,7 +288,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#E5E3DC] dark:border-[#2F3136]">
           <div>
             <h1 className="text-xl md:text-2xl font-bold tracking-tight text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-              <CheckSquare className="w-5 h-5 text-[#C87D20]" />
+              <CheckSquare className="w-5 h-5 text-[var(--ochre-accent)]" />
               <span>Aufgaben & Eigene Listen</span>
             </h1>
             <p className="text-xs text-neutral-500 mt-0.5">
@@ -295,7 +298,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
 
           <button
             onClick={loadTasks}
-            className="self-start sm:self-auto text-xs px-3 py-1.5 rounded-md bg-[#F4F3EF] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[#C87D20] text-neutral-700 dark:text-neutral-300 font-medium transition-colors"
+            className="self-start sm:self-auto text-xs px-3 py-1.5 rounded-md bg-[#F4F3EF] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[var(--ochre-accent)] text-neutral-700 dark:text-neutral-300 font-medium transition-colors"
           >
             Aktualisieren
           </button>
@@ -309,7 +312,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
             </span>
             <button
               onClick={() => setIsCreateListOpen(true)}
-              className="flex items-center gap-1 text-xs text-[#C87D20] hover:text-[#b06c19] font-medium"
+              className="flex items-center gap-1 text-xs text-[var(--ochre-accent)] hover:text-[#b06c19] font-medium"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Neue Liste erstellen</span>
@@ -322,12 +325,12 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
               onClick={() => setSelectedListId('all')}
               className={`p-2.5 rounded-lg border text-left transition-all relative ${
                 selectedListId === 'all'
-                  ? 'border-[#C87D20] bg-amber-50/50 dark:bg-amber-950/20 text-[#C87D20] shadow-xs'
+                  ? 'border-[var(--ochre-accent)] bg-amber-50/50 dark:bg-amber-950/20 text-[var(--ochre-accent)] shadow-xs'
                   : 'border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#1A1B1E] text-neutral-700 dark:text-neutral-300 hover:border-neutral-300'
               }`}
             >
               <div className="flex items-center justify-between">
-                <ListTodo className="w-4 h-4 text-[#C87D20]" />
+                <ListTodo className="w-4 h-4 text-[var(--ochre-accent)]" />
                 <span className="text-xs font-bold tabular-nums">{openCount}</span>
               </div>
               <span className="text-xs font-semibold block mt-1 truncate">Alle Listen</span>
@@ -340,7 +343,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
                 onClick={() => setSelectedListId(list.id)}
                 className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer relative group ${
                   selectedListId === list.id
-                    ? 'border-[#C87D20] bg-amber-50/50 dark:bg-amber-950/20 text-[#C87D20] shadow-xs'
+                    ? 'border-[var(--ochre-accent)] bg-amber-50/50 dark:bg-amber-950/20 text-[var(--ochre-accent)] shadow-xs'
                     : 'border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#1A1B1E] text-neutral-700 dark:text-neutral-300 hover:border-neutral-300'
                 }`}
               >
@@ -368,10 +371,10 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
 
         {/* Modal: Neue Liste erstellen */}
         {isCreateListOpen && (
-          <div className="p-4 bg-white dark:bg-[#1E1F23] rounded-xl border border-[#C87D20]/40 shadow-xl space-y-3 animate-in fade-in duration-150">
+          <div className="p-4 bg-white dark:bg-[#1E1F23] rounded-xl border border-[var(--ochre-accent)]/40 shadow-xl space-y-3 animate-in fade-in duration-150">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
-                <ListTodo className="w-4 h-4 text-[#C87D20]" />
+                <ListTodo className="w-4 h-4 text-[var(--ochre-accent)]" />
                 <span>Eigene Aufgabenliste definieren</span>
               </h3>
               <button onClick={() => setIsCreateListOpen(false)} className="text-neutral-400 hover:text-neutral-600">
@@ -387,7 +390,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
                   placeholder="z.B. Projekt OchreNotes, Fitness..."
                   value={newListName}
                   onChange={(e) => setNewListName(e.target.value)}
-                  className="w-full text-xs px-2.5 py-1.5 rounded-md bg-[#FBFBFA] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden focus:border-[#C87D20]"
+                  className="w-full text-xs px-2.5 py-1.5 rounded-md bg-[#FBFBFA] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden focus:border-[var(--ochre-accent)]"
                 />
               </div>
 
@@ -398,7 +401,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
                   placeholder="z.B. dev, sport, privat..."
                   value={newListTag}
                   onChange={(e) => setNewListTag(e.target.value.replace(/^#/, ''))}
-                  className="w-full text-xs px-2.5 py-1.5 rounded-md bg-[#FBFBFA] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden focus:border-[#C87D20]"
+                  className="w-full text-xs px-2.5 py-1.5 rounded-md bg-[#FBFBFA] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden focus:border-[var(--ochre-accent)]"
                 />
               </div>
 
@@ -409,7 +412,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
                   placeholder="z.B. 01 - Privat, Arbeit..."
                   value={newListFolder}
                   onChange={(e) => setNewListFolder(e.target.value)}
-                  className="w-full text-xs px-2.5 py-1.5 rounded-md bg-[#FBFBFA] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden focus:border-[#C87D20]"
+                  className="w-full text-xs px-2.5 py-1.5 rounded-md bg-[#FBFBFA] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden focus:border-[var(--ochre-accent)]"
                 />
               </div>
             </div>
@@ -424,7 +427,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
               <button
                 onClick={handleCreateList}
                 disabled={!newListName.trim()}
-                className="px-3 py-1 rounded text-xs bg-[#C87D20] text-white font-medium hover:bg-[#b06c19] disabled:opacity-50"
+                className="px-3 py-1 rounded text-xs bg-[var(--ochre-accent)] text-white font-medium hover:bg-[#b06c19] disabled:opacity-50"
               >
                 Liste anlegen
               </button>
@@ -442,7 +445,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
             onClick={() => setActiveTab('all')}
             className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
               activeTab === 'all'
-                ? 'bg-white dark:bg-[#2C2E33] text-[#C87D20] shadow-xs'
+                ? 'bg-white dark:bg-[#2C2E33] text-[var(--ochre-accent)] shadow-xs'
                 : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900'
             }`}
           >
@@ -465,7 +468,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
             onClick={() => setActiveTab('today')}
             className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
               activeTab === 'today'
-                ? 'bg-white dark:bg-[#2C2E33] text-[#C87D20] shadow-xs'
+                ? 'bg-white dark:bg-[#2C2E33] text-[var(--ochre-accent)] shadow-xs'
                 : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900'
             }`}
           >
@@ -476,7 +479,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
             onClick={() => setActiveTab('week')}
             className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
               activeTab === 'week'
-                ? 'bg-white dark:bg-[#2C2E33] text-[#C87D20] shadow-xs'
+                ? 'bg-white dark:bg-[#2C2E33] text-[var(--ochre-accent)] shadow-xs'
                 : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900'
             }`}
           >
@@ -507,7 +510,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
               placeholder="Aufgaben durchsuchen..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full text-xs pl-9 pr-3 py-1.5 rounded-md bg-white dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 focus:outline-hidden focus:border-[#C87D20]"
+              className="w-full text-xs pl-9 pr-3 py-1.5 rounded-md bg-white dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 focus:outline-hidden focus:border-[var(--ochre-accent)]"
             />
           </div>
 
@@ -517,8 +520,8 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
               onClick={() => setIsTagFilterOpen(!isTagFilterOpen)}
               className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border transition-colors whitespace-nowrap ${
                 selectedTag
-                  ? 'bg-[#C87D20] text-white border-[#C87D20]'
-                  : 'bg-white dark:bg-[#161719] border-[#E5E3DC] dark:border-[#2F3136] text-neutral-700 dark:text-neutral-300 hover:border-[#C87D20]'
+                  ? 'bg-[var(--ochre-accent)] text-white border-[var(--ochre-accent)]'
+                  : 'bg-white dark:bg-[#161719] border-[#E5E3DC] dark:border-[#2F3136] text-neutral-700 dark:text-neutral-300 hover:border-[var(--ochre-accent)]'
               }`}
             >
               <Hash className="w-3.5 h-3.5" />
@@ -571,7 +574,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
                       }}
                       className={`w-full flex items-center justify-between px-2 py-1 text-xs rounded transition-colors ${
                         selectedTag === tag
-                          ? 'bg-[#C87D20] text-white'
+                          ? 'bg-[var(--ochre-accent)] text-white'
                           : 'hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200'
                       }`}
                     >
@@ -591,7 +594,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
             <button
               onClick={() => setSelectedTag(null)}
               className={`text-[11px] px-2 py-0.5 rounded transition-colors whitespace-nowrap ${
-                selectedTag === null ? 'bg-[#C87D20] text-white font-medium' : 'text-neutral-500 hover:bg-neutral-200'
+                selectedTag === null ? 'bg-[var(--ochre-accent)] text-white font-medium' : 'text-neutral-500 hover:bg-neutral-200'
               }`}
             >
               Alle ({allTags.length})
@@ -602,7 +605,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
                 onClick={() => setSelectedTag(selectedTag === tag ? null : tag)}
                 className={`text-[11px] px-2 py-0.5 rounded transition-colors whitespace-nowrap flex items-center gap-1 ${
                   selectedTag === tag
-                    ? 'bg-[#C87D20] text-white font-medium'
+                    ? 'bg-[var(--ochre-accent)] text-white font-medium'
                     : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-800'
                 }`}
               >
@@ -765,7 +768,7 @@ const SwipeableTaskCard: React.FC<SwipeableTaskCardProps> = ({
 
         {/* Left Swipe Preview: Open Note */}
         <div
-          className={`flex items-center justify-end gap-2 text-white h-full px-4 absolute inset-y-0 right-0 bg-[#C87D20] dark:bg-[#D98B26] transition-opacity duration-150 ${
+          className={`flex items-center justify-end gap-2 text-white h-full px-4 absolute inset-y-0 right-0 bg-[var(--ochre-accent)] dark:bg-[#D98B26] transition-opacity duration-150 ${
             swipeOffset < 0 ? 'opacity-100' : 'opacity-0'
           }`}
           style={{ width: `${Math.max(0, -swipeOffset + 15)}px` }}
@@ -798,7 +801,7 @@ const SwipeableTaskCard: React.FC<SwipeableTaskCardProps> = ({
             type="checkbox"
             checked={task.completed}
             onChange={onToggle}
-            className="mt-0.5 w-4.5 h-4.5 rounded border-neutral-300 text-[#C87D20] accent-[#C87D20] cursor-pointer shrink-0"
+            className="mt-0.5 w-4.5 h-4.5 rounded border-neutral-300 text-[var(--ochre-accent)] accent-[var(--ochre-accent)] cursor-pointer shrink-0"
           />
           <div className="min-w-0 flex-1">
             <span
@@ -814,7 +817,7 @@ const SwipeableTaskCard: React.FC<SwipeableTaskCardProps> = ({
             {/* Metadata chips */}
             <div className="flex items-center gap-2 mt-1.5 flex-wrap">
               <span className="flex items-center gap-1 text-[11px] text-neutral-400">
-                <FileText className="w-3 h-3 text-[#C87D20]" />
+                <FileText className="w-3 h-3 text-[var(--ochre-accent)]" />
                 <span className="truncate max-w-[140px]">{task.noteTitle}</span>
               </span>
 
@@ -837,7 +840,7 @@ const SwipeableTaskCard: React.FC<SwipeableTaskCardProps> = ({
                 <button
                   key={tag}
                   onClick={() => onSelectTag(tag)}
-                  className="text-[10px] px-1.5 py-0.2 rounded bg-amber-50 dark:bg-amber-950/30 text-[#C87D20] hover:bg-amber-100"
+                  className="text-[10px] px-1.5 py-0.2 rounded bg-amber-50 dark:bg-amber-950/30 text-[var(--ochre-accent)] hover:bg-amber-100"
                 >
                   #{tag}
                 </button>
@@ -849,7 +852,7 @@ const SwipeableTaskCard: React.FC<SwipeableTaskCardProps> = ({
         {/* Right side: Button to jump directly to Note */}
         <button
           onClick={onOpenNote}
-          className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg bg-[#F4F3EF] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] text-[#C87D20] font-medium hover:bg-[#C87D20] hover:text-white transition-colors shrink-0 cursor-pointer shadow-2xs active:scale-95"
+          className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg bg-[#F4F3EF] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] font-medium hover:bg-[var(--ochre-accent)] hover:text-white transition-colors shrink-0 cursor-pointer shadow-2xs active:scale-95"
           title="Zur Ursprungsnotiz springen"
         >
           <ExternalLink className="w-3.5 h-3.5" />

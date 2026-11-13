@@ -1,0 +1,166 @@
+[
+  {
+    "id": "r_1",
+    "title": "Cremiges Kichererbsen-Curry mit Kokos",
+    "category": "Mittagessen",
+    "prepTimeMinutes": 25,
+    "portions": 3,
+    "description": "Aromatisches Curry mit Kokosmilch, frischem Spinat und Limette. Perfekt für Meal-Prep.",
+    "instructions": [
+      "Zwiebeln, Knoblauch und Ingwer fein würfeln und in Kokosöl anbraten.",
+      "Currypulver, Kreuzkümmel und Kurkuma kurz mitrösten.",
+      "Kichererbsen und stückige Tomaten sowie Kokosmilch dazugeben, 15 Min köcheln lassen.",
+      "Frischen Blattspinat unterheben bis er zusammenfällt, mit Limettensaft und Salz abschmecken."
+    ],
+    "ingredients": [
+      {
+        "id": "i1",
+        "name": "Kichererbsen (Dose)",
+        "amount": "1 Dose (400g)"
+      },
+      {
+        "id": "i2",
+        "name": "Kokosmilch",
+        "amount": "250ml"
+      },
+      {
+        "id": "i3",
+        "name": "Babyspinat",
+        "amount": "150g"
+      },
+      {
+        "id": "i4",
+        "name": "Basmatireis",
+        "amount": "200g"
+      }
+    ],
+    "tags": [
+      "vegetarisch",
+      "schnell",
+      "meal-prep"
+    ]
+  },
+  {
+    "id": "r_2",
+    "title": "Mediterrane Ofengemüse-Bowl mit Feta",
+    "category": "Abendessen",
+    "prepTimeMinutes": 30,
+    "portions": 2,
+    "description": "Buntes Blechgemüse mit Rosmarin, Olivenöl und goldbraun gebackenem Feta.",
+    "instructions": [
+      "Backofen auf 200°C Ober-/Unterhitze vorheizen.",
+      "Zucchini, Paprika und rote Zwiebeln in mundgerechte Stücke schneiden.",
+      "Mit Olivenöl, Rosmarin, Salz und Pfeffer auf einem Blech verteilen.",
+      "Feta in die Mitte legen und 25-30 Minuten im Ofen backen."
+    ],
+    "ingredients": [
+      {
+        "id": "i5",
+        "name": "Feta",
+        "amount": "200g"
+      },
+      {
+        "id": "i6",
+        "name": "Zucchini",
+        "amount": "1 Stück"
+      },
+      {
+        "id": "i7",
+        "name": "Paprika (rot & gelb)",
+        "amount": "2 Stück"
+      },
+      {
+        "id": "i8",
+        "name": "Olivenöl extra vergine",
+        "amount": "3 EL"
+      }
+    ],
+    "tags": [
+      "mediterran",
+      "low-carb",
+      "ofen"
+    ]
+  },
+  {
+    "id": "r_3",
+    "title": "Overnight Oats mit Beeren & Chiasamen",
+    "category": "Frühstück",
+    "prepTimeMinutes": 5,
+    "portions": 1,
+    "description": "Energiespendendes Frühstück, am Vorabend zusammengerührt.",
+    "instructions": [
+      "Haferflocken, Chiasamen und Mandelmilch in einem Glas verrühren.",
+      "Mit einer Prise Zimt und Ahornsirup verfeinern.",
+      "Über Nacht im Kühlschrank quellen lassen.",
+      "Morgens mit frischen Beeren und Nüssen garnieren."
+    ],
+    "ingredients": [
+      {
+        "id": "i9",
+        "name": "Zarte Haferflocken",
+        "amount": "60g"
+      },
+      {
+        "id": "i10",
+        "name": "Mandelmilch",
+        "amount": "140ml"
+      },
+      {
+        "id": "i11",
+        "name": "Chiasamen",
+        "amount": "1 EL"
+      },
+      {
+        "id": "i12",
+        "name": "Waldbeeren",
+        "amount": "50g"
+      }
+    ],
+    "tags": [
+      "frühstück",
+      "protein",
+      "vegan"
+    ]
+  },
+  {
+    "id": "r_4",
+    "title": "Pasta mit Tomaten-Basilikum-Sugo",
+    "category": "Schnelle Küche",
+    "prepTimeMinutes": 20,
+    "portions": 2,
+    "description": "Klassische italienische Pasta mit sonnengereiften Tomaten und frischem Parmesan.",
+    "instructions": [
+      "Nudeln in reichlich Salzwasser al dente kochen.",
+      "Knoblauch in Olivenöl sanft anbraten, gehackte Tomaten hinzugeben.",
+      "10 Minuten köcheln lassen, frischen Basilikum einrühren.",
+      "Pasta untermengen und mit frisch geriebenem Parmesan servieren."
+    ],
+    "ingredients": [
+      {
+        "id": "i13",
+        "name": "Spaghetti oder Penne",
+        "amount": "250g"
+      },
+      {
+        "id": "i14",
+        "name": "San Marzano Tomaten",
+        "amount": "1 Dose"
+      },
+      {
+        "id": "i15",
+        "name": "Frischer Basilikum",
+        "amount": "1 Bund"
+      },
+      {
+        "id": "i16",
+        "name": "Parmigiano Reggiano",
+        "amount": "40g"
+      }
+    ],
+    "tags": [
+      "italienisch",
+      "klassiker",
+      "schnell"
+    ]
+  }
+]

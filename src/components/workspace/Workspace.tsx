@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { PaneType, NoteMetadata } from '../../types';
+import { PaneType, NoteMetadata, NoteProfileId } from '../../types';
 import { LiveEditorPane } from '../editor/LiveEditorPane';
 import { TasksDashboard } from '../tasks/TasksDashboard';
 import { GraphView } from '../graph/GraphView';
@@ -30,6 +30,8 @@ interface WorkspaceProps {
   onWikilinkClick: (target: string) => void;
   onTagClick: (tag: string) => void;
   username: string;
+  noteProfile?: NoteProfileId;
+  accentColor?: string;
   onOpenNoteByTitle: (title: string) => void;
   // Multi-note snap / split support
   allNotes: NoteMetadata[];
@@ -58,6 +60,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   onWikilinkClick,
   onTagClick,
   username,
+  noteProfile = 'profile1',
+  accentColor = '#C87D20',
   onOpenNoteByTitle,
   allNotes,
   activeNotePath,
@@ -86,6 +90,14 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
   // Cache of tab contents for fast switching in temporary memory
   const [tabContents, setTabContents] = useState<Record<string, { content: string; title: string; lastSaved?: number }>>({});
+
+  // Reset mobile tabs & split pane when switching between Profile 1 and Profile 2 or users
+  useEffect(() => {
+    setMobileTabs([]);
+    setActiveMobileTabPath(null);
+    setTabContents({});
+    setSecondaryNotePath(null);
+  }, [username, noteProfile]);
 
   // Synchronize active note into mobileTabs
   useEffect(() => {
@@ -170,7 +182,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   // Load note into secondary split (Desktop) or add tab (Mobile)
   const loadSecondaryNote = async (path: string, isShared = false, sharedFrom = '') => {
     try {
-      const data = await api.readNote(username, path, isShared, sharedFrom);
+      const data = await api.readNote(username, path, isShared, sharedFrom, noteProfile);
       if (isMobile) {
         setMobileTabs((prev) => {
           if (prev.some((t) => t.path === path)) return prev;
@@ -196,7 +208,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   const handleSecondaryContentChange = (newText: string) => {
     setSecondaryContent(newText);
     if (secondaryNotePath && secondaryNotePath !== '__empty__') {
-      api.saveNote(username, secondaryNotePath, newText, false).then(() => {
+      api.saveNote(username, secondaryNotePath, newText, false, undefined, noteProfile).then(() => {
         setSecondaryLastSaved(Date.now());
       });
     }
@@ -211,7 +223,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     if (path === activeNotePath) {
       onContentChange(newText);
     } else {
-      api.saveNote(username, path, newText, false).then(() => {
+      api.saveNote(username, path, newText, false, undefined, noteProfile).then(() => {
         setTabContents((prev) => ({
           ...prev,
           [path]: { ...prev[path], lastSaved: Date.now() },
@@ -311,6 +323,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
       <main className="flex-1 h-full overflow-hidden flex flex-col bg-[#FBFBFA] dark:bg-[#18191B]">
         <TasksDashboard
           username={username}
+          noteProfile={noteProfile}
           onOpenNote={onOpenNoteByTitle}
           onTaskToggled={() => {}}
         />
@@ -323,6 +336,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({
       <main className="flex-1 h-full overflow-hidden flex flex-col bg-[#FBFBFA] dark:bg-[#18191B]">
         <GraphView
           username={username}
+          noteProfile={noteProfile}
+          accentColor={accentColor}
           onSelectNote={onOpenNoteByTitle}
         />
       </main>
@@ -363,7 +378,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                   }}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 cursor-pointer transition-all border ${
                     isActive
-                      ? 'bg-white dark:bg-[#2A2C31] text-[#C87D20] dark:text-[#E09228] border-[#C87D20] shadow-xs'
+                      ? 'bg-white dark:bg-[#2A2C31] text-[var(--ochre-accent)] dark:text-[#E09228] border-[var(--ochre-accent)] shadow-xs'
                       : 'bg-white/60 dark:bg-neutral-800/60 text-neutral-600 dark:text-neutral-400 border-[#E5E3DC] dark:border-[#2F3136] hover:bg-neutral-200/60'
                   }`}
                 >
@@ -396,7 +411,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             {/* Add Tab Button with circular bubble */}
             <button
               onClick={handleOpenSplit}
-              className="w-8 h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[#C87D20] hover:border-[#C87D20] shadow-xs flex items-center justify-center shrink-0 cursor-pointer"
+              className="w-8 h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] hover:border-[var(--ochre-accent)] shadow-xs flex items-center justify-center shrink-0 cursor-pointer"
               title="Weitere Notiz als Tab hinzufügen"
             >
               <Plus className="w-4 h-4" />
@@ -408,7 +423,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             onClick={() => setShowToolbar(!showToolbar)}
             className={`w-8 h-8 rounded-full flex items-center justify-center shadow-xs border transition-all shrink-0 cursor-pointer ${
               showToolbar
-                ? 'bg-white dark:bg-[#25272C] border-[#C87D20] text-[#C87D20]'
+                ? 'bg-white dark:bg-[#25272C] border-[var(--ochre-accent)] text-[var(--ochre-accent)]'
                 : 'bg-white dark:bg-[#25272C] border-[#E5E3DC] dark:border-[#2F3136] text-neutral-500 hover:text-neutral-800'
             }`}
             title={showToolbar ? 'Werkzeugleiste ausblenden (▲)' : 'Werkzeugleiste einblenden (▼)'}
@@ -416,7 +431,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             {showToolbar ? (
               <ChevronDown className="w-4 h-4 rotate-180 transition-transform" />
             ) : (
-              <ChevronDown className="w-4 h-4 transition-transform text-[#C87D20]" />
+              <ChevronDown className="w-4 h-4 transition-transform text-[var(--ochre-accent)]" />
             )}
           </button>
         </div>
@@ -456,7 +471,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
               <div className="p-3.5 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between">
                 <div>
                   <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
-                    <Folder className="w-4 h-4 text-[#C87D20]" />
+                    <Folder className="w-4 h-4 text-[var(--ochre-accent)]" />
                     <span>Lite Vault: Notiz wählen</span>
                   </h3>
                   <span className="text-[11px] text-neutral-400">
@@ -479,7 +494,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                     placeholder="Notizen durchsuchen..."
                     value={liteVaultSearch}
                     onChange={(e) => setLiteVaultSearch(e.target.value)}
-                    className="w-full text-xs pl-9 pr-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#151618] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[#C87D20]"
+                    className="w-full text-xs pl-9 pr-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#151618] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
                     autoFocus
                   />
                 </div>
@@ -505,7 +520,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                             className="flex items-center gap-1.5 flex-1 truncate text-left"
                           >
                             {isCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                            <Folder className="w-3.5 h-3.5 text-[#C87D20]" />
+                            <Folder className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
                             <span className="truncate">{folderKey}</span>
                           </button>
 
@@ -516,7 +531,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                                 setIsLiteVaultOpen(false);
                               }
                             }}
-                            className="w-7 h-7 flex items-center justify-center rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[#C87D20] shadow-xs"
+                            className="w-7 h-7 flex items-center justify-center rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] shadow-xs"
                             title={`Neue Notiz in '${folderKey}' erstellen`}
                           >
                             <Plus className="w-3.5 h-3.5" />
@@ -533,7 +548,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                               className="flex items-center justify-between p-2.5 rounded-xl hover:bg-amber-500/10 cursor-pointer border border-[#E5E3DC]/60 dark:border-[#2F3136]/60 hover:border-amber-500/40 transition-colors"
                             >
                               <div className="flex items-center gap-2 truncate">
-                                <FileText className="w-4 h-4 text-[#C87D20] shrink-0" />
+                                <FileText className="w-4 h-4 text-[var(--ochre-accent)] shrink-0" />
                                 <span className="text-xs font-medium text-neutral-800 dark:text-neutral-200 truncate">
                                   {note.title}
                                 </span>
@@ -584,7 +599,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         {/* Pane Sub-Header */}
         <div className="h-8 px-3 bg-[#F4F3EF] dark:bg-[#1F2125] border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between text-xs font-medium text-neutral-700 dark:text-neutral-300 shrink-0">
           <div className="flex items-center gap-1.5 min-w-0">
-            <FileText className="w-3.5 h-3.5 text-[#C87D20] shrink-0" />
+            <FileText className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
             <select
               value={activeNotePath || ''}
               onChange={(e) => {
@@ -606,7 +621,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             {secondaryNotePath && (
               <button
                 onClick={() => setSplitRatio(50)}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-white dark:bg-[#2A2C31] border border-[#E5E3DC] dark:border-[#2F3136] text-[11px] text-neutral-600 dark:text-neutral-400 hover:border-[#C87D20] transition-colors cursor-pointer shadow-2xs"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-white dark:bg-[#2A2C31] border border-[#E5E3DC] dark:border-[#2F3136] text-[11px] text-neutral-600 dark:text-neutral-400 hover:border-[var(--ochre-accent)] transition-colors cursor-pointer shadow-2xs"
                 title="Gleichmäßig aufteilen (50 / 50)"
               >
                 <Columns2 className="w-3.5 h-3.5" />
@@ -617,12 +632,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({
               onClick={() => setShowToolbar(!showToolbar)}
               className={`w-6 h-6 rounded-full flex items-center justify-center border transition-all cursor-pointer shadow-2xs ${
                 showToolbar
-                  ? 'bg-white dark:bg-[#2A2C31] border-[#C87D20] text-[#C87D20]'
+                  ? 'bg-white dark:bg-[#2A2C31] border-[var(--ochre-accent)] text-[var(--ochre-accent)]'
                   : 'bg-white dark:bg-[#2A2C31] border-[#E5E3DC] dark:border-[#2F3136] text-neutral-500 hover:text-neutral-800'
               }`}
               title={showToolbar ? 'Werkzeugleiste ausblenden (▲)' : 'Werkzeugleiste einblenden (▼)'}
             >
-              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showToolbar ? 'rotate-180 text-[#C87D20]' : 'text-neutral-400'}`} />
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showToolbar ? 'rotate-180 text-[var(--ochre-accent)]' : 'text-neutral-400'}`} />
             </button>
           </div>
         </div>
@@ -652,8 +667,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
       {/* Drag Drop Overlay Hint if dragging a note */}
       {isDragOverSplit && !secondaryNotePath && (
-        <div className="absolute inset-y-0 right-0 w-1/2 bg-[#C87D20]/10 border-2 border-dashed border-[#C87D20] flex items-center justify-center pointer-events-none z-30 animate-in fade-in duration-100">
-          <div className="p-4 rounded-2xl bg-white dark:bg-[#1E1F23] shadow-xl flex items-center gap-2 text-xs font-semibold text-[#C87D20]">
+        <div className="absolute inset-y-0 right-0 w-1/2 bg-[var(--ochre-accent)]/10 border-2 border-dashed border-[var(--ochre-accent)] flex items-center justify-center pointer-events-none z-30 animate-in fade-in duration-100">
+          <div className="p-4 rounded-2xl bg-white dark:bg-[#1E1F23] shadow-xl flex items-center gap-2 text-xs font-semibold text-[var(--ochre-accent)]">
             <Upload className="w-5 h-5" />
             <span>Hier ablegen für geteilte Ansicht (Split)</span>
           </div>
@@ -664,7 +679,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
       {secondaryNotePath && (
         <div
           onMouseDown={startDragging}
-          className="w-1.5 hover:w-2 bg-[#E5E3DC] dark:bg-[#2F3136] hover:bg-[#C87D20] dark:hover:bg-[#E09228] transition-all cursor-col-resize z-10 flex items-center justify-center shrink-0 group select-none"
+          className="w-1.5 hover:w-2 bg-[#E5E3DC] dark:bg-[#2F3136] hover:bg-[var(--ochre-accent)] dark:hover:bg-[#E09228] transition-all cursor-col-resize z-10 flex items-center justify-center shrink-0 group select-none"
           title="Ziehen zum Anpassen der Spaltenbreite"
         >
           <GripVertical className="w-3 h-3 text-neutral-400 group-hover:text-white opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -695,10 +710,10 @@ export const Workspace: React.FC<WorkspaceProps> = ({
               <button
                 type="button"
                 onClick={() => setIsLiteVaultOpen(true)}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[#C87D20] text-xs font-semibold text-neutral-800 dark:text-neutral-200 shadow-2xs transition-all cursor-pointer max-w-[220px] active:scale-95"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[var(--ochre-accent)] text-xs font-semibold text-neutral-800 dark:text-neutral-200 shadow-2xs transition-all cursor-pointer max-w-[220px] active:scale-95"
                 title="Notiz über Lite Vault auswählen"
               >
-                <FileText className="w-3.5 h-3.5 text-[#C87D20] shrink-0" />
+                <FileText className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
                 <span className="truncate">{secondaryNotePath === '__empty__' ? 'Notiz wählen...' : secondaryTitle}</span>
                 <ChevronDown className="w-3 h-3 text-neutral-400 shrink-0" />
               </button>
@@ -717,8 +732,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
           {/* Secondary Drag & Drop Overlay */}
           {isDragOverSplit && (
-            <div className="absolute inset-0 bg-[#C87D20]/15 border-2 border-dashed border-[#C87D20] flex items-center justify-center pointer-events-none z-50 backdrop-blur-2xs animate-in fade-in duration-100">
-              <div className="p-3.5 px-5 rounded-2xl bg-white dark:bg-[#1E1F23] shadow-2xl border border-[#C87D20] flex items-center gap-2.5 text-xs font-bold text-[#C87D20]">
+            <div className="absolute inset-0 bg-[var(--ochre-accent)]/15 border-2 border-dashed border-[var(--ochre-accent)] flex items-center justify-center pointer-events-none z-50 backdrop-blur-2xs animate-in fade-in duration-100">
+              <div className="p-3.5 px-5 rounded-2xl bg-white dark:bg-[#1E1F23] shadow-2xl border border-[var(--ochre-accent)] flex items-center gap-2.5 text-xs font-bold text-[var(--ochre-accent)]">
                 <Upload className="w-5 h-5 animate-bounce" />
                 <span>Hier ablegen für geteilte Ansicht (Split)</span>
               </div>
@@ -740,7 +755,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                 <div className="p-4 rounded-2xl bg-white dark:bg-[#1E1F23] shadow-lg border border-[#E5E3DC] dark:border-[#2F3136] flex flex-col flex-1 overflow-hidden">
                   <div className="flex items-center justify-between pb-3 border-b border-[#E5E3DC] dark:border-[#2F3136]">
                     <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-full bg-amber-500/10 text-[#C87D20] flex items-center justify-center">
+                      <div className="w-8 h-8 rounded-full bg-amber-500/10 text-[var(--ochre-accent)] flex items-center justify-center">
                         <Upload className="w-4 h-4" />
                       </div>
                       <div>
@@ -763,7 +778,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                         placeholder="Notizen filtern..."
                         value={liteVaultSearch}
                         onChange={(e) => setLiteVaultSearch(e.target.value)}
-                        className="w-full text-xs pl-8 pr-3 py-1.5 rounded-xl bg-[#F4F3EF] dark:bg-[#151618] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[#C87D20]"
+                        className="w-full text-xs pl-8 pr-3 py-1.5 rounded-xl bg-[#F4F3EF] dark:bg-[#151618] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
                       />
                     </div>
                   </div>
@@ -789,7 +804,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                                 className="flex items-center gap-1.5 flex-1 truncate text-left cursor-pointer"
                               >
                                 {isCollapsed ? <ChevronRight className="w-3.5 h-3.5 text-neutral-400" /> : <ChevronDown className="w-3.5 h-3.5 text-neutral-400" />}
-                                <Folder className="w-3.5 h-3.5 text-[#C87D20]" />
+                                <Folder className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
                                 <span className="truncate">{folderKey}</span>
                               </button>
 
@@ -799,7 +814,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                                     onCreateNote(folderKey);
                                   }
                                 }}
-                                className="w-6 h-6 flex items-center justify-center rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[#C87D20] shadow-2xs hover:bg-amber-500/10 transition-all active:scale-95 cursor-pointer"
+                                className="w-6 h-6 flex items-center justify-center rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] shadow-2xs hover:bg-amber-500/10 transition-all active:scale-95 cursor-pointer"
                                 title={`Neue Notiz in '${folderKey}' erstellen`}
                               >
                                 <Plus className="w-3.5 h-3.5" />
@@ -812,10 +827,10 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                                 <div
                                   key={note.path}
                                   onClick={() => loadSecondaryNote(note.path, note.isShared, note.sharedFromUser)}
-                                  className="flex items-center justify-between p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-neutral-50 dark:bg-neutral-800/40 hover:border-[#C87D20] hover:bg-amber-500/10 cursor-pointer transition-colors"
+                                  className="flex items-center justify-between p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-neutral-50 dark:bg-neutral-800/40 hover:border-[var(--ochre-accent)] hover:bg-amber-500/10 cursor-pointer transition-colors"
                                 >
                                   <div className="flex items-center gap-2 truncate">
-                                    <FileText className="w-3.5 h-3.5 text-[#C87D20] shrink-0" />
+                                    <FileText className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
                                     <span className="text-xs font-medium text-neutral-800 dark:text-neutral-200 truncate">
                                       {note.title}
                                     </span>
@@ -862,7 +877,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             <div className="p-3.5 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between">
               <div>
                 <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
-                  <Folder className="w-4 h-4 text-[#C87D20]" />
+                  <Folder className="w-4 h-4 text-[var(--ochre-accent)]" />
                   <span>Lite Vault: Notiz wählen</span>
                 </h3>
                 <span className="text-[11px] text-neutral-400">
@@ -885,7 +900,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                   placeholder="Notizen durchsuchen..."
                   value={liteVaultSearch}
                   onChange={(e) => setLiteVaultSearch(e.target.value)}
-                  className="w-full text-xs pl-9 pr-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#151618] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[#C87D20]"
+                  className="w-full text-xs pl-9 pr-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#151618] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
                   autoFocus
                 />
               </div>
@@ -911,7 +926,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                           className="flex items-center gap-1.5 flex-1 truncate text-left cursor-pointer"
                         >
                           {isCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                          <Folder className="w-3.5 h-3.5 text-[#C87D20]" />
+                          <Folder className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
                           <span className="truncate">{folderKey}</span>
                         </button>
 
@@ -922,7 +937,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                               setIsLiteVaultOpen(false);
                             }
                           }}
-                          className="w-7 h-7 flex items-center justify-center rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[#C87D20] shadow-xs cursor-pointer active:scale-95"
+                          className="w-7 h-7 flex items-center justify-center rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] shadow-xs cursor-pointer active:scale-95"
                           title={`Neue Notiz in '${folderKey}' erstellen`}
                         >
                           <Plus className="w-3.5 h-3.5" />
@@ -942,7 +957,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                             className="flex items-center justify-between p-2.5 rounded-xl hover:bg-amber-500/10 cursor-pointer border border-[#E5E3DC]/60 dark:border-[#2F3136]/60 hover:border-amber-500/40 transition-colors"
                           >
                             <div className="flex items-center gap-2 truncate">
-                              <FileText className="w-4 h-4 text-[#C87D20] shrink-0" />
+                              <FileText className="w-4 h-4 text-[var(--ochre-accent)] shrink-0" />
                               <span className="text-xs font-medium text-neutral-800 dark:text-neutral-200 truncate">
                                 {note.title}
                               </span>

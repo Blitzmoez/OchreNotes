@@ -25,9 +25,10 @@ import {
   Clock,
   Layers,
   X,
-  Folder
+  Folder,
+  BookMarked
 } from 'lucide-react';
-import { User, PaneType, SuiteModuleId, EnabledModules } from '../../types';
+import { User, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId } from '../../types';
 import { useTranslation } from '../../services/i18n.tsx';
 
 interface HeaderProps {
@@ -56,6 +57,8 @@ interface HeaderProps {
   activeSuiteModule: SuiteModuleId;
   onSelectSuiteModule: (mod: SuiteModuleId) => void;
   enabledModules: EnabledModules;
+  profileSettings: SuiteProfileSettings;
+  onSwitchProfile: (id: NoteProfileId) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -84,7 +87,17 @@ export const Header: React.FC<HeaderProps> = ({
   activeSuiteModule,
   onSelectSuiteModule,
   enabledModules,
+  profileSettings,
+  onSwitchProfile,
 }) => {
+  const activeProfile = profileSettings[profileSettings.activeProfileId] || profileSettings.profile1;
+  const activeColors = {
+    notes: activeProfile.colors.notes,
+    wiki: profileSettings.profile1.colors.wiki,
+    recipes: profileSettings.profile1.colors.recipes,
+    finance: profileSettings.profile1.colors.finance,
+  };
+  const currentModuleColor = activeColors[activeSuiteModule] || activeColors.notes;
   const { t } = useTranslation();
   // Ochre Suite modular menu dropdown
   const [isSuiteMenuOpen, setIsSuiteMenuOpen] = useState(false);
@@ -126,7 +139,7 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header className="h-14 border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA] dark:bg-[#18191B] px-3 md:px-4 flex items-center justify-between gap-2 md:gap-3 select-none shrink-0 relative z-[90]">
       {/* Zone 1: Modular Logo & Active Module Name */}
-      <div className="flex items-center gap-2.5 min-w-0">
+      <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
         {/* Module Switcher Dropdown */}
         <div className="relative" ref={suiteMenuRef}>
           {/* Subtle backdrop overlay to guarantee menu stays above all elements including Vault */}
@@ -149,7 +162,10 @@ export const Header: React.FC<HeaderProps> = ({
           >
             {/* Active Module Icon Badge */}
             {activeSuiteModule === 'notes' && (
-              <div className="w-6.5 h-6.5 rounded-lg bg-gradient-to-br from-[#D98B26] to-[#A86415] text-white flex items-center justify-center shadow-xs relative overflow-hidden shrink-0">
+              <div
+                style={{ backgroundColor: activeColors.notes }}
+                className="w-6.5 h-6.5 rounded-lg text-white flex items-center justify-center shadow-xs relative overflow-hidden shrink-0"
+              >
                 <div className="absolute left-0.5 top-0 bottom-0 flex flex-col justify-around py-0.5">
                   <span className="w-1 h-0.5 rounded-full bg-white/90 shadow-2xs"></span>
                   <span className="w-1 h-0.5 rounded-full bg-white/90 shadow-2xs"></span>
@@ -162,13 +178,27 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
               </div>
             )}
+            {activeSuiteModule === 'wiki' && (
+              <div
+                style={{ backgroundColor: activeColors.wiki }}
+                className="w-6.5 h-6.5 rounded-lg text-white flex items-center justify-center shadow-xs shrink-0"
+              >
+                <BookMarked className="w-3.5 h-3.5" />
+              </div>
+            )}
             {activeSuiteModule === 'recipes' && (
-              <div className="w-6.5 h-6.5 rounded-lg bg-emerald-600 text-white flex items-center justify-center shadow-xs shrink-0">
+              <div
+                style={{ backgroundColor: activeColors.recipes }}
+                className="w-6.5 h-6.5 rounded-lg text-white flex items-center justify-center shadow-xs shrink-0"
+              >
                 <Utensils className="w-3.5 h-3.5" />
               </div>
             )}
             {activeSuiteModule === 'finance' && (
-              <div className="w-6.5 h-6.5 rounded-lg bg-blue-600 text-white flex items-center justify-center shadow-xs shrink-0">
+              <div
+                style={{ backgroundColor: activeColors.finance }}
+                className="w-6.5 h-6.5 rounded-lg text-white flex items-center justify-center shadow-xs shrink-0"
+              >
                 <BarChart3 className="w-3.5 h-3.5" />
               </div>
             )}
@@ -176,7 +206,13 @@ export const Header: React.FC<HeaderProps> = ({
             {/* Active Module Name */}
             <div className="flex items-center gap-1 min-w-0">
               <span className="font-bold text-xs md:text-sm tracking-tight text-neutral-900 dark:text-neutral-100 whitespace-nowrap">
-                {activeSuiteModule === 'notes' ? 'Notes' : activeSuiteModule === 'recipes' ? 'Kochbuch' : 'Finanzen'}
+                {activeSuiteModule === 'notes'
+                  ? 'Notes'
+                  : activeSuiteModule === 'wiki'
+                  ? 'Wiki'
+                  : activeSuiteModule === 'recipes'
+                  ? 'Kochbuch'
+                  : 'Finanzen'}
               </span>
               <ChevronDown className={`w-3.5 h-3.5 text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 transition-transform duration-200 ${isSuiteMenuOpen ? 'rotate-180' : ''}`} />
             </div>
@@ -191,14 +227,19 @@ export const Header: React.FC<HeaderProps> = ({
               {/* Prominent Ochre Suite Brand Header */}
               <div className="flex items-center justify-between pb-2 border-b border-[#E5E3DC] dark:border-[#2F3136]">
                 <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#D98B26] to-[#A86415] text-white flex items-center justify-center font-bold text-xs shadow-xs">
+                  <div
+                    style={{ backgroundColor: activeColors.notes }}
+                    className="w-7 h-7 rounded-lg text-white flex items-center justify-center font-bold text-xs shadow-xs"
+                  >
                     OS
                   </div>
                   <div>
                     <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 leading-tight">
                       Ochre Suite
                     </h3>
-                    <span className="text-[10px] text-neutral-400">Modulares Ökosystem</span>
+                    <span className="text-[10px] text-neutral-400">
+                      {activeSuiteModule === 'notes' ? `Profil: ${activeProfile.name}` : `@${currentUser?.username || 'michael'}`}
+                    </span>
                   </div>
                 </div>
                 <button
@@ -217,52 +258,76 @@ export const Header: React.FC<HeaderProps> = ({
                     onSelectSuiteModule('notes');
                     setIsSuiteMenuOpen(false);
                   }}
+                  style={
+                    activeSuiteModule === 'notes'
+                      ? { borderColor: activeColors.notes, backgroundColor: `${activeColors.notes}14` }
+                      : undefined
+                  }
                   className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
                     activeSuiteModule === 'notes'
-                      ? 'bg-amber-500/10 border-2 border-[#C87D20]'
-                      : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-[#C87D20] bg-white dark:bg-[#202225]'
+                      ? 'border-2'
+                      : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
                   }`}
                 >
                   <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-xl bg-[#C87D20] text-white flex items-center justify-center font-bold text-sm shadow-xs">
-                      📝
+                    <div
+                      style={{ backgroundColor: activeColors.notes }}
+                      className="w-8 h-8 rounded-xl text-white flex items-center justify-center font-bold text-sm shadow-xs"
+                    >
+                      <BookOpen className="w-4 h-4" />
                     </div>
                     <div>
                       <span className="font-bold text-neutral-900 dark:text-neutral-100 block">Notes</span>
                       <span className="text-[11px] text-neutral-500">Obsidian Markdown & Aufgaben</span>
                     </div>
                   </div>
-                  {activeSuiteModule === 'notes' && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#C87D20] text-white font-semibold">
+                  {activeSuiteModule === 'notes' ? (
+                    <span
+                      style={{ backgroundColor: activeColors.notes }}
+                      className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
+                    >
                       Aktiv
                     </span>
+                  ) : (
+                    <span className="text-[10px] text-neutral-400">Öffnen →</span>
                   )}
                 </div>
 
-                {/* Module 2: Kochbuch (Enabled or Disabled) */}
-                {enabledModules.recipes ? (
+                {/* Module 2: Wiki (Open-Standard Knowledge Base) */}
+                {enabledModules.wiki ? (
                   <div 
                     onClick={() => {
-                      onSelectSuiteModule('recipes');
+                      onSelectSuiteModule('wiki');
                       setIsSuiteMenuOpen(false);
                     }}
+                    style={
+                      activeSuiteModule === 'wiki'
+                        ? { borderColor: activeColors.wiki, backgroundColor: `${activeColors.wiki}14` }
+                        : undefined
+                    }
                     className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
-                      activeSuiteModule === 'recipes'
-                        ? 'bg-emerald-500/10 border-2 border-emerald-600'
-                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-emerald-600 bg-white dark:bg-[#202225]'
+                      activeSuiteModule === 'wiki'
+                        ? 'border-2'
+                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
                     }`}
                   >
                     <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-xs">
-                        <Utensils className="w-4 h-4" />
+                      <div
+                        style={{ backgroundColor: activeColors.wiki }}
+                        className="w-8 h-8 rounded-xl text-white flex items-center justify-center shadow-xs"
+                      >
+                        <BookMarked className="w-4 h-4" />
                       </div>
                       <div>
-                        <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">Kochbuch</span>
-                        <span className="text-[11px] text-neutral-500">Tellergerichte & Essenszyklus</span>
+                        <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">Wiki</span>
+                        <span className="text-[11px] text-neutral-500">Anleitungen, Fotos & Code-Ablage</span>
                       </div>
                     </div>
-                    {activeSuiteModule === 'recipes' ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-600 text-white font-semibold">
+                    {activeSuiteModule === 'wiki' ? (
+                      <span
+                        style={{ backgroundColor: activeColors.wiki }}
+                        className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
+                      >
                         Aktiv
                       </span>
                     ) : (
@@ -271,21 +336,72 @@ export const Header: React.FC<HeaderProps> = ({
                   </div>
                 ) : null}
 
-                {/* Module 3: Finanzen (Enabled or Disabled) */}
+                {/* Module 3: Kochbuch (Enabled or Disabled) */}
+                {enabledModules.recipes ? (
+                  <div 
+                    onClick={() => {
+                      onSelectSuiteModule('recipes');
+                      setIsSuiteMenuOpen(false);
+                    }}
+                    style={
+                      activeSuiteModule === 'recipes'
+                        ? { borderColor: activeColors.recipes, backgroundColor: `${activeColors.recipes}14` }
+                        : undefined
+                    }
+                    className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
+                      activeSuiteModule === 'recipes'
+                        ? 'border-2'
+                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div
+                        style={{ backgroundColor: activeColors.recipes }}
+                        className="w-8 h-8 rounded-xl text-white flex items-center justify-center shadow-xs"
+                      >
+                        <Utensils className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">Kochbuch</span>
+                        <span className="text-[11px] text-neutral-500">Tellergerichte & Essenszyklus</span>
+                      </div>
+                    </div>
+                    {activeSuiteModule === 'recipes' ? (
+                      <span
+                        style={{ backgroundColor: activeColors.recipes }}
+                        className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
+                      >
+                        Aktiv
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-neutral-400">Öffnen →</span>
+                    )}
+                  </div>
+                ) : null}
+
+                {/* Module 4: Finanzen (Enabled or Disabled) */}
                 {enabledModules.finance ? (
                   <div 
                     onClick={() => {
                       onSelectSuiteModule('finance');
                       setIsSuiteMenuOpen(false);
                     }}
+                    style={
+                      activeSuiteModule === 'finance'
+                        ? { borderColor: activeColors.finance, backgroundColor: `${activeColors.finance}14` }
+                        : undefined
+                    }
                     className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
                       activeSuiteModule === 'finance'
-                        ? 'bg-blue-500/10 border-2 border-blue-600'
-                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-blue-600 bg-white dark:bg-[#202225]'
+                        ? 'border-2'
+                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
                     }`}
                   >
                     <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-xs">
+                      <div
+                        style={{ backgroundColor: activeColors.finance }}
+                        className="w-8 h-8 rounded-xl text-white flex items-center justify-center shadow-xs"
+                      >
                         <BarChart3 className="w-4 h-4" />
                       </div>
                       <div>
@@ -294,7 +410,10 @@ export const Header: React.FC<HeaderProps> = ({
                       </div>
                     </div>
                     {activeSuiteModule === 'finance' ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-600 text-white font-semibold">
+                      <span
+                        style={{ backgroundColor: activeColors.finance }}
+                        className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
+                      >
                         Aktiv
                       </span>
                     ) : (
@@ -311,59 +430,102 @@ export const Header: React.FC<HeaderProps> = ({
                     setIsSuiteMenuOpen(false);
                     onOpenSettings();
                   }}
-                  className="text-[#C87D20] hover:underline flex items-center gap-1 cursor-pointer font-medium"
+                  style={{ color: activeColors.notes }}
+                  className="hover:underline flex items-center gap-1 cursor-pointer font-medium"
                 >
                   <Layers className="w-3.5 h-3.5" />
-                  <span>Module verwalten (Settings)</span>
+                  <span>Module & Profile verwalten</span>
                 </button>
                 <span className="text-neutral-400">Ochre Suite</span>
               </div>
             </div>
           )}
         </div>
+
+        {/* Compact Top Bar Profile Slider: ONLY in Notes module, compact dots-only on mobile (< md) */}
+        {activeSuiteModule === 'notes' && profileSettings.enableSecondProfile && (
+          <div
+            role="group"
+            aria-label="Profil-Umschalter"
+            className="flex items-center gap-0.5 p-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] shrink-0"
+            title="Schnell zwischen Profil 1 und Profil 2 wechseln"
+          >
+            {(['profile1', 'profile2'] as NoteProfileId[]).map((pid) => {
+              const prof = profileSettings[pid];
+              const isSelected = profileSettings.activeProfileId === pid;
+              const pColor = prof.colors.notes;
+              return (
+                <button
+                  key={pid}
+                  type="button"
+                  onClick={() => onSwitchProfile(pid)}
+                  style={isSelected ? { backgroundColor: pColor } : undefined}
+                  aria-label={`Profil: ${prof.name}`}
+                  title={prof.name}
+                  className={`flex items-center justify-center md:gap-1.5 w-7 h-7 md:w-auto md:h-auto md:px-2.5 md:py-1 rounded-full text-[11px] font-semibold transition-all cursor-pointer active:scale-95 shrink-0 ${
+                    isSelected
+                      ? 'text-white shadow-xs'
+                      : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
+                  }`}
+                >
+                  <span
+                    className="w-2.5 h-2.5 md:w-1.5 md:h-1.5 rounded-full shrink-0"
+                    style={{ backgroundColor: isSelected ? '#FFFFFF' : pColor }}
+                  />
+                  <span className="hidden md:inline truncate max-w-[90px]">{prof.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      {/* Zone 2: Navigation Modes (Notizen, Aufgaben, Graph) - Desktop View */}
-      <div className="hidden lg:flex items-center gap-1 bg-[#F4F3EF] dark:bg-[#202225] p-1 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136]">
-        <button
-          onClick={() => onChangeView('editor')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-            activeView === 'editor'
-              ? 'bg-white dark:bg-[#2B2D31] text-[#C87D20] dark:text-[#E09228] font-bold shadow-xs'
-              : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
-          }`}
-          title={t.notes}
-        >
-          <BookOpen className="w-4 h-4" />
-          <span>{t.notes}</span>
-        </button>
+      {/* Zone 2: Navigation Modes (Notizen, Aufgaben, Graph) - Desktop View in Notes */}
+      {activeSuiteModule === 'notes' && (
+        <div className="hidden lg:flex items-center gap-1 bg-[#F4F3EF] dark:bg-[#202225] p-1 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136]">
+          <button
+            onClick={() => onChangeView('editor')}
+            style={activeView === 'editor' ? { color: activeColors.notes } : undefined}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeView === 'editor'
+                ? 'bg-white dark:bg-[#2B2D31] font-bold shadow-xs'
+                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
+            }`}
+            title={t.notes}
+          >
+            <BookOpen className="w-4 h-4" />
+            <span>{t.notes}</span>
+          </button>
 
-        <button
-          onClick={() => onChangeView('tasks')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-            activeView === 'tasks'
-              ? 'bg-white dark:bg-[#2B2D31] text-[#C87D20] dark:text-[#E09228] font-bold shadow-xs'
-              : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
-          }`}
-          title={t.tasks}
-        >
-          <CheckSquare className="w-4 h-4" />
-          <span>{t.tasks}</span>
-        </button>
+          <button
+            onClick={() => onChangeView('tasks')}
+            style={activeView === 'tasks' ? { color: activeColors.notes } : undefined}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeView === 'tasks'
+                ? 'bg-white dark:bg-[#2B2D31] font-bold shadow-xs'
+                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
+            }`}
+            title={t.tasks}
+          >
+            <CheckSquare className="w-4 h-4" />
+            <span>{t.tasks}</span>
+          </button>
 
-        <button
-          onClick={() => onChangeView('graph')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-            activeView === 'graph'
-              ? 'bg-white dark:bg-[#2B2D31] text-[#C87D20] dark:text-[#E09228] font-bold shadow-xs'
-              : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
-          }`}
-          title={t.graph}
-        >
-          <Network className="w-4 h-4" />
-          <span>{t.graph}</span>
-        </button>
-      </div>
+          <button
+            onClick={() => onChangeView('graph')}
+            style={activeView === 'graph' ? { color: activeColors.notes } : undefined}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeView === 'graph'
+                ? 'bg-white dark:bg-[#2B2D31] font-bold shadow-xs'
+                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
+            }`}
+            title={t.graph}
+          >
+            <Network className="w-4 h-4" />
+            <span>{t.graph}</span>
+          </button>
+        </div>
+      )}
 
       {/* Zone 3: Wifi/Cloud Status Badge & Unified User Menu */}
       <div className="flex items-center gap-2">
@@ -524,39 +686,58 @@ export const Header: React.FC<HeaderProps> = ({
                 </button>
               </div>
 
-              {/* Action Items: Formatted as individual button cards */}
+              {/* Action Items: Context-aware per active Suite Module */}
               <div className="space-y-1.5">
-                <button
-                  onClick={() => {
-                    onOpenShareModal();
-                    setIsUserMenuOpen(false);
-                  }}
-                  className="w-full flex items-center justify-between p-2.5 text-xs rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-neutral-50/70 dark:bg-neutral-800/40 hover:border-[#C87D20] hover:bg-amber-500/10 text-neutral-800 dark:text-neutral-200 transition-all text-left group cursor-pointer"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-7 h-7 rounded-lg bg-amber-500/10 flex items-center justify-center text-[#C87D20] group-hover:bg-[#C87D20] group-hover:text-white transition-colors">
-                      <Share2 className="w-3.5 h-3.5" />
-                    </div>
-                    <span>{t.shareNote}</span>
-                  </div>
-                  <ChevronRight className="w-3.5 h-3.5 text-neutral-400" />
-                </button>
+                {activeSuiteModule !== 'finance' && (
+                  <>
+                    <button
+                      onClick={() => {
+                        onOpenShareModal();
+                        setIsUserMenuOpen(false);
+                      }}
+                      className="w-full flex items-center justify-between p-2.5 text-xs rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-neutral-50/70 dark:bg-neutral-800/40 hover:border-[var(--ochre-accent)] hover:bg-amber-500/10 text-neutral-800 dark:text-neutral-200 transition-all text-left group cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div
+                          className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors"
+                          style={{ backgroundColor: `${currentModuleColor}1A`, color: currentModuleColor }}
+                        >
+                          <Share2 className="w-3.5 h-3.5" />
+                        </div>
+                        <span>
+                          {activeSuiteModule === 'wiki'
+                            ? 'Wiki-Artikel teilen'
+                            : activeSuiteModule === 'recipes'
+                            ? 'Rezept teilen'
+                            : t.shareNote}
+                        </span>
+                      </div>
+                      <ChevronRight className="w-3.5 h-3.5 text-neutral-400" />
+                    </button>
 
-                <button
-                  onClick={() => {
-                    onPrintA4();
-                    setIsUserMenuOpen(false);
-                  }}
-                  className="w-full flex items-center justify-between p-2.5 text-xs rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-neutral-50/70 dark:bg-neutral-800/40 hover:border-[#C87D20] hover:bg-amber-500/10 text-neutral-800 dark:text-neutral-200 transition-all text-left group cursor-pointer"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-7 h-7 rounded-lg bg-neutral-200 dark:bg-neutral-700 flex items-center justify-center text-neutral-600 dark:text-neutral-300 group-hover:bg-[#C87D20] group-hover:text-white transition-colors">
-                      <Printer className="w-3.5 h-3.5" />
-                    </div>
-                    <span>{t.printA4}</span>
-                  </div>
-                  <ChevronRight className="w-3.5 h-3.5 text-neutral-400" />
-                </button>
+                    <button
+                      onClick={() => {
+                        onPrintA4();
+                        setIsUserMenuOpen(false);
+                      }}
+                      className="w-full flex items-center justify-between p-2.5 text-xs rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-neutral-50/70 dark:bg-neutral-800/40 hover:border-[var(--ochre-accent)] hover:bg-amber-500/10 text-neutral-800 dark:text-neutral-200 transition-all text-left group cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-7 h-7 rounded-lg bg-neutral-200 dark:bg-neutral-700 flex items-center justify-center text-neutral-600 dark:text-neutral-300 group-hover:text-white transition-colors">
+                          <Printer className="w-3.5 h-3.5" />
+                        </div>
+                        <span>
+                          {activeSuiteModule === 'wiki'
+                            ? 'Wiki-Artikel als A4 drucken'
+                            : activeSuiteModule === 'recipes'
+                            ? 'Kochplan als A4 drucken'
+                            : t.printA4}
+                        </span>
+                      </div>
+                      <ChevronRight className="w-3.5 h-3.5 text-neutral-400" />
+                    </button>
+                  </>
+                )}
 
                 <button
                   onClick={() => {

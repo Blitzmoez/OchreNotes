@@ -1,0 +1,43 @@
+{
+  "id": "c_sarah",
+  "name": "Mein Essenszyklus",
+  "cycleLengthDays": 7,
+  "startDate": "2026-11-13",
+  "days": [
+    {
+      "dayIndex": 0,
+      "label": "Tag 1",
+      "recipeIds": []
+    },
+    {
+      "dayIndex": 1,
+      "label": "Tag 2",
+      "recipeIds": []
+    },
+    {
+      "dayIndex": 2,
+      "label": "Tag 3",
+      "recipeIds": []
+    },
+    {
+      "dayIndex": 3,
+      "label": "Tag 4",
+      "recipeIds": []
+    },
+    {
+      "dayIndex": 4,
+      "label": "Tag 5",
+      "recipeIds": []
+    },
+    {
+      "dayIndex": 5,
+      "label": "Tag 6",
+      "recipeIds": []
+    },
+    {
+      "dayIndex": 6,
+      "label": "Tag 7",
+      "recipeIds": []
+    }
+  ]
+}

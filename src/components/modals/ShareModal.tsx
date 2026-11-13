@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   X, 
   Share2, 
@@ -9,32 +9,51 @@ import {
   Copy, 
   Download, 
   Check, 
-  Shield, 
   UserPlus, 
   Trash2,
   Smartphone,
   FileText
 } from 'lucide-react';
-import { User, ShareRecord } from '../../types';
+import { User, ShareRecord, WikiArticle, Recipe } from '../../types';
 import { api } from '../../services/api';
 import { exportToOdt } from '../../services/odtExport';
 
 interface ShareModalProps {
   isOpen: boolean;
   onClose: () => void;
+  mode?: 'note' | 'wiki' | 'recipe';
+  accentColor?: string;
+  // Note mode props
   noteTitle: string;
   notePath: string;
   noteContent: string;
+  // Wiki mode props
+  wikiArticle?: WikiArticle | null;
+  // Recipe mode props
+  activeRecipe?: Recipe | null;
+  recipesList?: Recipe[];
+  // Users
   currentUser: User;
   allUsers: User[];
+}
+
+function recipeToMarkdown(recipe: Recipe): string {
+  const ingLines = recipe.ingredients.map((i) => `- ${i.name}${i.amount ? ` (${i.amount})` : ''}`).join('\n');
+  const stepLines = recipe.instructions.map((s, idx) => `${idx + 1}. ${s}`).join('\n');
+  return `# ${recipe.title}\n\nKategorie: ${recipe.category} · Dauer: ${recipe.prepTimeMinutes} Min · ${recipe.portions} Portionen\n\n> ${recipe.description}\n\n## Zutaten\n${ingLines}\n\n## Zubereitung\n${stepLines}\n`;
 }
 
 export const ShareModal: React.FC<ShareModalProps> = ({
   isOpen,
   onClose,
+  mode = 'note',
+  accentColor = '#C87D20',
   noteTitle,
   notePath,
   noteContent,
+  wikiArticle,
+  activeRecipe,
+  recipesList = [],
   currentUser,
   allUsers,
 }) => {
@@ -44,28 +63,84 @@ export const ShareModal: React.FC<ShareModalProps> = ({
   const [permission, setPermission] = useState<'read' | 'write'>('read');
   const [copiedType, setCopiedType] = useState<string | null>(null);
   const [shareLoading, setShareLoading] = useState(false);
+  const [shareFeedback, setShareFeedback] = useState<string | null>(null);
+  const [selectedRecipeId, setSelectedRecipeId] = useState<string>('');
 
   // Available recipients (exclude current user)
   const availableUsers = allUsers.filter((u) => u.id !== currentUser.id);
 
-  // Load existing shares
+  // Sync selected recipe when modal opens in recipe mode
   useEffect(() => {
-    if (isOpen && notePath) {
+    if (isOpen && mode === 'recipe') {
+      setSelectedRecipeId(activeRecipe?.id || recipesList[0]?.id || '');
+      setShareFeedback(null);
+    } else if (isOpen) {
+      setShareFeedback(null);
+    }
+  }, [isOpen, mode, activeRecipe, recipesList]);
+
+  // Load existing shares for note mode
+  useEffect(() => {
+    if (isOpen && mode === 'note' && notePath) {
       api.fetchSharesForNote(currentUser.username, notePath).then(setExistingShares);
     }
-  }, [isOpen, notePath, currentUser.username]);
+  }, [isOpen, mode, notePath, currentUser.username]);
+
+  const targetRecipe = useMemo(() => {
+    if (mode !== 'recipe') return null;
+    if (selectedRecipeId) {
+      return recipesList.find((r) => r.id === selectedRecipeId) || activeRecipe || recipesList[0] || null;
+    }
+    return activeRecipe || recipesList[0] || null;
+  }, [mode, selectedRecipeId, recipesList, activeRecipe]);
 
   if (!isOpen) return null;
+
+  const displayTitle =
+    mode === 'wiki'
+      ? wikiArticle?.title || 'Wiki-Artikel'
+      : mode === 'recipe'
+      ? targetRecipe?.title || 'Rezept'
+      : noteTitle || 'Notiz';
+
+  const displayContent =
+    mode === 'wiki'
+      ? wikiArticle?.rawMarkdown || `# ${wikiArticle?.title || ''}\n\n${wikiArticle?.body || ''}`
+      : mode === 'recipe'
+      ? targetRecipe
+        ? recipeToMarkdown(targetRecipe)
+        : ''
+      : noteContent;
+
+  const modalTitlePrefix =
+    mode === 'wiki' ? 'Wiki-Artikel teilen' : mode === 'recipe' ? 'Rezept teilen' : 'Notiz teilen';
 
   // Add in-app share
   const handleAddShare = async () => {
     if (!selectedUserId) return;
+    const recipient = allUsers.find((u) => u.id === selectedUserId);
+    if (!recipient) return;
+
     setShareLoading(true);
+    setShareFeedback(null);
     try {
-      await api.shareNote(notePath, currentUser.username, selectedUserId, permission);
-      const updated = await api.fetchSharesForNote(currentUser.username, notePath);
-      setExistingShares(updated);
-      setSelectedUserId('');
+      if (mode === 'note') {
+        await api.shareNote(notePath, currentUser.username, selectedUserId, permission);
+        const updated = await api.fetchSharesForNote(currentUser.username, notePath);
+        setExistingShares(updated);
+        setSelectedUserId('');
+        setShareFeedback(`Notiz für ${recipient.displayName} freigegeben.`);
+      } else if (mode === 'wiki' && wikiArticle) {
+        await api.shareWikiArticle(currentUser.username, recipient.username, wikiArticle.slug);
+        setSelectedUserId('');
+        setShareFeedback(`Wiki-Artikel an ${recipient.displayName} gesendet.`);
+      } else if (mode === 'recipe' && targetRecipe) {
+        await api.shareCookbookRecipe(currentUser.username, recipient.username, targetRecipe);
+        setSelectedUserId('');
+        setShareFeedback(`Rezept „${targetRecipe.title}“ an ${recipient.displayName} gesendet.`);
+      }
+    } catch (e: any) {
+      setShareFeedback(`Fehler: ${e.message || 'Teilen fehlgeschlagen'}`);
     } finally {
       setShareLoading(false);
     }
@@ -77,9 +152,6 @@ export const ShareModal: React.FC<ShareModalProps> = ({
     setExistingShares((prev) => prev.filter((s) => s.id !== shareId));
   };
 
-  // External share helpers
-  const shareText = `${noteTitle}\n\n${noteContent.substring(0, 300)}...`;
-
   const copyToClipboard = (text: string, type: string) => {
     navigator.clipboard.writeText(text);
     setCopiedType(type);
@@ -87,75 +159,97 @@ export const ShareModal: React.FC<ShareModalProps> = ({
   };
 
   const handleDownloadMd = () => {
-    const blob = new Blob([noteContent], { type: 'text/markdown;charset=utf-8' });
+    const blob = new Blob([displayContent], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${noteTitle || 'notiz'}.md`;
+    link.download = `${displayTitle || 'dokument'}.md`;
     link.click();
     URL.revokeObjectURL(url);
   };
 
   const handleDownloadOdt = () => {
-    const blob = exportToOdt(noteTitle || 'Dokument', noteContent);
+    const blob = exportToOdt(displayTitle || 'Dokument', displayContent);
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${noteTitle || 'dokument'}.odt`;
+    link.download = `${displayTitle || 'dokument'}.odt`;
     link.click();
     URL.revokeObjectURL(url);
   };
 
   const handleNativeShare = () => {
     if (navigator.share) {
-      navigator.share({
-        title: noteTitle,
-        text: noteContent,
-      }).catch(() => {});
+      navigator
+        .share({
+          title: displayTitle,
+          text: displayContent,
+        })
+        .catch(() => {});
     }
   };
 
-  const whatsAppUrl = `https://wa.me/?text=${encodeURIComponent(`${noteTitle}\n\n${noteContent}`)}`;
-  const mailUrl = `mailto:?subject=${encodeURIComponent(noteTitle)}&body=${encodeURIComponent(noteContent)}`;
+  const whatsAppUrl = `https://wa.me/?text=${encodeURIComponent(`${displayTitle}\n\n${displayContent}`)}`;
+  const mailUrl = `mailto:?subject=${encodeURIComponent(displayTitle)}&body=${encodeURIComponent(displayContent)}`;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
       <div className="w-full max-w-lg bg-white dark:bg-[#1E1F23] rounded-xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] overflow-hidden flex flex-col">
         {/* Modal Header */}
-        <div className="p-4 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Share2 className="w-4 h-4 text-[#C87D20]" />
+        <div className="p-4 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <Share2 className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
             <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 truncate">
-              Notiz teilen: <span className="text-[#C87D20]">{noteTitle}</span>
+              {modalTitlePrefix}: <span style={{ color: accentColor }}>{displayTitle}</span>
             </h2>
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded-md text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+            className="p-1 rounded-md text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
+        {/* Optional Recipe Selector when in recipe mode */}
+        {mode === 'recipe' && recipesList.length > 0 && (
+          <div className="px-4 py-2.5 border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#1A1C1F] flex items-center gap-2 text-xs">
+            <span className="font-semibold text-neutral-600 dark:text-neutral-400 shrink-0">Rezept wählen:</span>
+            <select
+              value={targetRecipe?.id || ''}
+              onChange={(e) => setSelectedRecipeId(e.target.value)}
+              className="flex-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-800 dark:text-neutral-200 outline-hidden"
+            >
+              {recipesList.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.title} ({r.category})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
         {/* Tab Switcher */}
         <div className="flex border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] text-xs">
           <button
             onClick={() => setActiveTab('inapp')}
-            className={`flex-1 py-2.5 font-medium flex items-center justify-center gap-1.5 transition-colors ${
+            style={activeTab === 'inapp' ? { color: accentColor, borderBottomColor: accentColor } : undefined}
+            className={`flex-1 py-2.5 font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
               activeTab === 'inapp'
-                ? 'bg-white dark:bg-[#1E1F23] text-[#C87D20] border-b-2 border-[#C87D20]'
+                ? 'bg-white dark:bg-[#1E1F23] border-b-2'
                 : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
             }`}
           >
             <Users className="w-3.5 h-3.5" />
-            <span>In-App Freigabe (Partner / Team)</span>
+            <span>In-App Freigabe</span>
           </button>
 
           <button
             onClick={() => setActiveTab('external')}
-            className={`flex-1 py-2.5 font-medium flex items-center justify-center gap-1.5 transition-colors ${
+            style={activeTab === 'external' ? { color: accentColor, borderBottomColor: accentColor } : undefined}
+            className={`flex-1 py-2.5 font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
               activeTab === 'external'
-                ? 'bg-white dark:bg-[#1E1F23] text-[#C87D20] border-b-2 border-[#C87D20]'
+                ? 'bg-white dark:bg-[#1E1F23] border-b-2'
                 : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
             }`}
           >
@@ -168,13 +262,17 @@ export const ShareModal: React.FC<ShareModalProps> = ({
         {activeTab === 'inapp' && (
           <div className="p-4 space-y-4">
             <p className="text-xs text-neutral-500">
-              Freigegebene Notizen erscheinen beim Empfänger in einer separaten, unaufdringlichen Rubrik in der Seitenleiste.
+              {mode === 'wiki'
+                ? 'Sende diesen Wiki-Artikel inkl. Fotos direkt in den Wiki-Ordner eines anderen Benutzers.'
+                : mode === 'recipe'
+                ? 'Sende dieses Tellergericht direkt in den eigenen Katalog eines anderen Benutzers.'
+                : 'Freigegebene Notizen erscheinen beim Empfänger in einer separaten Rubrik in der Seitenleiste.'}
             </p>
 
             {/* Share Form */}
             <div className="p-3 bg-[#F4F3EF] dark:bg-[#18191B] rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] space-y-3">
               <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 block">
-                Neue Freigabe hinzufügen
+                {mode === 'note' ? 'Neue Freigabe hinzufügen' : 'Empfänger auswählen'}
               </span>
 
               <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
@@ -191,65 +289,77 @@ export const ShareModal: React.FC<ShareModalProps> = ({
                   ))}
                 </select>
 
-                <select
-                  value={permission}
-                  onChange={(e) => setPermission(e.target.value as 'read' | 'write')}
-                  className="text-xs px-2.5 py-1.5 rounded-md bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 outline-hidden"
-                >
-                  <option value="read">Nur Lesen</option>
-                  <option value="write">Darf Bearbeiten</option>
-                </select>
+                {mode === 'note' && (
+                  <select
+                    value={permission}
+                    onChange={(e) => setPermission(e.target.value as 'read' | 'write')}
+                    className="text-xs px-2.5 py-1.5 rounded-md bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 outline-hidden"
+                  >
+                    <option value="read">Nur Lesen</option>
+                    <option value="write">Darf Bearbeiten</option>
+                  </select>
+                )}
 
                 <button
                   onClick={handleAddShare}
-                  disabled={!selectedUserId || shareLoading}
-                  className="px-3 py-1.5 rounded-md bg-[#C87D20] text-white text-xs font-medium hover:bg-[#b06c19] disabled:opacity-50 transition-colors flex items-center justify-center gap-1 whitespace-nowrap"
+                  disabled={!selectedUserId || shareLoading || (mode === 'wiki' && !wikiArticle) || (mode === 'recipe' && !targetRecipe)}
+                  style={{ backgroundColor: accentColor }}
+                  className="px-3 py-1.5 rounded-md text-white text-xs font-medium disabled:opacity-50 transition-opacity flex items-center justify-center gap-1 whitespace-nowrap cursor-pointer"
                 >
                   <UserPlus className="w-3.5 h-3.5" />
-                  <span>Freigeben</span>
+                  <span>{mode === 'note' ? 'Freigeben' : 'Senden'}</span>
                 </button>
               </div>
-            </div>
 
-            {/* Existing Shares List */}
-            <div>
-              <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 block mb-2">
-                Aktive Freigaben für diese Notiz ({existingShares.length})
-              </span>
-
-              {existingShares.length === 0 ? (
-                <div className="p-3 text-center text-xs text-neutral-400 italic bg-neutral-50 dark:bg-neutral-900/40 rounded border border-dashed border-[#E5E3DC] dark:border-[#2F3136]">
-                  Diese Notiz ist bisher rein privat und für niemanden freigegeben.
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  {existingShares.map((share) => (
-                    <div
-                      key={share.id}
-                      className="flex items-center justify-between p-2 rounded bg-[#FBFBFA] dark:bg-[#18191B] border border-[#E5E3DC] dark:border-[#2F3136] text-xs"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Users className="w-3.5 h-3.5 text-[#C87D20]" />
-                        <span className="font-medium text-neutral-800 dark:text-neutral-200">
-                          {share.sharedWithUsername}
-                        </span>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400">
-                          {share.permission === 'write' ? 'Darf Bearbeiten' : 'Nur Lesen'}
-                        </span>
-                      </div>
-
-                      <button
-                        onClick={() => handleRevokeShare(share.id)}
-                        className="p-1 rounded text-neutral-400 hover:text-red-600 transition-colors"
-                        title="Freigabe aufheben"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ))}
+              {shareFeedback && (
+                <div className="text-xs font-medium text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                  <Check className="w-3.5 h-3.5" />
+                  <span>{shareFeedback}</span>
                 </div>
               )}
             </div>
+
+            {/* Existing Shares List (Notes only) */}
+            {mode === 'note' && (
+              <div>
+                <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 block mb-2">
+                  Aktive Freigaben für diese Notiz ({existingShares.length})
+                </span>
+
+                {existingShares.length === 0 ? (
+                  <div className="p-3 text-center text-xs text-neutral-400 italic bg-neutral-50 dark:bg-neutral-900/40 rounded border border-dashed border-[#E5E3DC] dark:border-[#2F3136]">
+                    Diese Notiz ist bisher rein privat und für niemanden freigegeben.
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {existingShares.map((share) => (
+                      <div
+                        key={share.id}
+                        className="flex items-center justify-between p-2 rounded bg-[#FBFBFA] dark:bg-[#18191B] border border-[#E5E3DC] dark:border-[#2F3136] text-xs"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Users className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                          <span className="font-medium text-neutral-800 dark:text-neutral-200">
+                            {share.sharedWithUsername}
+                          </span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400">
+                            {share.permission === 'write' ? 'Darf Bearbeiten' : 'Nur Lesen'}
+                          </span>
+                        </div>
+
+                        <button
+                          onClick={() => handleRevokeShare(share.id)}
+                          className="p-1 rounded text-neutral-400 hover:text-red-600 transition-colors cursor-pointer"
+                          title="Freigabe aufheben"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -257,7 +367,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
         {activeTab === 'external' && (
           <div className="p-4 space-y-4">
             <p className="text-xs text-neutral-500">
-              Teile diese Notiz schnell über WhatsApp, E-Mail, Signal oder lade sie als Markdown herunter.
+              Teile diesen Inhalt schnell über WhatsApp, E-Mail oder lade ihn als Markdown bzw. OpenDocument herunter.
             </p>
 
             <div className="grid grid-cols-2 gap-2.5">
@@ -279,9 +389,12 @@ export const ShareModal: React.FC<ShareModalProps> = ({
                 href={mailUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-2 p-3 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] hover:bg-blue-50 dark:hover:bg-blue-950/20 text-neutral-800 dark:text-neutral-200 hover:text-blue-700 transition-colors text-xs font-medium"
+                className="flex items-center gap-2 p-3 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] hover:bg-amber-50 dark:hover:bg-amber-950/20 text-neutral-800 dark:text-neutral-200 transition-colors text-xs font-medium"
               >
-                <div className="w-7 h-7 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-600 flex items-center justify-center">
+                <div
+                  className="w-7 h-7 rounded-full flex items-center justify-center"
+                  style={{ backgroundColor: `${accentColor}1A`, color: accentColor }}
+                >
                   <Mail className="w-4 h-4" />
                 </div>
                 <span>Per E-Mail</span>
@@ -289,19 +402,22 @@ export const ShareModal: React.FC<ShareModalProps> = ({
 
               {/* Copy Markdown */}
               <button
-                onClick={() => copyToClipboard(noteContent, 'markdown')}
-                className="flex items-center gap-2 p-3 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-colors text-xs font-medium"
+                onClick={() => copyToClipboard(displayContent, 'markdown')}
+                className="flex items-center gap-2 p-3 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-colors text-xs font-medium cursor-pointer"
               >
-                <div className="w-7 h-7 rounded-full bg-amber-100 dark:bg-amber-900/40 text-[#C87D20] flex items-center justify-center">
+                <div
+                  className="w-7 h-7 rounded-full flex items-center justify-center"
+                  style={{ backgroundColor: `${accentColor}1A`, color: accentColor }}
+                >
                   {copiedType === 'markdown' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                 </div>
-                <span>{copiedType === 'markdown' ? 'Kopiert!' : 'Markdown kopieren'}</span>
+                <span>{copiedType === 'markdown' ? 'Kopiert!' : 'Text / MD kopieren'}</span>
               </button>
 
               {/* Download .md */}
               <button
                 onClick={handleDownloadMd}
-                className="flex items-center gap-2 p-3 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-colors text-xs font-medium"
+                className="flex items-center gap-2 p-3 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-colors text-xs font-medium cursor-pointer"
               >
                 <div className="w-7 h-7 rounded-full bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-200 flex items-center justify-center">
                   <Download className="w-4 h-4" />
@@ -309,23 +425,26 @@ export const ShareModal: React.FC<ShareModalProps> = ({
                 <span>.md Datei Download</span>
               </button>
 
-              {/* Download .odt (OpenDocument Text) */}
+              {/* Download .odt */}
               <button
                 onClick={handleDownloadOdt}
-                className="flex items-center gap-2 p-3 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] hover:bg-amber-50 dark:hover:bg-amber-950/20 text-neutral-800 dark:text-neutral-200 hover:text-[#C87D20] transition-colors text-xs font-medium col-span-2"
+                className="flex items-center gap-2 p-3 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] hover:bg-amber-50 dark:hover:bg-amber-950/20 text-neutral-800 dark:text-neutral-200 transition-colors text-xs font-medium col-span-2 cursor-pointer"
               >
-                <div className="w-7 h-7 rounded-full bg-amber-100 dark:bg-amber-900/40 text-[#C87D20] flex items-center justify-center">
+                <div
+                  className="w-7 h-7 rounded-full flex items-center justify-center"
+                  style={{ backgroundColor: `${accentColor}1A`, color: accentColor }}
+                >
                   <FileText className="w-4 h-4" />
                 </div>
                 <span>Als .odt exportieren (LibreOffice / OpenOffice / Word)</span>
               </button>
             </div>
 
-            {/* Mobile native share if available */}
             {typeof navigator !== 'undefined' && 'share' in navigator && (
               <button
                 onClick={handleNativeShare}
-                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-[#C87D20] text-white text-xs font-medium hover:bg-[#b06c19] transition-colors"
+                style={{ backgroundColor: accentColor }}
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-white text-xs font-medium transition-opacity hover:opacity-90 cursor-pointer"
               >
                 <Smartphone className="w-4 h-4" />
                 <span>Mobiles Teilen-Menü öffnen</span>
@@ -338,7 +457,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
         <div className="p-3 border-t border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA] dark:bg-[#18191B] flex justify-end">
           <button
             onClick={onClose}
-            className="px-4 py-1.5 rounded-md text-xs font-medium bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-300 dark:hover:bg-neutral-700 transition-colors"
+            className="px-4 py-1.5 rounded-md text-xs font-medium bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-300 dark:hover:bg-neutral-700 transition-colors cursor-pointer"
           >
             Schließen
           </button>

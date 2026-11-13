@@ -1,0 +1,58 @@
+{
+  "id": "c_default",
+  "name": "Standard-Wochenzyklus",
+  "cycleLengthDays": 7,
+  "startDate": "2026-11-13",
+  "days": [
+    {
+      "dayIndex": 0,
+      "label": "Tag 1 (Mo)",
+      "recipeIds": [
+        "r_1"
+      ]
+    },
+    {
+      "dayIndex": 1,
+      "label": "Tag 2 (Di)",
+      "recipeIds": [
+        "r_2"
+      ]
+    },
+    {
+      "dayIndex": 2,
+      "label": "Tag 3 (Mi)",
+      "recipeIds": [
+        "r_4"
+      ]
+    },
+    {
+      "dayIndex": 3,
+      "label": "Tag 4 (Do)",
+      "recipeIds": [
+        "r_1"
+      ]
+    },
+    {
+      "dayIndex": 4,
+      "label": "Tag 5 (Fr)",
+      "recipeIds": [
+        "r_2"
+      ]
+    },
+    {
+      "dayIndex": 5,
+      "label": "Tag 6 (Sa)",
+      "recipeIds": [
+        "r_3",
+        "r_4"
+      ]
+    },
+    {
+      "dayIndex": 6,
+      "label": "Tag 7 (So)",
+      "recipeIds": [
+        "r_2"
+      ]
+    }
+  ]
+}

@@ -1,7 +1,15 @@
 import { parseMarkdownToHtml } from './markdownParser';
+import { WikiArticle, MealCycle, Recipe, MealCalendarOverride } from '../types';
 
-export function printNoteA4(title: string, markdownContent: string) {
-  const htmlContent = parseMarkdownToHtml(markdownContent);
+function escapeHtml(str: string): string {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function triggerIframePrint(htmlDoc: string, waitForImages = false) {
   const printFrame = document.createElement('iframe');
   printFrame.style.position = 'fixed';
   printFrame.style.right = '0';
@@ -19,132 +27,10 @@ export function printNoteA4(title: string, markdownContent: string) {
   }
 
   doc.open();
-  doc.write(`
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <title>${title || 'Notiz'}</title>
-        <style>
-          @page {
-            size: A4 portrait;
-            margin: 20mm 15mm 20mm 15mm;
-          }
-          body {
-            font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            font-size: 11pt;
-            line-height: 1.6;
-            color: #1a1a1a;
-            background: #ffffff;
-            margin: 0;
-            padding: 10px;
-          }
-          h1 {
-            font-size: 22pt;
-            color: #C87D20;
-            border-bottom: 2px solid #C87D20;
-            padding-bottom: 8px;
-            margin-top: 0;
-            margin-bottom: 16px;
-          }
-          h2 {
-            font-size: 15pt;
-            color: #222;
-            margin-top: 20px;
-            margin-bottom: 8px;
-            border-bottom: 1px solid #e0ded7;
-            padding-bottom: 4px;
-          }
-          h3 {
-            font-size: 12pt;
-            color: #333;
-            margin-top: 14px;
-            margin-bottom: 6px;
-          }
-          p {
-            margin: 8px 0;
-          }
-          pre, code {
-            font-family: 'JetBrains Mono', monospace;
-            background: #f5f4ef;
-            padding: 2px 5px;
-            border-radius: 4px;
-            font-size: 9.5pt;
-            color: #333;
-          }
-          pre {
-            padding: 12px;
-            border: 1px solid #e5e3dc;
-            overflow: hidden;
-            white-space: pre-wrap;
-            word-break: break-all;
-          }
-          blockquote {
-            border-left: 4px solid #C87D20;
-            margin: 12px 0;
-            padding: 6px 14px;
-            background: #fdfaf6;
-            color: #555;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 16px 0;
-            font-size: 10pt;
-          }
-          th, td {
-            border: 1px solid #ddd;
-            padding: 8px 12px;
-            text-align: left;
-          }
-          th {
-            background: #f4f3ef;
-            font-weight: 600;
-          }
-          ul, ol {
-            padding-left: 20px;
-            margin: 8px 0;
-          }
-          li {
-            margin: 4px 0;
-          }
-          .task-box {
-            display: inline-block;
-            width: 13px;
-            height: 13px;
-            border: 1.5px solid #666;
-            border-radius: 3px;
-            margin-right: 6px;
-            vertical-align: middle;
-            text-align: center;
-            line-height: 11px;
-            font-size: 9px;
-          }
-          .task-checked {
-            background-color: #C87D20;
-            border-color: #C87D20;
-            color: white;
-          }
-          a {
-            color: #C87D20;
-            text-decoration: underline;
-          }
-          hr {
-            border: 0;
-            border-top: 1px solid #e5e3dc;
-            margin: 20px 0;
-          }
-        </style>
-      </head>
-      <body>
-        <h1>${title || 'Notiz'}</h1>
-        <div class="content">${htmlContent}</div>
-      </body>
-    </html>
-  `);
+  doc.write(htmlDoc);
   doc.close();
 
-  setTimeout(() => {
+  const doPrint = () => {
     try {
       printFrame.contentWindow?.focus();
       printFrame.contentWindow?.print();
@@ -156,7 +42,468 @@ export function printNoteA4(title: string, markdownContent: string) {
         if (document.body.contains(printFrame)) {
           document.body.removeChild(printFrame);
         }
-      }, 2000);
+      }, 2500);
     }
-  }, 300);
+  };
+
+  if (waitForImages) {
+    const imgs = Array.from(doc.querySelectorAll('img'));
+    if (imgs.length > 0) {
+      let settled = false;
+      const finish = () => {
+        if (!settled) {
+          settled = true;
+          setTimeout(doPrint, 150);
+        }
+      };
+      Promise.all(
+        imgs.map(
+          (img) =>
+            new Promise<void>((resolve) => {
+              if (img.complete) return resolve();
+              img.addEventListener('load', () => resolve(), { once: true });
+              img.addEventListener('error', () => resolve(), { once: true });
+            })
+        )
+      ).then(finish);
+      setTimeout(finish, 2000);
+      return;
+    }
+  }
+
+  setTimeout(doPrint, 300);
+}
+
+const BASE_PRINT_STYLES = (accentColor: string) => `
+  @page {
+    size: A4 portrait;
+    margin: 18mm 15mm 18mm 15mm;
+  }
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.55;
+    color: #1a1a1a;
+    background: #ffffff;
+    margin: 0;
+    padding: 0;
+  }
+  h1 {
+    font-size: 20pt;
+    color: ${accentColor};
+    border-bottom: 2px solid ${accentColor};
+    padding-bottom: 8px;
+    margin: 0 0 12px 0;
+  }
+  h2 {
+    font-size: 13.5pt;
+    color: #222;
+    margin: 18px 0 8px 0;
+    border-bottom: 1px solid #e0ded7;
+    padding-bottom: 4px;
+    break-after: avoid;
+  }
+  h3 {
+    font-size: 11pt;
+    color: #333;
+    margin: 12px 0 4px 0;
+    break-after: avoid;
+  }
+  p { margin: 6px 0; }
+  pre, code {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #f5f4ef;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 9pt;
+    color: #222;
+  }
+  pre {
+    padding: 10px 12px;
+    border: 1px solid #e5e3dc;
+    white-space: pre-wrap;
+    word-break: break-word;
+    break-inside: avoid;
+    margin: 6px 0 12px 0;
+  }
+  blockquote {
+    border-left: 3px solid ${accentColor};
+    margin: 10px 0;
+    padding: 6px 12px;
+    background: #fdfaf6;
+    color: #555;
+    break-inside: avoid;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 9.5pt;
+  }
+  th, td {
+    border: 1px solid #ddd;
+    padding: 7px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background: #f4f3ef;
+    font-weight: 700;
+  }
+  tr {
+    break-inside: avoid;
+  }
+  ul, ol {
+    padding-left: 20px;
+    margin: 6px 0;
+  }
+  li { margin: 3px 0; }
+  .task-box {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 1.5px solid #666;
+    border-radius: 3px;
+    margin-right: 6px;
+    vertical-align: middle;
+    text-align: center;
+    line-height: 10px;
+    font-size: 8px;
+  }
+  .task-checked {
+    background-color: ${accentColor};
+    border-color: ${accentColor};
+    color: white;
+  }
+  a { color: ${accentColor}; text-decoration: underline; }
+  hr { border: 0; border-top: 1px solid #e5e3dc; margin: 16px 0; }
+`;
+
+export function printNoteA4(title: string, markdownContent: string, accentColor = '#C87D20') {
+  const htmlContent = parseMarkdownToHtml(markdownContent);
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  triggerIframePrint(`
+    <!DOCTYPE html>
+    <html lang="de">
+      <head>
+        <meta charset="utf-8" />
+        <base href="${origin}/" />
+        <title>${escapeHtml(title || 'Notiz')}</title>
+        <style>${BASE_PRINT_STYLES(accentColor)}</style>
+      </head>
+      <body>
+        <h1>${escapeHtml(title || 'Notiz')}</h1>
+        <div class="content">${htmlContent}</div>
+      </body>
+    </html>
+  `);
+}
+
+export function printWikiArticleA4(article: WikiArticle, accentColor = '#B87333') {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const bodyHtml = parseMarkdownToHtml(article.body || '');
+  const updatedStr = article.updatedAt
+    ? new Date(article.updatedAt).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' })
+    : '';
+  const tagsHtml = article.tags?.length ? ` · Tags: ${article.tags.map((t) => `#${escapeHtml(t)}`).join(', ')}` : '';
+
+  const imagesHtml =
+    article.images && article.images.length > 0
+      ? `
+      <h2>Fotos &amp; Abbildungen</h2>
+      <div class="wiki-images">
+        ${article.images
+          .map(
+            (img) => `
+          <figure class="wiki-figure">
+            <img src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || article.title)}" />
+            ${img.caption ? `<figcaption>${escapeHtml(img.caption)}</figcaption>` : ''}
+          </figure>
+        `
+          )
+          .join('')}
+      </div>
+    `
+      : '';
+
+  const snippetsHtml =
+    article.snippets && article.snippets.length > 0
+      ? `
+      <h2>Code-Ablage</h2>
+      ${article.snippets
+        .map(
+          (snip) => `
+        <div class="wiki-snippet">
+          <div class="wiki-snippet-header">
+            <span>${escapeHtml(snip.title || 'Code-Snippet')}</span>
+            <span class="lang">${escapeHtml(snip.language || 'text')}</span>
+          </div>
+          <pre><code>${escapeHtml(snip.code || '')}</code></pre>
+        </div>
+      `
+        )
+        .join('')}
+    `
+      : '';
+
+  triggerIframePrint(
+    `
+    <!DOCTYPE html>
+    <html lang="de">
+      <head>
+        <meta charset="utf-8" />
+        <base href="${origin}/" />
+        <title>${escapeHtml(article.title)} - Wiki A4</title>
+        <style>
+          ${BASE_PRINT_STYLES(accentColor)}
+          .meta-bar {
+            font-size: 9pt;
+            color: #666;
+            margin-bottom: 14px;
+          }
+          .wiki-images {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 8px;
+          }
+          .wiki-figure {
+            margin: 0;
+            border: 1px solid #e5e3dc;
+            border-radius: 6px;
+            padding: 6px;
+            background: #faf9f5;
+            break-inside: avoid;
+            text-align: center;
+          }
+          .wiki-figure img,
+          .content img {
+            max-width: 100%;
+            max-height: 95mm;
+            object-fit: contain;
+            display: block;
+            margin: 0 auto;
+          }
+          .wiki-figure figcaption {
+            font-size: 8.5pt;
+            color: #555;
+            margin-top: 4px;
+          }
+          .wiki-snippet {
+            margin-bottom: 10px;
+            break-inside: avoid;
+          }
+          .wiki-snippet-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #f4f3ef;
+            border: 1px solid #e5e3dc;
+            border-bottom: 0;
+            padding: 4px 10px;
+            font-size: 9pt;
+            font-weight: 700;
+            border-radius: 6px 6px 0 0;
+          }
+          .wiki-snippet-header .lang {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 8pt;
+            text-transform: uppercase;
+            color: ${accentColor};
+          }
+          .wiki-snippet pre {
+            margin: 0;
+            border-radius: 0 0 6px 6px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="meta-bar">
+          Ochre Wiki · Kategorie: <strong>${escapeHtml(article.category || 'Allgemein')}</strong>${updatedStr ? ` · Stand: ${escapeHtml(updatedStr)}` : ''}${tagsHtml}
+        </div>
+        <h1>${escapeHtml(article.title)}</h1>
+        <div class="content">${bodyHtml}</div>
+        ${imagesHtml}
+        ${snippetsHtml}
+      </body>
+    </html>
+  `,
+    true
+  );
+}
+
+export function printMealPlanA4(params: {
+  cycle: MealCycle;
+  recipes: Recipe[];
+  overrides: Record<string, MealCalendarOverride>;
+  weekOffset: number;
+  ownerName?: string;
+  accentColor?: string;
+}) {
+  const { cycle, recipes, overrides, weekOffset, ownerName, accentColor = '#C26D2D' } = params;
+  const base = new Date();
+  base.setDate(base.getDate() + weekOffset * 7);
+  const day = base.getDay();
+  const diff = base.getDate() - day + (day === 0 ? -6 : 1);
+  const monday = new Date(base.setDate(diff));
+
+  const getRecipeById = (id: string) => recipes.find((r) => r.id === id);
+
+  const days: Array<{
+    date: string;
+    weekday: string;
+    dayMonth: string;
+    cycleDayIndex: number;
+    isOverridden: boolean;
+    dishes: Recipe[];
+  }> = [];
+
+  const uniqueWeekRecipes = new Map<string, Recipe>();
+
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    const iso = d.toISOString().split('T')[0];
+
+    const start = new Date(cycle.startDate);
+    const diffTime = Math.floor((d.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+    const cycleIndex = ((diffTime % cycle.cycleLengthDays) + cycle.cycleLengthDays) % cycle.cycleLengthDays;
+    const cycleDay = cycle.days.find((cd) => cd.dayIndex === cycleIndex);
+
+    const isOverridden = !!overrides[iso];
+    const activeRecipeIds = isOverridden ? overrides[iso].recipeIds : cycleDay?.recipeIds || [];
+    const dishes = activeRecipeIds.map(getRecipeById).filter((r): r is Recipe => Boolean(r));
+    dishes.forEach((r) => uniqueWeekRecipes.set(r.id, r));
+
+    days.push({
+      date: iso,
+      weekday: d.toLocaleDateString('de-DE', { weekday: 'long' }),
+      dayMonth: d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }),
+      cycleDayIndex: cycleIndex,
+      isOverridden,
+      dishes,
+    });
+  }
+
+  const rangeStr = `${days[0].dayMonth} – ${days[6].dayMonth}`;
+
+  const tableRowsHtml = days
+    .map(
+      (d) => `
+      <tr>
+        <td style="width: 24%;">
+          <strong>${escapeHtml(d.weekday)}</strong><br/>
+          <span style="font-size: 8.5pt; color: #666;">${escapeHtml(d.dayMonth)}</span><br/>
+          <span style="font-size: 8pt; color: ${d.isOverridden ? accentColor : '#777'};">
+            ${d.isOverridden ? 'Einmalig geändert' : `Zyklus-Tag ${d.cycleDayIndex + 1}`}
+          </span>
+        </td>
+        <td>
+          ${
+            d.dishes.length === 0
+              ? '<span style="color:#888; font-style:italic;">Kein Gericht eingetragen</span>'
+              : d.dishes
+                  .map(
+                    (r) => `
+                  <div style="margin-bottom: 4px;">
+                    <strong>${escapeHtml(r.title)}</strong>
+                    <span style="font-size: 8.5pt; color: #666;"> · ${escapeHtml(r.category)} · ${r.prepTimeMinutes} Min · ${r.portions} Port.</span>
+                  </div>
+                `
+                  )
+                  .join('')
+          }
+        </td>
+      </tr>
+    `
+    )
+    .join('');
+
+  const recipeDetailsHtml =
+    uniqueWeekRecipes.size > 0
+      ? `
+      <h2>Benötigte Zutaten &amp; Kurz-Übersicht dieser Woche</h2>
+      <div class="recipe-grid">
+        ${Array.from(uniqueWeekRecipes.values())
+          .map(
+            (r) => `
+          <div class="recipe-box">
+            <h3>${escapeHtml(r.title)}</h3>
+            <div style="font-size: 8.5pt; color: #666; margin-bottom: 6px;">
+              ${escapeHtml(r.category)} · ${r.prepTimeMinutes} Min · ${r.portions} Portionen
+            </div>
+            <ul>
+              ${r.ingredients
+                .map((ing) => `<li>${escapeHtml(ing.name)}${ing.amount ? ` (${escapeHtml(ing.amount)})` : ''}</li>`)
+                .join('')}
+            </ul>
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+    `
+      : '';
+
+  triggerIframePrint(`
+    <!DOCTYPE html>
+    <html lang="de">
+      <head>
+        <meta charset="utf-8" />
+        <title>Kochplan ${escapeHtml(rangeStr)}</title>
+        <style>
+          ${BASE_PRINT_STYLES(accentColor)}
+          .meta-bar {
+            font-size: 9pt;
+            color: #666;
+            margin-bottom: 8px;
+          }
+          .recipe-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 8px;
+          }
+          .recipe-box {
+            border: 1px solid #e5e3dc;
+            border-radius: 6px;
+            padding: 8px 10px;
+            background: #faf9f5;
+            break-inside: avoid;
+          }
+          .recipe-box h3 {
+            margin: 0 0 2px 0;
+            color: ${accentColor};
+            font-size: 10.5pt;
+          }
+          .recipe-box ul {
+            margin: 4px 0 0 0;
+            padding-left: 16px;
+            font-size: 9pt;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="meta-bar">
+          Ochre Kochbuch${ownerName ? ` · Plan von ${escapeHtml(ownerName)}` : ''} · Zyklus: ${escapeHtml(cycle.name)} (${cycle.cycleLengthDays} Tage)
+        </div>
+        <h1>Kochplan: ${escapeHtml(rangeStr)}</h1>
+        <table>
+          <thead>
+            <tr>
+              <th>Tag</th>
+              <th>Geplante Tellergerichte</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tableRowsHtml}
+          </tbody>
+        </table>
+        ${recipeDetailsHtml}
+      </body>
+    </html>
+  `);
 }

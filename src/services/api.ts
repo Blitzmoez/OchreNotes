@@ -1,4 +1,4 @@
-import { NoteMetadata, NoteContent, TaskItem, User, ShareRecord, SystemHealth, SystemLog, GraphData } from '../types';
+import { NoteMetadata, NoteContent, TaskItem, User, ShareRecord, SystemHealth, SystemLog, GraphData, NoteProfileId, SuiteProfileSettings, EnabledModules, WikiArticle, Recipe, MealCycle, MealCalendarOverride, CookbookSharingSettings, SharedCookbookCatalog, SharedMealPlan } from '../types';
 
 class ApiService {
   private isOnline: boolean = typeof navigator !== 'undefined' ? navigator.onLine : true;
@@ -49,9 +49,9 @@ class ApiService {
     for (const item of queue) {
       try {
         if (item.action === 'saveNote') {
-          await this.saveNote(item.payload.username, item.payload.path, item.payload.content, item.payload.isShared, item.payload.sharedFrom);
+          await this.saveNote(item.payload.username, item.payload.path, item.payload.content, item.payload.isShared, item.payload.sharedFrom, item.payload.profile || 'profile1');
         } else if (item.action === 'toggleTask') {
-          await this.toggleTask(item.payload.username, item.payload.notePath, item.payload.lineIndex, item.payload.completed, item.payload.isShared, item.payload.sharedFrom);
+          await this.toggleTask(item.payload.username, item.payload.notePath, item.payload.lineIndex, item.payload.completed, item.payload.isShared, item.payload.sharedFrom, item.payload.profile || 'profile1');
         }
       } catch (e) {
         // Re-queue on failure
@@ -102,9 +102,9 @@ class ApiService {
     return await res.json();
   }
 
-  async fetchFolders(username: string): Promise<string[]> {
+  async fetchFolders(username: string, profile: NoteProfileId = 'profile1'): Promise<string[]> {
     try {
-      const res = await fetch(`/api/vault/folders?username=${encodeURIComponent(username)}`);
+      const res = await fetch(`/api/vault/folders?username=${encodeURIComponent(username)}&profile=${encodeURIComponent(profile)}`);
       if (!res.ok) return [];
       return await res.json();
     } catch {
@@ -131,15 +131,38 @@ class ApiService {
     return res.ok;
   }
 
-  async fetchNotes(username: string): Promise<NoteMetadata[]> {
+  async fetchProfileSettings(username: string): Promise<{ profileSettings?: SuiteProfileSettings; enabledModules?: EnabledModules } | null> {
     try {
-      const res = await fetch(`/api/vault/notes?username=${encodeURIComponent(username)}`);
+      const res = await fetch(`/api/system/profile-settings?username=${encodeURIComponent(username)}`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
+  async saveProfileSettings(username: string, profileSettings: SuiteProfileSettings, enabledModules: EnabledModules): Promise<boolean> {
+    try {
+      const res = await fetch('/api/system/profile-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, profileSettings, enabledModules }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async fetchNotes(username: string, profile: NoteProfileId = 'profile1'): Promise<NoteMetadata[]> {
+    try {
+      const res = await fetch(`/api/vault/notes?username=${encodeURIComponent(username)}&profile=${encodeURIComponent(profile)}`);
       if (!res.ok) throw new Error('Fehler beim Laden der Notizen');
       const notes = await res.json();
-      localStorage.setItem(`ochrenotes_notes_${username}`, JSON.stringify(notes));
+      localStorage.setItem(`ochrenotes_notes_${username}_${profile}`, JSON.stringify(notes));
       return notes;
     } catch (err) {
-      const cached = localStorage.getItem(`ochrenotes_notes_${username}`);
+      const cached = localStorage.getItem(`ochrenotes_notes_${username}_${profile}`);
       if (cached) return JSON.parse(cached);
       return [];
     }
@@ -159,10 +182,10 @@ class ApiService {
     }
   }
 
-  async readNote(username: string, path: string, isShared = false, sharedFrom = ''): Promise<NoteContent> {
-    const cacheKey = `note_content_${isShared ? sharedFrom : username}_${path}`;
+  async readNote(username: string, path: string, isShared = false, sharedFrom = '', profile: NoteProfileId = 'profile1'): Promise<NoteContent> {
+    const cacheKey = `note_content_${isShared ? sharedFrom : `${username}_${profile}`}_${path}`;
     try {
-      const url = `/api/vault/notes/read?username=${encodeURIComponent(username)}&path=${encodeURIComponent(path)}&isShared=${isShared}&sharedFrom=${encodeURIComponent(sharedFrom)}`;
+      const url = `/api/vault/notes/read?username=${encodeURIComponent(username)}&profile=${encodeURIComponent(profile)}&path=${encodeURIComponent(path)}&isShared=${isShared}&sharedFrom=${encodeURIComponent(sharedFrom)}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error('Notiz konnte nicht geladen werden');
       const data = await res.json();
@@ -175,9 +198,8 @@ class ApiService {
     }
   }
 
-  async saveNote(username: string, path: string, content: string, isShared = false, sharedFrom = ''): Promise<{ success: boolean; mtime: number }> {
-    const cacheKey = `note_content_${isShared ? sharedFrom : username}_${path}`;
-    // Always update local cache immediately for zero-latency feel
+  async saveNote(username: string, path: string, content: string, isShared = false, sharedFrom = '', profile: NoteProfileId = 'profile1'): Promise<{ success: boolean; mtime: number }> {
+    const cacheKey = `note_content_${isShared ? sharedFrom : `${username}_${profile}`}_${path}`;
     const cachedData: any = {
       path,
       title: path.replace(/^.*[\\\/]/, '').replace(/\.md$/, ''),
@@ -192,7 +214,7 @@ class ApiService {
     if (!navigator.onLine) {
       this.offlineSyncQueue.push({
         action: 'saveNote',
-        payload: { username, path, content, isShared, sharedFrom },
+        payload: { username, path, content, isShared, sharedFrom, profile },
       });
       this.saveQueue();
       return { success: true, mtime: Date.now() };
@@ -202,53 +224,53 @@ class ApiService {
       const res = await fetch('/api/vault/notes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, path, content, isShared, sharedFrom }),
+        body: JSON.stringify({ username, profile, path, content, isShared, sharedFrom }),
       });
       if (!res.ok) throw new Error('Fehler beim Speichern');
       return await res.json();
     } catch (err) {
       this.offlineSyncQueue.push({
         action: 'saveNote',
-        payload: { username, path, content, isShared, sharedFrom },
+        payload: { username, path, content, isShared, sharedFrom, profile },
       });
       this.saveQueue();
       return { success: true, mtime: Date.now() };
     }
   }
 
-  async createNote(username: string, path: string, content = ''): Promise<boolean> {
-    const res = await this.saveNote(username, path, content);
+  async createNote(username: string, path: string, content = '', profile: NoteProfileId = 'profile1'): Promise<boolean> {
+    const res = await this.saveNote(username, path, content, false, '', profile);
     return res.success;
   }
 
-  async deleteNote(username: string, path: string): Promise<boolean> {
-    const res = await fetch(`/api/vault/notes?username=${encodeURIComponent(username)}&path=${encodeURIComponent(path)}`, {
+  async deleteNote(username: string, path: string, profile: NoteProfileId = 'profile1'): Promise<boolean> {
+    const res = await fetch(`/api/vault/notes?username=${encodeURIComponent(username)}&profile=${encodeURIComponent(profile)}&path=${encodeURIComponent(path)}`, {
       method: 'DELETE',
     });
     return res.ok;
   }
 
-  async moveNote(username: string, oldPath: string, newPath: string): Promise<boolean> {
+  async moveNote(username: string, oldPath: string, newPath: string, profile: NoteProfileId = 'profile1'): Promise<boolean> {
     const res = await fetch('/api/vault/notes/move', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, oldPath, newPath }),
+      body: JSON.stringify({ username, profile, oldPath, newPath }),
     });
     return res.ok;
   }
 
-  async createFolder(username: string, folderPath: string): Promise<boolean> {
+  async createFolder(username: string, folderPath: string, profile: NoteProfileId = 'profile1'): Promise<boolean> {
     const res = await fetch('/api/vault/folders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, folderPath }),
+      body: JSON.stringify({ username, profile, folderPath }),
     });
     return res.ok;
   }
 
-  async deleteFolder(username: string, folderPath: string): Promise<{ success: boolean; error?: string }> {
+  async deleteFolder(username: string, folderPath: string, profile: NoteProfileId = 'profile1'): Promise<{ success: boolean; error?: string }> {
     try {
-      const res = await fetch(`/api/vault/folders?username=${encodeURIComponent(username)}&folderPath=${encodeURIComponent(folderPath)}`, {
+      const res = await fetch(`/api/vault/folders?username=${encodeURIComponent(username)}&profile=${encodeURIComponent(profile)}&folderPath=${encodeURIComponent(folderPath)}`, {
         method: 'DELETE',
       });
       const data = await res.json().catch(() => ({}));
@@ -261,15 +283,15 @@ class ApiService {
     }
   }
 
-  async fetchTasks(username: string): Promise<TaskItem[]> {
+  async fetchTasks(username: string, profile: NoteProfileId = 'profile1'): Promise<TaskItem[]> {
     try {
-      const res = await fetch(`/api/tasks?username=${encodeURIComponent(username)}`);
+      const res = await fetch(`/api/tasks?username=${encodeURIComponent(username)}&profile=${encodeURIComponent(profile)}`);
       if (!res.ok) throw new Error('Fehler beim Abrufen der Aufgaben');
       const tasks = await res.json();
-      localStorage.setItem(`ochrenotes_tasks_${username}`, JSON.stringify(tasks));
+      localStorage.setItem(`ochrenotes_tasks_${username}_${profile}`, JSON.stringify(tasks));
       return tasks;
     } catch (err) {
-      const cached = localStorage.getItem(`ochrenotes_tasks_${username}`);
+      const cached = localStorage.getItem(`ochrenotes_tasks_${username}_${profile}`);
       if (cached) return JSON.parse(cached);
       return [];
     }
@@ -281,12 +303,13 @@ class ApiService {
     lineIndex: number,
     completed: boolean,
     isShared = false,
-    sharedFrom = ''
+    sharedFrom = '',
+    profile: NoteProfileId = 'profile1'
   ): Promise<boolean> {
     if (!navigator.onLine) {
       this.offlineSyncQueue.push({
         action: 'toggleTask',
-        payload: { username, notePath, lineIndex, completed, isShared, sharedFrom },
+        payload: { username, notePath, lineIndex, completed, isShared, sharedFrom, profile },
       });
       this.saveQueue();
       return true;
@@ -296,27 +319,120 @@ class ApiService {
       const res = await fetch('/api/tasks/toggle', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, notePath, lineIndex, completed, isShared, sharedFrom }),
+        body: JSON.stringify({ username, profile, notePath, lineIndex, completed, isShared, sharedFrom }),
       });
       return res.ok;
     } catch (err) {
       this.offlineSyncQueue.push({
         action: 'toggleTask',
-        payload: { username, notePath, lineIndex, completed, isShared, sharedFrom },
+        payload: { username, notePath, lineIndex, completed, isShared, sharedFrom, profile },
       });
       this.saveQueue();
       return true;
     }
   }
 
-  async fetchGraph(username: string): Promise<GraphData> {
+  async fetchGraph(username: string, profile: NoteProfileId = 'profile1'): Promise<GraphData> {
     try {
-      const res = await fetch(`/api/graph?username=${encodeURIComponent(username)}`);
+      const res = await fetch(`/api/graph?username=${encodeURIComponent(username)}&profile=${encodeURIComponent(profile)}`);
       if (!res.ok) throw new Error('Fehler beim Abrufen des Graphen');
       return await res.json();
     } catch (err) {
       return { nodes: [], links: [] };
     }
+  }
+
+  // Open-Standard Wiki API
+  async fetchWikiArticles(username: string): Promise<WikiArticle[]> {
+    try {
+      const res = await fetch(`/api/wiki/articles?username=${encodeURIComponent(username)}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      localStorage.setItem(`ochre_wiki_cache_${username}`, JSON.stringify(data));
+      return data;
+    } catch {
+      const cached = localStorage.getItem(`ochre_wiki_cache_${username}`);
+      return cached ? JSON.parse(cached) : [];
+    }
+  }
+
+  async saveWikiArticle(username: string, article: WikiArticle, oldSlug?: string): Promise<WikiArticle> {
+    const res = await fetch('/api/wiki/articles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, article, oldSlug }),
+    });
+    if (!res.ok) throw new Error('Fehler beim Speichern des Wiki-Artikels');
+    return await res.json();
+  }
+
+  async deleteWikiArticle(username: string, slug: string): Promise<boolean> {
+    const res = await fetch(`/api/wiki/articles?username=${encodeURIComponent(username)}&slug=${encodeURIComponent(slug)}`, {
+      method: 'DELETE',
+    });
+    return res.ok;
+  }
+
+  async uploadWikiImage(username: string, filename: string, dataUrl: string): Promise<{ url: string; filename: string }> {
+    const res = await fetch('/api/wiki/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, filename, dataUrl }),
+    });
+    if (!res.ok) throw new Error('Bild-Upload fehlgeschlagen');
+    return await res.json();
+  }
+
+  async shareWikiArticle(fromUsername: string, toUsername: string, slug: string): Promise<{ success: boolean; targetSlug?: string }> {
+    const res = await fetch('/api/wiki/share', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fromUsername, toUsername, slug }),
+    });
+    if (!res.ok) throw new Error('Wiki-Artikel konnte nicht geteilt werden');
+    return await res.json();
+  }
+
+  async fetchCookbook(username: string): Promise<{
+    recipes: Recipe[];
+    categories: string[];
+    cycle: MealCycle;
+    overrides: Record<string, MealCalendarOverride>;
+    sharing: CookbookSharingSettings;
+    sharedCatalogs: SharedCookbookCatalog[];
+    sharedPlans: SharedMealPlan[];
+  }> {
+    const res = await fetch(`/api/cookbook?username=${encodeURIComponent(username)}`);
+    if (!res.ok) throw new Error('Fehler beim Laden des Kochbuchs');
+    return await res.json();
+  }
+
+  async saveCookbook(
+    username: string,
+    payload: {
+      recipes?: Recipe[];
+      categories?: string[];
+      cycle?: MealCycle;
+      overrides?: Record<string, MealCalendarOverride>;
+      sharing?: CookbookSharingSettings;
+    }
+  ): Promise<boolean> {
+    const res = await fetch('/api/cookbook/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, ...payload }),
+    });
+    return res.ok;
+  }
+
+  async shareCookbookRecipe(fromUsername: string, toUsername: string, recipe: Recipe): Promise<{ success: boolean }> {
+    const res = await fetch('/api/cookbook/share-recipe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fromUsername, toUsername, recipe }),
+    });
+    if (!res.ok) throw new Error('Rezept konnte nicht geteilt werden');
+    return await res.json();
   }
 
   async fetchSharesForNote(owner: string, path: string): Promise<ShareRecord[]> {
@@ -357,16 +473,16 @@ class ApiService {
     return await res.json();
   }
 
-  async exportBackup(username: string): Promise<Blob> {
-    const res = await fetch(`/api/vault/backup?username=${encodeURIComponent(username)}`);
+  async exportBackup(username: string, profile: NoteProfileId = 'profile1'): Promise<Blob> {
+    const res = await fetch(`/api/vault/backup?username=${encodeURIComponent(username)}&profile=${encodeURIComponent(profile)}`);
     return await res.blob();
   }
 
-  async restoreBackup(username: string, backupData: any): Promise<{ success: boolean; restoredCount: number }> {
+  async restoreBackup(username: string, backupData: any, profile: NoteProfileId = 'profile1'): Promise<{ success: boolean; restoredCount: number }> {
     const res = await fetch('/api/vault/restore', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, backup: backupData }),
+      body: JSON.stringify({ username, profile, backup: backupData }),
     });
     return await res.json();
   }

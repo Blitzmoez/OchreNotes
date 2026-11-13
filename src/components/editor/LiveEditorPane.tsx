@@ -311,7 +311,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
               e.stopPropagation();
               if (onWikilinkClick) onWikilinkClick(target.trim());
             }}
-            className="text-[#C87D20] dark:text-[#E09228] underline decoration-[#C87D20]/40 font-medium cursor-pointer hover:bg-amber-100/50 dark:hover:bg-amber-950/40 px-0.5 rounded"
+            className="text-[var(--ochre-accent)] dark:text-[#E09228] underline decoration-[var(--ochre-accent)]/40 font-medium cursor-pointer hover:bg-amber-100/50 dark:hover:bg-amber-950/40 px-0.5 rounded"
           >
             {alias ? alias.trim() : target.trim()}
           </span>
@@ -326,7 +326,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
               e.stopPropagation();
               if (onTagClick) onTagClick(tag);
             }}
-            className="inline-flex items-center text-xs px-1.5 py-0.2 rounded bg-amber-500/15 text-[#C87D20] dark:text-[#E09228] font-medium cursor-pointer hover:bg-amber-500/25 mx-0.5"
+            className="inline-flex items-center text-xs px-1.5 py-0.2 rounded bg-amber-500/15 text-[var(--ochre-accent)] dark:text-[#E09228] font-medium cursor-pointer hover:bg-amber-500/25 mx-0.5"
           >
             #{tag}
           </span>
@@ -369,9 +369,9 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
     { id: 'italic', label: 'Kursiv', icon: <Italic className="w-4 h-4" />, action: () => applySurround('*', '*') },
     { id: 'strike', label: 'Durchgestrichen', icon: <Strikethrough className="w-4 h-4" />, action: () => applySurround('~~', '~~') },
     { type: 'divider' },
-    { id: 'task', label: 'Aufgabe (- [ ])', icon: <CheckSquare className="w-4 h-4 text-[#C87D20]" />, action: () => applyPrefix('- [ ] ') },
+    { id: 'task', label: 'Aufgabe (- [ ])', icon: <CheckSquare className="w-4 h-4 text-[var(--ochre-accent)]" />, action: () => applyPrefix('- [ ] ') },
     { id: 'quote', label: 'Zitat (> )', icon: <MessageSquareQuote className="w-4 h-4" />, action: () => applyPrefix('> ') },
-    { id: 'link', label: 'Wikilink ([[...]])', icon: <Link2 className="w-4 h-4 text-[#C87D20]" />, action: () => applySurround('[[', ']]') },
+    { id: 'link', label: 'Wikilink ([[...]])', icon: <Link2 className="w-4 h-4 text-[var(--ochre-accent)]" />, action: () => applySurround('[[', ']]') },
     { id: 'code', label: 'Code', icon: <Code className="w-4 h-4" />, action: () => applySurround('`', '`') },
     { 
       id: 'youtube', 
@@ -410,7 +410,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
                 onClick={() => onSelectTab && onSelectTab(tab.path)}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors shrink-0 ${
                   isActive
-                    ? 'bg-white dark:bg-[#25272C] text-[#C87D20] dark:text-[#E09228] shadow-2xs font-semibold'
+                    ? 'bg-white dark:bg-[#25272C] text-[var(--ochre-accent)] dark:text-[#E09228] shadow-2xs font-semibold'
                     : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-200/60 dark:hover:bg-neutral-800'
                 }`}
               >
@@ -465,7 +465,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
                       onClick={btn.action}
                       onMouseEnter={() => setActiveTooltip(btn.id!)}
                       onMouseLeave={() => setActiveTooltip(null)}
-                      className="w-9 h-9 sm:w-8 sm:h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] shadow-2xs flex items-center justify-center text-neutral-600 dark:text-neutral-300 hover:border-[#C87D20] hover:text-[#C87D20] active:scale-95 transition-all cursor-pointer"
+                      className="w-9 h-9 sm:w-8 sm:h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] shadow-2xs flex items-center justify-center text-neutral-600 dark:text-neutral-300 hover:border-[var(--ochre-accent)] hover:text-[var(--ochre-accent)] active:scale-95 transition-all cursor-pointer"
                       aria-label={btn.label}
                     >
                       {btn.icon}
@@ -530,7 +530,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
             } else if (isHeading3) {
               typographyClass = 'text-lg font-semibold text-neutral-800 dark:text-neutral-200 pt-1.5';
             } else if (isQuote) {
-              typographyClass = 'text-[14px] italic border-l-3 border-[#C87D20] bg-amber-50/40 dark:bg-amber-950/25 pl-3 py-1 my-0.5 text-neutral-700 dark:text-neutral-300 rounded-r';
+              typographyClass = 'text-[14px] italic border-l-3 border-[var(--ochre-accent)] bg-amber-50/40 dark:bg-amber-950/25 pl-3 py-1 my-0.5 text-neutral-700 dark:text-neutral-300 rounded-r';
             } else if (isTaskCompleted) {
               typographyClass = 'text-[14px] line-through text-neutral-400 dark:text-neutral-500';
             }
@@ -556,7 +556,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
                             updateLine(idx, updated);
                             if (onToggleTask) onToggleTask(idx, completed);
                           }}
-                          className="w-4 h-4 rounded border-neutral-300 dark:border-neutral-600 text-[#C87D20] accent-[#C87D20] cursor-pointer"
+                          className="w-4 h-4 rounded border-neutral-300 dark:border-neutral-600 text-[var(--ochre-accent)] accent-[var(--ochre-accent)] cursor-pointer"
                           title="Aufgabe abhaken / aktivieren"
                         />
                       </label>
@@ -568,7 +568,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
                           setDatePickerLine(datePickerLine === idx ? null : idx);
                           setSelectedDueDate(new Date().toISOString().split('T')[0]);
                         }}
-                        className="w-7 h-7 -my-1.5 flex items-center justify-center rounded-full text-neutral-400 hover:text-[#C87D20] hover:bg-neutral-200/60 dark:hover:bg-neutral-800 transition-colors"
+                        className="w-7 h-7 -my-1.5 flex items-center justify-center rounded-full text-neutral-400 hover:text-[var(--ochre-accent)] hover:bg-neutral-200/60 dark:hover:bg-neutral-800 transition-colors"
                         title="Fälligkeitsdatum hinzufügen / ändern"
                       >
                         <Calendar className="w-3.5 h-3.5" />
@@ -578,7 +578,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
 
                   {/* Bullet Dot */}
                   {isBullet && (
-                    <span className="text-[#C87D20] text-sm pt-1 select-none shrink-0">•</span>
+                    <span className="text-[var(--ochre-accent)] text-sm pt-1 select-none shrink-0">•</span>
                   )}
 
                   {/* Rendered vs. Editable Mode (Obsidian Live Preview) */}
@@ -629,7 +629,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
                 {datePickerLine === idx && (
                   <div className="ml-7 my-1.5 p-2 bg-white dark:bg-[#1E1F23] rounded-lg shadow-xl border border-[#E5E3DC] dark:border-[#2F3136] flex items-center gap-2 z-30 animate-in fade-in duration-100">
                     <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 flex items-center gap-1">
-                      <Calendar className="w-3.5 h-3.5 text-[#C87D20]" />
+                      <Calendar className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
                       <span>Fälligkeitsdatum:</span>
                     </span>
                     <input
@@ -641,7 +641,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
                     <button
                       type="button"
                       onClick={() => handleSetDueDate(idx, selectedDueDate)}
-                      className="text-xs px-2.5 py-1 rounded bg-[#C87D20] text-white font-medium hover:bg-[#b06c19]"
+                      className="text-xs px-2.5 py-1 rounded bg-[var(--ochre-accent)] text-white font-medium hover:bg-[#b06c19]"
                     >
                       Speichern
                     </button>
@@ -669,7 +669,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
                           onClick={() => setYtDisplayModes((prev) => ({ ...prev, [ytId]: 'player' }))}
                           className={`px-2 py-0.5 rounded transition-colors ${
                             ytDisplayModes[ytId] !== 'link'
-                              ? 'bg-white dark:bg-neutral-700 text-[#C87D20] font-medium shadow-2xs'
+                              ? 'bg-white dark:bg-neutral-700 text-[var(--ochre-accent)] font-medium shadow-2xs'
                               : 'text-neutral-500 hover:text-neutral-800'
                           }`}
                         >
@@ -680,7 +680,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
                           onClick={() => setYtDisplayModes((prev) => ({ ...prev, [ytId]: 'link' }))}
                           className={`px-2 py-0.5 rounded transition-colors ${
                             ytDisplayModes[ytId] === 'link'
-                              ? 'bg-white dark:bg-neutral-700 text-[#C87D20] font-medium shadow-2xs'
+                              ? 'bg-white dark:bg-neutral-700 text-[var(--ochre-accent)] font-medium shadow-2xs'
                               : 'text-neutral-500 hover:text-neutral-800'
                           }`}
                         >
@@ -725,7 +725,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
           <div className="bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] max-w-sm w-full p-5 space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Edit3 className="w-4 h-4 text-[#C87D20]" />
+                <Edit3 className="w-4 h-4 text-[var(--ochre-accent)]" />
                 <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100">
                   Notiz umbenennen
                 </h3>
@@ -752,7 +752,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
                     setIsRenameModalOpen(false);
                   }
                 }}
-                className="w-full text-sm px-3 py-2 rounded-lg bg-[#F4F3EF] dark:bg-[#2A2C31] border border-[#E5E3DC] dark:border-neutral-700 text-neutral-900 dark:text-neutral-100 outline-hidden focus:border-[#C87D20]"
+                className="w-full text-sm px-3 py-2 rounded-lg bg-[#F4F3EF] dark:bg-[#2A2C31] border border-[#E5E3DC] dark:border-neutral-700 text-neutral-900 dark:text-neutral-100 outline-hidden focus:border-[var(--ochre-accent)]"
                 autoFocus
               />
             </div>
@@ -773,7 +773,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
                   }
                   setIsRenameModalOpen(false);
                 }}
-                className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-[#C87D20] text-white hover:bg-[#b06c19] shadow-xs"
+                className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-[var(--ochre-accent)] text-white hover:bg-[#b06c19] shadow-xs"
               >
                 Speichern
               </button>

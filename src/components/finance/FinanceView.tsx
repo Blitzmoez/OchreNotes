@@ -22,14 +22,24 @@ import {
 import { FinanceTransaction, CreditorCategory, CreditorRule } from '../../types';
 
 const INITIAL_CATEGORIES: CreditorCategory[] = [
-  { id: 'cat_groceries', name: 'Lebensmittel & Haushalt', color: '#10B981' },
-  { id: 'cat_housing', name: 'Wohnen & Fixkosten', color: '#3B82F6' },
-  { id: 'cat_mobility', name: 'Mobilität & Transport', color: '#F59E0B' },
-  { id: 'cat_leisure', name: 'Freizeit & Restaurant', color: '#EC4899' },
-  { id: 'cat_tech', name: 'Technik & Software', color: '#8B5CF6' },
-  { id: 'cat_health', name: 'Gesundheit & Apotheke', color: '#06B6D4' },
-  { id: 'cat_other', name: 'Sonstiges & Bar', color: '#6B7280' },
+  { id: 'cat_groceries', name: 'Lebensmittel & Haushalt', color: '#C87D20' },
+  { id: 'cat_housing', name: 'Wohnen & Fixkosten', color: '#8E6126' },
+  { id: 'cat_mobility', name: 'Mobilität & Transport', color: '#B87333' },
+  { id: 'cat_leisure', name: 'Freizeit & Restaurant', color: '#C26D2D' },
+  { id: 'cat_tech', name: 'Technik & Software', color: '#6D4C2F' },
+  { id: 'cat_health', name: 'Gesundheit & Apotheke', color: '#A67C21' },
+  { id: 'cat_other', name: 'Sonstiges & Bar', color: '#78716C' },
 ];
+
+const LEGACY_COLOR_MIGRATION: Record<string, string> = {
+  '#10B981': '#C87D20',
+  '#3B82F6': '#8E6126',
+  '#F59E0B': '#B87333',
+  '#EC4899': '#C26D2D',
+  '#8B5CF6': '#6D4C2F',
+  '#06B6D4': '#A67C21',
+  '#6B7280': '#78716C',
+};
 
 const INITIAL_RULES: CreditorRule[] = [
   { id: 'r1', matchPattern: 'rewe|edeka|aldi|lidl|kaufland|penny|dm-drogerie|rossmann', creditorName: 'Supermarkt / Drogerie', categoryId: 'cat_groceries' },
@@ -50,7 +60,11 @@ const INITIAL_TRANSACTIONS: FinanceTransaction[] = [
   { id: 'tx_7', date: '2026-11-01', creditor: 'Wochenmarkt Obst', categoryId: 'cat_groceries', amount: -15.00, description: 'Frische Äpfel & Gemüse', type: 'cash', isCash: true },
 ];
 
-export const FinanceView: React.FC = () => {
+interface FinanceViewProps {
+  accentColor?: string;
+}
+
+export const FinanceView: React.FC<FinanceViewProps> = ({ accentColor = '#8E6126' }) => {
   const [transactions, setTransactions] = useState<FinanceTransaction[]>(() => {
     const saved = localStorage.getItem('ochre_finance_tx');
     return saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
@@ -58,7 +72,14 @@ export const FinanceView: React.FC = () => {
 
   const [categories, setCategories] = useState<CreditorCategory[]>(() => {
     const saved = localStorage.getItem('ochre_finance_cats');
-    return saved ? JSON.parse(saved) : INITIAL_CATEGORIES;
+    if (saved) {
+      const parsed: CreditorCategory[] = JSON.parse(saved);
+      return parsed.map((c) => ({
+        ...c,
+        color: LEGACY_COLOR_MIGRATION[c.color] || c.color,
+      }));
+    }
+    return INITIAL_CATEGORIES;
   });
 
   const [rules, setRules] = useState<CreditorRule[]>(() => {
@@ -251,11 +272,14 @@ export const FinanceView: React.FC = () => {
   const getCategory = (catId: string) => categories.find(c => c.id === catId) || categories[categories.length - 1];
 
   return (
-    <div className="flex-1 h-full flex flex-col bg-[#F9F8F5] dark:bg-[#161719] text-neutral-900 dark:text-neutral-100 overflow-hidden select-none relative">
+    <div
+      style={{ '--finance-accent': accentColor } as React.CSSProperties}
+      className="flex-1 h-full flex flex-col bg-[#F9F8F5] dark:bg-[#161719] text-neutral-900 dark:text-neutral-100 overflow-hidden select-none relative"
+    >
       {/* Header Bar with Subtle Warm Ochre Theme & Controls */}
       <div className="h-12 border-b border-[#E5E3DC] dark:border-[#2B2D31] bg-[#F4F3EF]/90 dark:bg-[#1C1E22]/90 backdrop-blur-xs px-4 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg bg-[#C87D20] text-white flex items-center justify-center shadow-xs">
+          <div className="w-7 h-7 rounded-lg bg-[var(--finance-accent)] text-white flex items-center justify-center shadow-xs">
             <DollarSign className="w-4 h-4" />
           </div>
           <div>
@@ -269,16 +293,16 @@ export const FinanceView: React.FC = () => {
         <div className="flex items-center gap-2">
           <button
             onClick={() => setIsCsvModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-xs font-semibold text-neutral-700 dark:text-neutral-200 hover:border-[#C87D20] shadow-2xs cursor-pointer active:scale-95 transition-all"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-xs font-semibold text-neutral-700 dark:text-neutral-200 hover:border-[var(--finance-accent)] shadow-2xs cursor-pointer active:scale-95 transition-all"
             title="Bank CSV-Datei hochladen"
           >
-            <Upload className="w-3.5 h-3.5 text-[#C87D20]" />
+            <Upload className="w-3.5 h-3.5 text-[var(--finance-accent)]" />
             <span className="hidden sm:inline">Bank-CSV importieren</span>
           </button>
 
           <button
             onClick={() => setIsCashModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#C87D20] text-white text-xs font-semibold hover:bg-[#B56F1A] shadow-xs cursor-pointer active:scale-95 transition-all"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[var(--finance-accent)] text-white text-xs font-semibold hover:opacity-90 shadow-xs cursor-pointer active:scale-95 transition-all"
             title="Schnelle Barzahlung erfassen"
           >
             <Banknote className="w-3.5 h-3.5" />
@@ -329,10 +353,10 @@ export const FinanceView: React.FC = () => {
             {/* Cash Outflow */}
             <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-2xs space-y-1">
               <span className="text-[11px] font-semibold text-neutral-400 block flex items-center gap-1">
-                <Banknote className="w-3 h-3 text-[#C87D20]" />
+                <Banknote className="w-3 h-3 text-[var(--finance-accent)]" />
                 <span>Bar bezahlt</span>
               </span>
-              <span className="text-lg md:text-xl font-bold text-neutral-800 dark:text-neutral-200">
+              <span className="text-lg md:text-xl font-bold tabular-nums text-neutral-800 dark:text-neutral-200">
                 {stats.cashSpent.toFixed(2)} €
               </span>
               <span className="text-[10px] text-neutral-400 block">Manuell erfasste Barbeträge</span>
@@ -343,12 +367,12 @@ export const FinanceView: React.FC = () => {
           <div className="p-4 rounded-3xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-2xs space-y-3">
             <div className="flex items-center justify-between pb-1">
               <div className="flex items-center gap-2">
-                <PieChart className="w-4 h-4 text-[#C87D20]" />
+                <PieChart className="w-4 h-4 text-[var(--finance-accent)]" />
                 <h3 className="text-xs font-bold text-neutral-900 dark:text-neutral-100 uppercase tracking-wider">
                   Kategorie-Auswertung & Verteilung (Wohin fließt das Geld?)
                 </h3>
               </div>
-              <span className="text-[11px] text-neutral-400 font-medium">
+              <span className="text-[11px] text-neutral-400 font-medium tabular-nums">
                 Gesamtausgaben: {stats.expense.toFixed(2)} €
               </span>
             </div>
@@ -375,7 +399,7 @@ export const FinanceView: React.FC = () => {
                   onClick={() => setSelectedCategoryFilter(selectedCategoryFilter === cat.id ? 'all' : cat.id)}
                   className={`p-2 rounded-xl border text-xs flex items-center justify-between cursor-pointer transition-all ${
                     selectedCategoryFilter === cat.id
-                      ? 'border-[#C87D20] bg-amber-500/10 shadow-xs'
+                      ? 'border-[var(--finance-accent)] bg-amber-500/10 shadow-xs'
                       : 'border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA] dark:bg-[#202226] hover:border-neutral-400'
                   }`}
                 >
@@ -385,7 +409,7 @@ export const FinanceView: React.FC = () => {
                       {cat.name}
                     </span>
                   </div>
-                  <div className="text-right shrink-0">
+                  <div className="text-right shrink-0 tabular-nums">
                     <span className="font-bold block">{cat.total.toFixed(0)} €</span>
                     <span className="text-[10px] text-neutral-400">{cat.percentage}%</span>
                   </div>
@@ -398,7 +422,7 @@ export const FinanceView: React.FC = () => {
           <div className="p-4 rounded-3xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-2xs space-y-3">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-1 border-b border-[#E5E3DC] dark:border-[#2B2D31]">
               <div className="flex items-center gap-2">
-                <FileText className="w-4 h-4 text-[#C87D20]" />
+                <FileText className="w-4 h-4 text-[var(--finance-accent)]" />
                 <h3 className="text-xs font-bold text-neutral-900 dark:text-neutral-100 uppercase tracking-wider">
                   Buchungen & Transaktionen ({filteredTransactions.length})
                 </h3>
@@ -413,7 +437,7 @@ export const FinanceView: React.FC = () => {
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder="Empfänger, Zweck..."
-                    className="w-full text-xs pl-8 pr-2.5 py-1.5 rounded-xl bg-[#F4F3EF] dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden focus:border-[#C87D20]"
+                    className="w-full text-xs pl-8 pr-2.5 py-1.5 rounded-xl bg-[#F4F3EF] dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden focus:border-[var(--finance-accent)]"
                   />
                 </div>
 
@@ -448,7 +472,7 @@ export const FinanceView: React.FC = () => {
                         {/* Type Icon */}
                         <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
                           tx.isCash 
-                            ? 'bg-amber-100 dark:bg-amber-950/60 text-[#C87D20]' 
+                            ? 'bg-amber-100 dark:bg-amber-950/60 text-[var(--finance-accent)]' 
                             : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-500'
                         }`}>
                           {tx.isCash ? <Banknote className="w-4 h-4" /> : <CreditCard className="w-4 h-4" />}
@@ -470,7 +494,7 @@ export const FinanceView: React.FC = () => {
                       </div>
 
                       <div className="text-right shrink-0">
-                        <span className={`text-xs md:text-sm font-bold ${
+                        <span className={`text-xs md:text-sm font-bold tabular-nums ${
                           isPositive ? 'text-emerald-600' : 'text-neutral-900 dark:text-neutral-100'
                         }`}>
                           {isPositive ? '+' : ''}{tx.amount.toFixed(2)} €
@@ -499,7 +523,7 @@ export const FinanceView: React.FC = () => {
       <div className="lg:hidden">
         <button
           onClick={() => setIsCashModalOpen(true)}
-          className="fixed bottom-6 right-5 z-40 w-13 h-13 rounded-full bg-[#C87D20] text-white shadow-2xl flex items-center justify-center transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
+          className="fixed bottom-6 right-5 z-40 w-13 h-13 rounded-full bg-[var(--finance-accent)] text-white shadow-2xl flex items-center justify-center transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
           title="Schnelle Barzahlung erfassen"
           aria-label="Barzahlung erfassen"
         >
@@ -515,7 +539,7 @@ export const FinanceView: React.FC = () => {
           <div className="bg-white dark:bg-[#1E2024] w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-[#E5E3DC] dark:border-[#2B2D31] space-y-4 animate-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between pb-2 border-b border-[#E5E3DC] dark:border-[#2B2D31]">
               <div className="flex items-center gap-2">
-                <div className="w-7 h-7 rounded-lg bg-amber-100 text-[#C87D20] flex items-center justify-center">
+                <div className="w-7 h-7 rounded-lg bg-amber-100 dark:bg-amber-950/60 text-[var(--finance-accent)] flex items-center justify-center">
                   <Banknote className="w-4 h-4" />
                 </div>
                 <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100">
@@ -537,7 +561,7 @@ export const FinanceView: React.FC = () => {
                   placeholder="z. B. 12,50"
                   value={cashAmount}
                   onChange={(e) => setCashAmount(e.target.value)}
-                  className="w-full text-base font-bold p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden focus:border-[#C87D20]"
+                  className="w-full text-base font-bold p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden focus:border-[var(--finance-accent)]"
                 />
               </div>
 
@@ -548,7 +572,7 @@ export const FinanceView: React.FC = () => {
                   placeholder="z. B. Wochenmarkt, Kiosk, Trinkgeld"
                   value={cashCreditor}
                   onChange={(e) => setCashCreditor(e.target.value)}
-                  className="w-full p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden focus:border-[#C87D20]"
+                  className="w-full p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden focus:border-[var(--finance-accent)]"
                 />
               </div>
 
@@ -572,7 +596,7 @@ export const FinanceView: React.FC = () => {
                   placeholder="z. B. Kaffee und belegtes Brötchen"
                   value={cashDescription}
                   onChange={(e) => setCashDescription(e.target.value)}
-                  className="w-full p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden focus:border-[#C87D20]"
+                  className="w-full p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden focus:border-[var(--finance-accent)]"
                 />
               </div>
 
@@ -586,7 +610,7 @@ export const FinanceView: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 rounded-full bg-[#C87D20] text-white font-bold shadow-xs hover:bg-[#B56F1A]"
+                  className="px-4 py-1.5 rounded-full bg-[var(--finance-accent)] text-white font-bold shadow-xs hover:opacity-90"
                 >
                   Barausgabe buchen
                 </button>
@@ -604,7 +628,7 @@ export const FinanceView: React.FC = () => {
           <div className="bg-white dark:bg-[#1E2024] w-full max-w-md rounded-3xl p-5 shadow-2xl border border-[#E5E3DC] dark:border-[#2B2D31] space-y-4 animate-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between pb-2 border-b border-[#E5E3DC] dark:border-[#2B2D31]">
               <div className="flex items-center gap-2">
-                <div className="w-7 h-7 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center">
+                <div className="w-7 h-7 rounded-lg bg-amber-100 dark:bg-amber-950/60 text-[var(--finance-accent)] flex items-center justify-center">
                   <Upload className="w-4 h-4" />
                 </div>
                 <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100">
@@ -622,8 +646,8 @@ export const FinanceView: React.FC = () => {
                 Transaktionen werden automatisch den passenden Kreditoren und Kategorien zugeteilt.
               </p>
 
-              <label className="border-2 border-dashed border-[#C87D20] rounded-2xl p-6 flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-amber-500/5 transition-colors block text-center">
-                <Upload className="w-8 h-8 text-[#C87D20]" />
+              <label className="border-2 border-dashed border-[var(--finance-accent)] rounded-2xl p-6 flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-amber-500/5 transition-colors block text-center">
+                <Upload className="w-8 h-8 text-[var(--finance-accent)]" />
                 <span className="font-bold text-neutral-900 dark:text-neutral-100">
                   CSV-Datei auswählen oder hierher ziehen
                 </span>

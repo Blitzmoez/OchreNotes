@@ -113,12 +113,62 @@ export interface GraphData {
   links: GraphLink[];
 }
 
-export type SuiteModuleId = 'notes' | 'recipes' | 'finance';
+export type SuiteModuleId = 'notes' | 'wiki' | 'recipes' | 'finance';
 
 export interface EnabledModules {
   notes: boolean;
+  wiki: boolean;
   recipes: boolean;
   finance: boolean;
+}
+
+export type NoteProfileId = 'profile1' | 'profile2';
+
+export interface ModuleColors {
+  notes: string;
+  wiki: string;
+  recipes: string;
+  finance: string;
+}
+
+export interface NoteProfileConfig {
+  id: NoteProfileId;
+  name: string;
+  colors: ModuleColors;
+}
+
+export interface SuiteProfileSettings {
+  enableSecondProfile: boolean;
+  activeProfileId: NoteProfileId;
+  profile1: NoteProfileConfig;
+  profile2: NoteProfileConfig;
+}
+
+// Open-Standard Wiki Types (saved as standard Markdown + YAML frontmatter + local asset files)
+export interface WikiCodeSnippet {
+  id: string;
+  title: string;
+  language: string;
+  code: string;
+}
+
+export interface WikiImage {
+  id: string;
+  url: string;
+  alt: string;
+  caption?: string;
+}
+
+export interface WikiArticle {
+  slug: string;
+  title: string;
+  category: string;
+  tags: string[];
+  updatedAt: string;
+  body: string;
+  images: WikiImage[];
+  snippets: WikiCodeSnippet[];
+  rawMarkdown?: string;
 }
 
 // Recipes & Meal Planning Types
@@ -131,7 +181,7 @@ export interface RecipeIngredient {
 export interface Recipe {
   id: string;
   title: string;
-  category: 'Frühstück' | 'Mittagessen' | 'Abendessen' | 'Snack' | 'Dessert';
+  category: string;
   prepTimeMinutes: number;
   portions: number;
   description: string;
@@ -139,6 +189,7 @@ export interface Recipe {
   ingredients: RecipeIngredient[];
   tags: string[];
   color?: string;
+  sharedFrom?: string;
 }
 
 export interface MealCycleDay {
@@ -160,6 +211,28 @@ export interface MealCalendarOverride {
   recipeIds: string[]; // Specific recipes for this single date
   note?: string;
   isOneTimeChange: boolean;
+}
+
+export interface CookbookSharingSettings {
+  shareCatalog: boolean;
+  catalogSharedWith: string[]; // ['*'] for all users, or specific usernames
+  shareCycleAndCalendar: boolean;
+  cycleSharedWith: string[]; // ['*'] for all users, or specific usernames
+}
+
+export interface SharedCookbookCatalog {
+  ownerUsername: string;
+  ownerDisplayName: string;
+  recipes: Recipe[];
+  categories: string[];
+}
+
+export interface SharedMealPlan {
+  ownerUsername: string;
+  ownerDisplayName: string;
+  cycle: MealCycle;
+  overrides: Record<string, MealCalendarOverride>;
+  recipes: Recipe[];
 }
 
 // Finance & CSV Creditor Types

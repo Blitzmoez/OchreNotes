@@ -34,6 +34,7 @@ interface SidebarProps {
   onMoveNote?: (oldPath: string, newPath: string) => Promise<void>;
   isOpen: boolean;
   onCloseMobile: () => void;
+  activeProfileName?: string;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -50,6 +51,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onMoveNote,
   isOpen,
   onCloseMobile,
+  activeProfileName,
 }) => {
   const { t } = useTranslation();
   const [searchQuery, setSearchQuery] = useState('');
@@ -69,7 +71,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return (
       <div 
         onClick={(e) => e.stopPropagation()}
-        className="my-1.5 p-2 rounded-xl bg-amber-50/95 dark:bg-amber-950/60 border border-[#C87D20]/50 shadow-md animate-in fade-in duration-100 space-y-1.5 z-20"
+        className="my-1.5 p-2 rounded-xl bg-amber-50/95 dark:bg-amber-950/60 border border-[var(--ochre-accent)]/50 shadow-md animate-in fade-in duration-100 space-y-1.5 z-20"
       >
         <div className="flex items-center justify-between pb-1 border-b border-amber-200/60 dark:border-amber-900/40 text-[11px] font-semibold text-neutral-800 dark:text-neutral-200">
           <span>{targetFolder === '/' ? t.newNote : `Neu in '${targetFolder}'`}:</span>
@@ -91,7 +93,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 onCreateNote(targetFolder === '/' ? undefined : targetFolder);
                 setCreateMenuTargetFolder(null);
               }}
-              className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-white dark:bg-[#25272C] border border-[#C87D20] text-[#C87D20] text-xs font-semibold shadow-2xs hover:bg-[#C87D20] hover:text-white transition-all cursor-pointer active:scale-95"
+              className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-white dark:bg-[#25272C] border border-[var(--ochre-accent)] text-[var(--ochre-accent)] text-xs font-semibold shadow-2xs hover:bg-[var(--ochre-accent)] hover:text-white transition-all cursor-pointer active:scale-95"
               title={t.newNote}
             >
               <FilePlus className="w-3.5 h-3.5 shrink-0" />
@@ -102,10 +104,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 setIsSubfolderMode(true);
                 setSubfolderInput('');
               }}
-              className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-white dark:bg-[#25272C] border border-amber-300 dark:border-neutral-700 hover:border-[#C87D20] text-neutral-800 dark:text-neutral-200 text-xs font-semibold shadow-2xs hover:bg-amber-500/10 transition-all cursor-pointer active:scale-95"
+              className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-white dark:bg-[#25272C] border border-amber-300 dark:border-neutral-700 hover:border-[var(--ochre-accent)] text-neutral-800 dark:text-neutral-200 text-xs font-semibold shadow-2xs hover:bg-amber-500/10 transition-all cursor-pointer active:scale-95"
               title={t.newFolder}
             >
-              <FolderPlus className="w-3.5 h-3.5 text-[#C87D20] shrink-0" />
+              <FolderPlus className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
               <span>{t.newFolder}</span>
             </button>
           </div>
@@ -129,7 +131,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   setIsSubfolderMode(false);
                 }
               }}
-              className="flex-1 text-xs px-2 py-1 rounded-lg bg-white dark:bg-[#1E1F23] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[#C87D20]"
+              className="flex-1 text-xs px-2 py-1 rounded-lg bg-white dark:bg-[#1E1F23] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
               autoFocus
             />
             <button
@@ -145,7 +147,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 }
               }}
               disabled={!subfolderInput.trim()}
-              className="text-xs px-2.5 py-1 rounded-lg bg-[#C87D20] text-white hover:bg-[#b06c19] disabled:opacity-40 font-medium cursor-pointer"
+              className="text-xs px-2.5 py-1 rounded-lg bg-[var(--ochre-accent)] text-white hover:bg-[#b06c19] disabled:opacity-40 font-medium cursor-pointer"
             >
               OK
             </button>
@@ -255,9 +257,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
       `}>
         {/* Header Actions */}
         <div className="p-3 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 relative">
-          <span className="text-xs font-semibold tracking-wider uppercase text-neutral-500 dark:text-neutral-400">
-            {t.vaultExplorer}
-          </span>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="text-xs font-semibold tracking-wider uppercase text-neutral-500 dark:text-neutral-400 truncate">
+              {t.vaultExplorer}
+            </span>
+            {activeProfileName && (
+              <span className="text-[10px] font-semibold text-[var(--ochre-accent)] truncate">
+                · {activeProfileName}
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => {
@@ -265,7 +274,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 setIsSubfolderMode(false);
                 setSubfolderInput('');
               }}
-              className="w-8 h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[#C87D20] hover:border-[#C87D20] shadow-xs flex items-center justify-center transition-all cursor-pointer"
+              className="w-8 h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] hover:border-[var(--ochre-accent)] shadow-xs flex items-center justify-center transition-all cursor-pointer"
               title={`${t.newNote} / ${t.newFolder}`}
             >
               <Plus className="w-4 h-4" />
@@ -291,7 +300,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               placeholder={t.searchNotes}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full text-xs pl-8 pr-7 py-1.5 rounded-md bg-white dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 focus:outline-hidden focus:border-[#C87D20] dark:focus:border-[#E09228]"
+              className="w-full text-xs pl-8 pr-7 py-1.5 rounded-md bg-white dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 focus:outline-hidden focus:border-[var(--ochre-accent)] dark:focus:border-[#E09228]"
             />
             {searchQuery && (
               <button
@@ -309,8 +318,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               onClick={() => setIsTagFilterOpen(!isTagFilterOpen)}
               className={`p-1.5 rounded-md border text-xs transition-colors ${
                 selectedTag
-                  ? 'bg-[#C87D20] text-white border-[#C87D20]'
-                  : 'bg-white dark:bg-[#161719] border-[#E5E3DC] dark:border-[#2F3136] text-neutral-600 dark:text-neutral-300 hover:border-[#C87D20]'
+                  ? 'bg-[var(--ochre-accent)] text-white border-[var(--ochre-accent)]'
+                  : 'bg-white dark:bg-[#161719] border-[#E5E3DC] dark:border-[#2F3136] text-neutral-600 dark:text-neutral-300 hover:border-[var(--ochre-accent)]'
               }`}
               title="Tags suchen & filtern"
             >
@@ -348,7 +357,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         }}
                         className={`w-full text-left px-2 py-1 text-xs rounded truncate transition-colors ${
                           selectedTag === tag
-                            ? 'bg-[#C87D20] text-white'
+                            ? 'bg-[var(--ochre-accent)] text-white'
                             : 'hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300'
                         }`}
                       >
@@ -387,7 +396,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 setDraggedNotePath(null);
               }}
               className={`px-2 py-1.5 flex items-center justify-between font-semibold text-neutral-400 uppercase tracking-wider rounded transition-colors ${
-                dragOverFolder === '/' ? 'bg-amber-100 dark:bg-amber-950/60 text-[#C87D20]' : ''
+                dragOverFolder === '/' ? 'bg-amber-100 dark:bg-amber-950/60 text-[var(--ochre-accent)]' : ''
               }`}
               style={{ fontSize: `${Math.max(10, Math.round((11 * vaultScale) / 100))}px` }}
             >
@@ -434,7 +443,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       onClick={() => toggleFolder(folderKey)}
                       className={`group/folder flex items-center justify-between font-medium rounded-xl cursor-pointer transition-colors ${
                         isFolderDragTarget
-                          ? 'bg-amber-100 dark:bg-amber-950/60 border border-[#C87D20] text-[#C87D20]'
+                          ? 'bg-amber-100 dark:bg-amber-950/60 border border-[var(--ochre-accent)] text-[var(--ochre-accent)]'
                           : 'text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200/50 dark:hover:bg-neutral-800'
                       }`}
                       style={{
@@ -458,7 +467,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           />
                         )}
                         <Folder 
-                          className="text-[#C87D20] shrink-0" 
+                          className="text-[var(--ochre-accent)] shrink-0" 
                           style={{ width: dynamicIconSize, height: dynamicIconSize }} 
                         />
                         <span className="truncate">{folderKey}</span>
@@ -510,7 +519,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             setIsSubfolderMode(false);
                             setSubfolderInput('');
                           }}
-                          className="w-7.5 h-7.5 rounded-full bg-white dark:bg-[#25272C] border border-[#C87D20]/50 text-[#C87D20] hover:bg-amber-500/10 shadow-xs flex items-center justify-center transition-all cursor-pointer active:scale-95"
+                          className="w-7.5 h-7.5 rounded-full bg-white dark:bg-[#25272C] border border-[var(--ochre-accent)]/50 text-[var(--ochre-accent)] hover:bg-amber-500/10 shadow-xs flex items-center justify-center transition-all cursor-pointer active:scale-95"
                           title={`Neu in '${folderKey}' (Notiz oder Unterordner)`}
                           aria-label={`Neu in ${folderKey}`}
                         >
@@ -557,10 +566,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             }}
                             onClick={() => onSelectNote(note.path, false)}
                             className={`group flex items-center justify-between rounded-xl transition-all cursor-pointer ${
-                              isBeingDragged ? 'opacity-40 scale-95 border-dashed border border-[#C87D20]' : ''
+                              isBeingDragged ? 'opacity-40 scale-95 border-dashed border border-[var(--ochre-accent)]' : ''
                             } ${
                               isActive
-                                ? 'bg-[#EAE8E1] dark:bg-[#2A2C31] text-[#C87D20] dark:text-[#E09228] font-medium shadow-2xs'
+                                ? 'bg-[#EAE8E1] dark:bg-[#2A2C31] text-[var(--ochre-accent)] dark:text-[#E09228] font-medium shadow-2xs'
                                 : 'text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200/50 dark:hover:bg-neutral-800'
                             }`}
                             style={{
@@ -685,7 +694,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                               onClick={() => onSelectNote(note.path, true, note.sharedFromUser)}
                               className={`group flex items-center justify-between rounded-xl transition-colors cursor-pointer ${
                                 isActive
-                                  ? 'bg-[#EAE8E1] dark:bg-[#2A2C31] text-[#C87D20] dark:text-[#E09228] font-medium'
+                                  ? 'bg-[#EAE8E1] dark:bg-[#2A2C31] text-[var(--ochre-accent)] dark:text-[#E09228] font-medium'
                                   : 'text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200/50 dark:hover:bg-neutral-800'
                               }`}
                               style={{
@@ -724,7 +733,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="px-3 py-2 bg-neutral-100 dark:bg-neutral-800/90 border-t border-[#E5E3DC] dark:border-[#2F3136] flex flex-col gap-1.5 animate-in fade-in slide-in-from-bottom-1">
             <div className="flex items-center justify-between text-[11px] text-neutral-600 dark:text-neutral-300 font-medium">
               <span>Explorer Skalierung</span>
-              <span className="font-bold text-[#C87D20]">{vaultScale}%</span>
+              <span className="font-bold text-[var(--ochre-accent)]">{vaultScale}%</span>
             </div>
             <input
               type="range"
@@ -733,7 +742,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               step="5"
               value={vaultScale}
               onChange={(e) => handleScaleChange(Number(e.target.value))}
-              className="w-full accent-[#C87D20] cursor-pointer h-1.5 bg-neutral-300 dark:bg-neutral-700 rounded-lg"
+              className="w-full accent-[var(--ochre-accent)] cursor-pointer h-1.5 bg-neutral-300 dark:bg-neutral-700 rounded-lg"
             />
           </div>
         )}
@@ -745,7 +754,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               onClick={() => setIsScaleOpen(!isScaleOpen)}
               className={`p-1.5 rounded-full transition-colors ${
                 isScaleOpen
-                  ? 'bg-[#C87D20] text-white shadow-xs'
+                  ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
                   : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 hover:bg-neutral-200 dark:hover:bg-neutral-800'
               }`}
               title="Vault Explorer Skalierung anpassen"
