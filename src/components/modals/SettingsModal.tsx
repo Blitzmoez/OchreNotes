@@ -24,6 +24,13 @@ import {
   Plus,
   Trash2,
   Share2,
+  Bell,
+  BellRing,
+  Send,
+  Camera,
+  UserPlus,
+  UserCheck,
+  Shield,
 } from 'lucide-react';
 import {
   User,
@@ -32,10 +39,18 @@ import {
   SuiteProfileSettings,
   NoteProfileId,
   CookbookSharingSettings,
+  TaskNotificationSettings,
 } from '../../types';
 import { api } from '../../services/api';
 import { useTranslation, Language } from '../../services/i18n';
 import { OCHRE_COLOR_PRESETS, DEFAULT_PROFILE_SETTINGS } from '../../services/profileDefaults';
+import {
+  getNotificationPermission,
+  loadNotificationSettings,
+  saveNotificationSettings,
+  requestNotificationPermission,
+  sendPushNotification,
+} from '../../services/notificationService';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -48,12 +63,50 @@ interface SettingsModalProps {
   activeNoteTitle?: string;
   activeNoteContent?: string;
   onUpdateUser?: (user: User) => void;
+  onUpdateAllUsers?: (users: User[]) => void;
+  onSwitchUser?: (user: User) => void;
   enabledModules: EnabledModules;
   onToggleModule: (moduleId: SuiteModuleId) => void;
   profileSettings: SuiteProfileSettings;
   onUpdateProfileSettings: (next: SuiteProfileSettings) => void;
   initialModuleContext?: SuiteModuleId;
   onCookbookUpdated?: () => void;
+}
+
+const AVATAR_PRESETS = [
+  'https://api.dicebear.com/9.x/thumbs/svg?seed=Felix&backgroundColor=c87d20',
+  'https://api.dicebear.com/9.x/thumbs/svg?seed=Emma&backgroundColor=a66316',
+  'https://api.dicebear.com/9.x/thumbs/svg?seed=Max&backgroundColor=d98b26',
+  'https://api.dicebear.com/9.x/thumbs/svg?seed=Lena&backgroundColor=7b5e34',
+];
+
+async function resizeAvatarFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Datei konnte nicht gelesen werden'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Ungültige Bilddatei'));
+      img.onload = () => {
+        const maxSide = 256;
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(reader.result as string);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.86));
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -65,6 +118,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   appTitle,
   onUpdateAppTitle,
   onUpdateUser,
+  onUpdateAllUsers,
+  onSwitchUser,
   enabledModules,
   onToggleModule,
   profileSettings,
@@ -73,7 +128,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onCookbookUpdated,
 }) => {
   const { language, setLanguage, t } = useTranslation();
-  const [activeSettingsTab, setActiveSettingsTab] = useState<'general' | 'modules' | 'moduleSettings' | 'backup'>('general');
+  const [activeSettingsTab, setActiveSettingsTab] = useState<'general' | 'modules' | 'moduleSettings' | 'users' | 'backup'>('general');
   const [selectedModuleSettingsTab, setSelectedModuleSettingsTab] = useState<SuiteModuleId>(initialModuleContext);
   const [editingProfileTab, setEditingProfileTab] = useState<NoteProfileId>('profile1');
   const [exportLoading, setExportLoading] = useState(false);
@@ -87,6 +142,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Password state
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordStatus, setPasswordStatus] = useState<string | null>(null);
+
+  // User Management & Avatar Editing state
+  const [editingUsername, setEditingUsername] = useState<string>(currentUser.username);
+  const [editDisplayName, setEditDisplayName] = useState<string>(currentUser.displayName);
+  const [editDescription, setEditDescription] = useState<string>(currentUser.description || '');
+  const [editRole, setEditRole] = useState<'admin' | 'user' | 'family'>(currentUser.role || 'user');
+  const [userEditStatus, setUserEditStatus] = useState<string | null>(null);
+  const [userSaving, setUserSaving] = useState(false);
+
+  // New User Form state
+  const [showNewUserForm, setShowNewUserForm] = useState(false);
+  const [newUserDisplayName, setNewUserDisplayName] = useState('');
+  const [newUserHandle, setNewUserHandle] = useState('');
+  const [newUserRole, setNewUserRole] = useState<'admin' | 'user' | 'family'>('user');
+  const [newUserDesc, setNewUserDesc] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserAvatarDataUrl, setNewUserAvatarDataUrl] = useState<string>('');
+  const [newUserStatus, setNewUserStatus] = useState<string | null>(null);
 
   // Docker copy state
   const [copiedDocker, setCopiedDocker] = useState(false);
@@ -102,15 +175,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [newCatInput, setNewCatInput] = useState('');
   const [cookbookLoaded, setCookbookLoaded] = useState(false);
 
+  // Task Push Notifications state
+  const [notifPerm, setNotifPerm] = useState<NotificationPermission | 'unsupported'>(() =>
+    getNotificationPermission()
+  );
+  const [notifSettings, setNotifSettings] = useState<TaskNotificationSettings>(() =>
+    loadNotificationSettings(currentUser.username)
+  );
+  const [notifFeedback, setNotifFeedback] = useState<string | null>(null);
+
   useEffect(() => {
     setNameInput(appTitle);
   }, [appTitle]);
 
   useEffect(() => {
+    const target = allUsers.find((u) => u.username === editingUsername) || currentUser;
+    setEditDisplayName(target.displayName);
+    setEditDescription(target.description || '');
+    setEditRole(target.role || 'user');
+  }, [editingUsername, allUsers, currentUser]);
+
+  useEffect(() => {
     if (isOpen) {
       setSelectedModuleSettingsTab(initialModuleContext || 'notes');
+      setNotifPerm(getNotificationPermission());
+      setNotifSettings(loadNotificationSettings(currentUser.username));
     }
-  }, [isOpen, initialModuleContext]);
+  }, [isOpen, initialModuleContext, currentUser.username]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -331,26 +422,154 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     </div>
   );
 
+  const editedTargetUser = allUsers.find((u) => u.username === editingUsername) || currentUser;
+
+  const syncUsersList = async (updatedSingle?: User) => {
+    if (updatedSingle && updatedSingle.username === currentUser.username && onUpdateUser) {
+      onUpdateUser(updatedSingle);
+    }
+    try {
+      const fresh = await api.fetchUsers();
+      if (onUpdateAllUsers) onUpdateAllUsers(fresh);
+      return fresh;
+    } catch {
+      return allUsers;
+    }
+  };
+
+  const handleSaveUserProfile = async () => {
+    if (!editDisplayName.trim()) return;
+    setUserSaving(true);
+    setUserEditStatus(null);
+    try {
+      const updated = await api.updateUser(editedTargetUser.username, {
+        displayName: editDisplayName.trim(),
+        description: editDescription.trim(),
+        role: editRole,
+      });
+      await syncUsersList(updated);
+      setUserEditStatus('Profil gespeichert.');
+      setTimeout(() => setUserEditStatus(null), 3000);
+    } catch (e: any) {
+      setUserEditStatus(`Fehler: ${e.message}`);
+    } finally {
+      setUserSaving(false);
+    }
+  };
+
+  const handleAvatarUploadForEdit = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUserSaving(true);
+    setUserEditStatus(null);
+    try {
+      const dataUrl = await resizeAvatarFile(file);
+      const updated = await api.updateUser(editedTargetUser.username, { avatarDataUrl: dataUrl });
+      await syncUsersList(updated);
+      setUserEditStatus('Profilbild aktualisiert!');
+      setTimeout(() => setUserEditStatus(null), 3000);
+    } catch (err: any) {
+      setUserEditStatus(`Fehler: ${err.message}`);
+    } finally {
+      setUserSaving(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleSelectPresetAvatar = async (url: string) => {
+    setUserSaving(true);
+    setUserEditStatus(null);
+    try {
+      const updated = await api.updateUser(editedTargetUser.username, { avatarUrl: url });
+      await syncUsersList(updated);
+      setUserEditStatus('Profilbild übernommen.');
+      setTimeout(() => setUserEditStatus(null), 2500);
+    } catch (err: any) {
+      setUserEditStatus(`Fehler: ${err.message}`);
+    } finally {
+      setUserSaving(false);
+    }
+  };
+
+  const handleCreateNewUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUserDisplayName.trim() && !newUserHandle.trim()) return;
+    setUserSaving(true);
+    setNewUserStatus(null);
+    try {
+      const created = await api.createUser({
+        username: (newUserHandle || newUserDisplayName).toLowerCase().trim(),
+        displayName: (newUserDisplayName || newUserHandle).trim(),
+        role: newUserRole,
+        description: newUserDesc.trim() || undefined,
+        password: newUserPassword.trim() || undefined,
+        avatarDataUrl: newUserAvatarDataUrl || undefined,
+      });
+      await syncUsersList();
+      setEditingUsername(created.username);
+      setNewUserDisplayName('');
+      setNewUserHandle('');
+      setNewUserDesc('');
+      setNewUserPassword('');
+      setNewUserAvatarDataUrl('');
+      setShowNewUserForm(false);
+      setUserEditStatus(`Benutzer „${created.displayName}“ (@${created.username}) wurde erstellt.`);
+      setTimeout(() => setUserEditStatus(null), 4000);
+    } catch (err: any) {
+      setNewUserStatus(`Fehler: ${err.message}`);
+    } finally {
+      setUserSaving(false);
+    }
+  };
+
+  const handleDeleteUser = async (target: User) => {
+    if (allUsers.length <= 1) return;
+    setUserSaving(true);
+    setUserEditStatus(null);
+    try {
+      await api.deleteUser(target.username);
+      const fresh = await syncUsersList();
+      if (editingUsername === target.username && fresh.length > 0) {
+        setEditingUsername(fresh[0].username);
+      }
+      if (target.username === currentUser.username && fresh.length > 0 && onSwitchUser) {
+        onSwitchUser(fresh[0]);
+      }
+      setUserEditStatus(`Benutzer @${target.username} entfernt.`);
+    } catch (err: any) {
+      setUserEditStatus(`Fehler: ${err.message}`);
+    } finally {
+      setUserSaving(false);
+    }
+  };
+
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="w-full max-w-2xl bg-white dark:bg-[#1E1F23] rounded-xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] overflow-hidden flex flex-col max-h-[90vh]">
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-xs flex items-start justify-center px-2.5 pt-16 pb-3 sm:px-4 sm:pt-16 animate-in fade-in duration-150"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-2xl bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] overflow-hidden flex flex-col max-h-[calc(100dvh-5rem)] sm:max-h-[82dvh] animate-in slide-in-from-top-3 duration-200"
+      >
         {/* Header */}
-        <div className="p-4 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Settings className="w-4 h-4 text-[var(--ochre-accent)]" />
-            <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+        <div className="p-3.5 sm:p-4 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <Settings className="w-4 h-4 text-[var(--ochre-accent)] shrink-0" />
+            <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 truncate">
               Einstellungen &amp; Suite-Verwaltung
             </h2>
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded-md text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer"
+            className="w-8 h-8 rounded-full bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer shrink-0"
+            aria-label="Einstellungen schließen"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* 4 Tabs with Small Icons: Allgemein | Module | Modul-Einstellungen | Backup & Docker */}
+        {/* 5 Tabs with Small Icons: Allgemein | Module | Modul-Einstellungen | Benutzer | Backup & Docker */}
         <div className="flex items-center gap-1 px-4 pt-3 pb-2 border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#1A1C1F] overflow-x-auto no-scrollbar shrink-0">
           <button
             onClick={() => setActiveSettingsTab('general')}
@@ -386,6 +605,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           >
             <SlidersHorizontal className="w-3.5 h-3.5" />
             <span>Modul-Einstellungen</span>
+          </button>
+
+          <button
+            onClick={() => setActiveSettingsTab('users')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+              activeSettingsTab === 'users'
+                ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
+                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
+            }`}
+          >
+            <Users className="w-3.5 h-3.5" />
+            <span>Benutzer</span>
           </button>
 
           <button
@@ -771,6 +1002,164 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       `Notes-Farbe für „${editedProfile.name}“`
                     )}
                   </div>
+
+                  {/* Push Notifications for Tasks with Dates (Mobile & Desktop) */}
+                  <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#18191B] space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <div
+                          className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-white shadow-2xs"
+                          style={{ backgroundColor: activeColors.notes }}
+                        >
+                          {notifSettings.enabled && notifPerm === 'granted' ? (
+                            <BellRing className="w-4 h-4" />
+                          ) : (
+                            <Bell className="w-4 h-4" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
+                            Aufgaben-Push-Benachrichtigungen (Mobile &amp; Desktop)
+                          </span>
+                          <span className="text-[11px] text-neutral-500 block">
+                            Sendet Erinnerungen für Aufgaben mit Datum (<span className="font-mono">📅 YYYY-MM-DD</span>).
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!notifSettings.enabled || notifPerm !== 'granted') {
+                            const perm = await requestNotificationPermission();
+                            setNotifPerm(perm);
+                            if (perm === 'granted') {
+                              const next = { ...notifSettings, enabled: true };
+                              setNotifSettings(next);
+                              saveNotificationSettings(currentUser.username, next);
+                              setNotifFeedback('Push-Benachrichtigungen aktiviert.');
+                            } else {
+                              setNotifFeedback(
+                                perm === 'denied'
+                                  ? 'Im Browser blockiert – bitte in den Website-Einstellungen erlauben.'
+                                  : 'Berechtigung nicht erteilt.'
+                              );
+                            }
+                          } else {
+                            const next = { ...notifSettings, enabled: false };
+                            setNotifSettings(next);
+                            saveNotificationSettings(currentUser.username, next);
+                            setNotifFeedback('Push-Benachrichtigungen deaktiviert.');
+                          }
+                        }}
+                        style={
+                          notifSettings.enabled && notifPerm === 'granted'
+                            ? { backgroundColor: activeColors.notes }
+                            : undefined
+                        }
+                        className={`w-11 h-6 rounded-full transition-colors flex items-center px-1 cursor-pointer shrink-0 ${
+                          notifSettings.enabled && notifPerm === 'granted'
+                            ? 'justify-end'
+                            : 'bg-neutral-300 dark:bg-neutral-700 justify-start'
+                        }`}
+                      >
+                        <span className="w-4 h-4 rounded-full bg-white shadow-xs" />
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-1 border-t border-[#E5E3DC] dark:border-[#2F3136]">
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={notifSettings.notifyToday}
+                            onChange={(e) => {
+                              const next = { ...notifSettings, notifyToday: e.target.checked };
+                              setNotifSettings(next);
+                              saveNotificationSettings(currentUser.username, next);
+                            }}
+                            className="accent-[var(--ochre-accent)]"
+                          />
+                          <span>Heute fällige Aufgaben</span>
+                        </label>
+
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={notifSettings.notifyOverdue}
+                            onChange={(e) => {
+                              const next = { ...notifSettings, notifyOverdue: e.target.checked };
+                              setNotifSettings(next);
+                              saveNotificationSettings(currentUser.username, next);
+                            }}
+                            className="accent-[var(--ochre-accent)]"
+                          />
+                          <span>Überfällige Aufgaben</span>
+                        </label>
+                      </div>
+
+                      <label className="flex items-center gap-1.5">
+                        <span className="text-neutral-500">Ab Uhrzeit:</span>
+                        <input
+                          type="time"
+                          value={notifSettings.reminderTime}
+                          onChange={(e) => {
+                            const next = { ...notifSettings, reminderTime: e.target.value };
+                            setNotifSettings(next);
+                            saveNotificationSettings(currentUser.username, next);
+                          }}
+                          className="px-2 py-1 rounded bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] text-xs"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <span className="text-[11px] text-neutral-500">
+                        Browser-Status:{' '}
+                        <strong className="text-neutral-800 dark:text-neutral-200">
+                          {notifPerm === 'granted'
+                            ? 'Erlaubt'
+                            : notifPerm === 'denied'
+                            ? 'Blockiert'
+                            : notifPerm === 'unsupported'
+                            ? 'Nicht unterstützt'
+                            : 'Nicht erteilt'}
+                        </strong>
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          let perm = notifPerm;
+                          if (perm === 'default') {
+                            perm = await requestNotificationPermission();
+                            setNotifPerm(perm);
+                          }
+                          if (perm !== 'granted') {
+                            setNotifFeedback('Bitte zuerst Browser-Benachrichtigungen erlauben.');
+                            return;
+                          }
+                          const ok = await sendPushNotification(
+                            'Ochre Aufgaben Test-Push',
+                            'Mobile & Desktop Push-Erinnerungen funktionieren einwandfrei!'
+                          );
+                          setNotifFeedback(
+                            ok ? 'Test-Push erfolgreich gesendet!' : 'Test-Push konnte nicht zugestellt werden.'
+                          );
+                        }}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[var(--ochre-accent)] text-[11px] font-semibold cursor-pointer"
+                      >
+                        <Send className="w-3 h-3 text-[var(--ochre-accent)]" />
+                        <span>Test-Push senden</span>
+                      </button>
+                    </div>
+
+                    {notifFeedback && (
+                      <p className="text-[11px] text-[var(--ochre-accent)] font-medium">
+                        {notifFeedback}
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -1058,7 +1447,406 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           )}
 
           {/* ============================================================== */}
-          {/* TAB 4: BACKUP & DOCKER                                         */}
+          {/* TAB 4: BENUTZERVERWALTUNG & PROFILBILD                         */}
+          {/* ============================================================== */}
+          {activeSettingsTab === 'users' && (
+            <div className="space-y-4">
+              {/* Top Action Header */}
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div>
+                  <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100">
+                    Benutzerverwaltung &amp; Profilbilder
+                  </h3>
+                  <p className="text-[11px] text-neutral-500">
+                    Erstelle neue Benutzerkonten, wechsle zwischen Benutzern und passe Profilbilder individuell an.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNewUserForm((prev) => !prev);
+                    setNewUserStatus(null);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[var(--ochre-accent)] text-white text-xs font-semibold shadow-xs hover:opacity-90 cursor-pointer shrink-0"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>{showNewUserForm ? 'Abbrechen' : 'Neuen Benutzer anlegen'}</span>
+                </button>
+              </div>
+
+              {/* New User Creation Form */}
+              {showNewUserForm && (
+                <form
+                  onSubmit={handleCreateNewUser}
+                  className="p-3.5 rounded-2xl border-2 border-[var(--ochre-accent)]/50 bg-[#FAF9F5] dark:bg-[#18191B] space-y-3 animate-in fade-in duration-150"
+                >
+                  <div className="flex items-center gap-2 font-bold text-neutral-900 dark:text-neutral-100">
+                    <UserPlus className="w-4 h-4 text-[var(--ochre-accent)]" />
+                    <span>Neues Benutzerkonto erstellen</span>
+                  </div>
+
+                  {/* Avatar picker for new user */}
+                  <div className="flex items-center gap-3 flex-wrap">
+                    {newUserAvatarDataUrl ? (
+                      <img
+                        src={newUserAvatarDataUrl}
+                        alt="Vorschau"
+                        className="w-12 h-12 rounded-full object-cover border-2 border-[var(--ochre-accent)] shrink-0"
+                      />
+                    ) : (
+                      <div className="w-12 h-12 rounded-full bg-[var(--ochre-accent)] text-white flex items-center justify-center font-bold text-base shrink-0">
+                        {(newUserDisplayName || newUserHandle || 'U')[0].toUpperCase()}
+                      </div>
+                    )}
+                    <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[var(--ochre-accent)] text-xs font-semibold cursor-pointer">
+                      <Camera className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
+                      <span>Profilbild wählen</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          try {
+                            const url = await resizeAvatarFile(file);
+                            setNewUserAvatarDataUrl(url);
+                          } catch {}
+                          e.target.value = '';
+                        }}
+                        className="hidden"
+                      />
+                    </label>
+                    {newUserAvatarDataUrl && (
+                      <button
+                        type="button"
+                        onClick={() => setNewUserAvatarDataUrl('')}
+                        className="text-[11px] text-neutral-500 hover:text-red-500 cursor-pointer"
+                      >
+                        Bild entfernen
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="text-[11px] font-semibold text-neutral-500 block mb-1">
+                        Anzeigename *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={newUserDisplayName}
+                        onChange={(e) => setNewUserDisplayName(e.target.value)}
+                        placeholder="z. B. Lena"
+                        className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-neutral-500 block mb-1">
+                        Benutzername (Ordnername)
+                      </label>
+                      <input
+                        type="text"
+                        value={newUserHandle}
+                        onChange={(e) => setNewUserHandle(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
+                        placeholder="z. B. lena (wird auto-generiert)"
+                        className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-neutral-500 block mb-1">
+                        Rolle
+                      </label>
+                      <select
+                        value={newUserRole}
+                        onChange={(e) => setNewUserRole(e.target.value as 'admin' | 'user' | 'family')}
+                        className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden"
+                      >
+                        <option value="user">Benutzer</option>
+                        <option value="family">Familie</option>
+                        <option value="admin">Administrator</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-neutral-500 block mb-1">
+                        Passwort (optional)
+                      </label>
+                      <input
+                        type="password"
+                        value={newUserPassword}
+                        onChange={(e) => setNewUserPassword(e.target.value)}
+                        placeholder="Leer lassen = 1-Klick-Anmeldung"
+                        className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-semibold text-neutral-500 block mb-1">
+                      Kurzbeschreibung (optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={newUserDesc}
+                      onChange={(e) => setNewUserDesc(e.target.value)}
+                      placeholder="z. B. Familie, Kochbuch & gemeinsame Notizen"
+                      className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
+                    />
+                  </div>
+
+                  {newUserStatus && (
+                    <p className="text-[11px] text-red-500 font-medium">{newUserStatus}</p>
+                  )}
+
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowNewUserForm(false)}
+                      className="px-3 py-1.5 rounded-lg text-xs text-neutral-500 hover:bg-neutral-200/60 dark:hover:bg-neutral-800 cursor-pointer"
+                    >
+                      Abbrechen
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={userSaving || (!newUserDisplayName.trim() && !newUserHandle.trim())}
+                      className="px-4 py-1.5 rounded-lg bg-[var(--ochre-accent)] text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                    >
+                      {userSaving ? 'Erstelle...' : 'Benutzer erstellen'}
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* User List (Switch or Select to Edit) */}
+              <div className="space-y-2">
+                <span className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider block">
+                  Vorhandene Benutzer ({allUsers.length})
+                </span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {allUsers.map((u) => {
+                    const isSelectedForEdit = editedTargetUser.username === u.username;
+                    const isCurrent = currentUser.username === u.username;
+                    return (
+                      <div
+                        key={u.id}
+                        onClick={() => setEditingUsername(u.username)}
+                        className={`p-2.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-2 ${
+                          isSelectedForEdit
+                            ? 'border-[var(--ochre-accent)] bg-amber-50/40 dark:bg-amber-950/20 shadow-2xs'
+                            : 'border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF]/70 dark:bg-[#18191B] hover:border-neutral-400'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          {u.avatar ? (
+                            <img
+                              src={u.avatar}
+                              alt={u.displayName}
+                              referrerPolicy="no-referrer"
+                              className="w-9 h-9 rounded-full object-cover border border-[#E5E3DC] dark:border-[#2F3136] shrink-0"
+                            />
+                          ) : (
+                            <div className="w-9 h-9 rounded-full bg-[var(--ochre-accent)] text-white flex items-center justify-center font-bold text-xs shrink-0">
+                              {u.displayName?.[0]?.toUpperCase() || 'U'}
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-xs text-neutral-900 dark:text-neutral-100 truncate">
+                                {u.displayName}
+                              </span>
+                              {isCurrent && (
+                                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-[var(--ochre-accent)] text-white font-semibold shrink-0">
+                                  Aktiv
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[11px] text-neutral-500 block truncate">
+                              @{u.username} · {u.role === 'admin' ? 'Admin' : u.role === 'family' ? 'Familie' : 'Benutzer'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          {!isCurrent && onSwitchUser && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onSwitchUser(u);
+                              }}
+                              className="px-2 py-1 rounded-lg bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[var(--ochre-accent)] text-[11px] font-semibold cursor-pointer"
+                              title="Zu diesem Benutzer wechseln"
+                            >
+                              Wechseln
+                            </button>
+                          )}
+                          {allUsers.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteUser(u);
+                              }}
+                              className="p-1.5 rounded-lg text-neutral-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
+                              title="Benutzer entfernen"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Selected User Profile & Avatar Editor */}
+              <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#18191B] space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 font-bold text-neutral-900 dark:text-neutral-100">
+                    <UserCheck className="w-4 h-4 text-[var(--ochre-accent)]" />
+                    <span>Profil bearbeiten: {editedTargetUser.displayName} (@{editedTargetUser.username})</span>
+                  </div>
+                  {userEditStatus && (
+                    <span className="text-[11px] font-semibold text-[var(--ochre-accent)]">
+                      {userEditStatus}
+                    </span>
+                  )}
+                </div>
+
+                {/* Avatar Replacement Controls */}
+                <div className="p-3 rounded-xl bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] space-y-2.5">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    {editedTargetUser.avatar ? (
+                      <img
+                        src={editedTargetUser.avatar}
+                        alt={editedTargetUser.displayName}
+                        referrerPolicy="no-referrer"
+                        className="w-14 h-14 rounded-full object-cover border-2 border-[var(--ochre-accent)] shrink-0 shadow-xs"
+                      />
+                    ) : (
+                      <div className="w-14 h-14 rounded-full bg-[var(--ochre-accent)] text-white flex items-center justify-center font-bold text-lg shrink-0">
+                        {editedTargetUser.displayName?.[0]?.toUpperCase() || 'U'}
+                      </div>
+                    )}
+
+                    <div className="space-y-1.5 flex-1 min-w-[180px]">
+                      <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 block">
+                        Profilbild austauschen
+                      </span>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--ochre-accent)] text-white text-xs font-semibold hover:opacity-90 cursor-pointer shadow-2xs">
+                          <Camera className="w-3.5 h-3.5" />
+                          <span>Foto hochladen</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={handleAvatarUploadForEdit}
+                            disabled={userSaving}
+                            className="hidden"
+                          />
+                        </label>
+                        {editedTargetUser.avatar && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              setUserSaving(true);
+                              try {
+                                const updated = await api.updateUser(editedTargetUser.username, { clearAvatar: true });
+                                await syncUsersList(updated);
+                                setUserEditStatus('Profilbild zurückgesetzt.');
+                              } finally {
+                                setUserSaving(false);
+                              }
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 text-[11px] font-medium hover:text-red-500 cursor-pointer"
+                          >
+                            Initiale verwenden
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Quick Avatar Presets */}
+                  <div className="flex items-center gap-2 pt-2 border-t border-[#E5E3DC] dark:border-[#2F3136] flex-wrap">
+                    <span className="text-[11px] text-neutral-500">Schnellauswahl:</span>
+                    {AVATAR_PRESETS.map((presetUrl, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => handleSelectPresetAvatar(presetUrl)}
+                        className="w-7 h-7 rounded-full overflow-hidden border border-[#E5E3DC] dark:border-neutral-700 hover:scale-110 transition-transform cursor-pointer"
+                        title={`Avatar-Vorlage ${idx + 1}`}
+                      >
+                        <img src={presetUrl} alt={`Preset ${idx + 1}`} className="w-full h-full object-cover" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Name, Role, Description Inputs */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="text-[11px] font-semibold text-neutral-500 block mb-1">
+                      Anzeigename
+                    </label>
+                    <input
+                      type="text"
+                      value={editDisplayName}
+                      onChange={(e) => setEditDisplayName(e.target.value)}
+                      className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold text-neutral-500 block mb-1">
+                      Rolle
+                    </label>
+                    <select
+                      value={editRole}
+                      onChange={(e) => setEditRole(e.target.value as 'admin' | 'user' | 'family')}
+                      className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden"
+                    >
+                      <option value="user">Benutzer</option>
+                      <option value="family">Familie</option>
+                      <option value="admin">Administrator</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-neutral-500 block mb-1">
+                    Beschreibung
+                  </label>
+                  <input
+                    type="text"
+                    value={editDescription}
+                    onChange={(e) => setEditDescription(e.target.value)}
+                    placeholder="z. B. Familie, Arbeit, Notizen..."
+                    className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-[11px] text-neutral-400 flex items-center gap-1">
+                    <Shield className="w-3 h-3" />
+                    Ordner: <span className="font-mono">User/{editedTargetUser.username}/</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleSaveUserProfile}
+                    disabled={userSaving || !editDisplayName.trim()}
+                    className="px-3.5 py-1.5 rounded-lg bg-[var(--ochre-accent)] text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                  >
+                    Änderungen speichern
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ============================================================== */}
+          {/* TAB 5: BACKUP & DOCKER                                         */}
           {/* ============================================================== */}
           {activeSettingsTab === 'backup' && (
             <div className="space-y-4">

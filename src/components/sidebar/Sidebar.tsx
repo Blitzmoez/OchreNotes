@@ -15,7 +15,9 @@ import {
   X,
   FilePlus,
   FolderPlus,
-  Settings
+  Settings,
+  Inbox,
+  FolderInput
 } from 'lucide-react';
 import { NoteMetadata } from '../../types';
 import { useTranslation } from '../../services/i18n';
@@ -28,6 +30,7 @@ interface SidebarProps {
   activeIsShared?: boolean;
   onSelectNote: (path: string, isShared?: boolean, sharedFrom?: string) => void;
   onCreateNote: (folder?: string) => void;
+  onCreateQuickNote?: () => void;
   onCreateFolder?: (folderPath: string) => Promise<boolean | void> | void;
   onDeleteNote: (path: string) => void;
   onDeleteFolder?: (folderPath: string) => Promise<boolean | void> | void;
@@ -45,6 +48,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeIsShared,
   onSelectNote,
   onCreateNote,
+  onCreateQuickNote,
   onCreateFolder,
   onDeleteNote,
   onDeleteFolder,
@@ -58,6 +62,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
   const [isSharedSectionCollapsed, setIsSharedSectionCollapsed] = useState(false);
+  const [isInboxCollapsed, setIsInboxCollapsed] = useState(false);
+  const [sortingInboxPath, setSortingInboxPath] = useState<string | null>(null);
   const [confirmDeletePath, setConfirmDeletePath] = useState<string | null>(null);
   const [confirmDeleteFolder, setConfirmDeleteFolder] = useState<string | null>(null);
 
@@ -87,29 +93,46 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         {!isSubfolderMode ? (
-          <div className="flex items-center gap-1.5 pt-0.5">
-            <button
-              onClick={() => {
-                onCreateNote(targetFolder === '/' ? undefined : targetFolder);
-                setCreateMenuTargetFolder(null);
-              }}
-              className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-white dark:bg-[#25272C] border border-[var(--ochre-accent)] text-[var(--ochre-accent)] text-xs font-semibold shadow-2xs hover:bg-[var(--ochre-accent)] hover:text-white transition-all cursor-pointer active:scale-95"
-              title={t.newNote}
-            >
-              <FilePlus className="w-3.5 h-3.5 shrink-0" />
-              <span>{t.newNote}</span>
-            </button>
-            <button
-              onClick={() => {
-                setIsSubfolderMode(true);
-                setSubfolderInput('');
-              }}
-              className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-white dark:bg-[#25272C] border border-amber-300 dark:border-neutral-700 hover:border-[var(--ochre-accent)] text-neutral-800 dark:text-neutral-200 text-xs font-semibold shadow-2xs hover:bg-amber-500/10 transition-all cursor-pointer active:scale-95"
-              title={t.newFolder}
-            >
-              <FolderPlus className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
-              <span>{t.newFolder}</span>
-            </button>
+          <div className="space-y-1.5 pt-0.5">
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  onCreateNote(targetFolder === '/' ? undefined : targetFolder);
+                  setCreateMenuTargetFolder(null);
+                }}
+                className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-white dark:bg-[#25272C] border border-[var(--ochre-accent)] text-[var(--ochre-accent)] text-xs font-semibold shadow-2xs hover:bg-[var(--ochre-accent)] hover:text-white transition-all cursor-pointer active:scale-95 touch-manipulation"
+                title={t.newNote}
+              >
+                <FilePlus className="w-3.5 h-3.5 shrink-0" />
+                <span>{t.newNote}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSubfolderMode(true);
+                  setSubfolderInput('');
+                }}
+                className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-white dark:bg-[#25272C] border border-amber-300 dark:border-neutral-700 hover:border-[var(--ochre-accent)] text-neutral-800 dark:text-neutral-200 text-xs font-semibold shadow-2xs hover:bg-amber-500/10 transition-all cursor-pointer active:scale-95 touch-manipulation"
+                title={t.newFolder}
+              >
+                <FolderPlus className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
+                <span>{t.newFolder}</span>
+              </button>
+            </div>
+            {targetFolder === '/' && onCreateQuickNote && (
+              <button
+                type="button"
+                onClick={() => {
+                  onCreateQuickNote();
+                  setCreateMenuTargetFolder(null);
+                }}
+                className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-[var(--ochre-accent)] text-white text-xs font-semibold shadow-2xs hover:opacity-90 transition-all cursor-pointer active:scale-95 touch-manipulation"
+              >
+                <Inbox className="w-3.5 h-3.5 shrink-0" />
+                <span>Schnelle Notiz (Inbox)</span>
+              </button>
+            )}
           </div>
         ) : (
           <div className="flex items-center gap-1 pt-0.5">
@@ -213,7 +236,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
     });
   }, [notes, searchQuery, selectedTag]);
 
-  // Group personal notes by folder (including empty folders from folders prop)
+  // Inbox notes (root-level quick notes waiting to be sorted into folders)
+  const inboxNotes = useMemo(() => {
+    return filteredNotes.filter((n) => n.isInbox);
+  }, [filteredNotes]);
+
+  // Group personal notes by folder (excluding Inbox notes so they aren't duplicated)
   const groupedPersonalNotes = useMemo(() => {
     const groups: Record<string, NoteMetadata[]> = { '/': [] };
     folders.forEach((f) => {
@@ -221,6 +249,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (cleanF && !groups[cleanF]) groups[cleanF] = [];
     });
     filteredNotes.forEach((note) => {
+      if (note.isInbox) return;
       const folder = (note.folder || '/').replace(/^\/+|\/+$/g, '') || '/';
       if (!groups[folder]) groups[folder] = [];
       groups[folder].push(note);
@@ -252,12 +281,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <aside className={`
         fixed lg:static top-0 bottom-0 left-0 z-40
         w-72 bg-[#F4F3EF] dark:bg-[#1D1F23] border-r border-[#E5E3DC] dark:border-[#2F3136]
-        flex flex-col transition-transform duration-200 ease-in-out select-none
+        flex flex-col overflow-x-hidden transition-transform duration-200 ease-in-out select-none
         ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
       `}>
         {/* Header Actions */}
-        <div className="p-3 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 relative">
-          <div className="flex items-center gap-1.5 min-w-0">
+        <div className="p-3 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 relative shrink-0">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
             <span className="text-xs font-semibold tracking-wider uppercase text-neutral-500 dark:text-neutral-400 truncate">
               {t.vaultExplorer}
             </span>
@@ -267,21 +296,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </span>
             )}
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
-              onClick={() => {
-                setCreateMenuTargetFolder('/');
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setCreateMenuTargetFolder((prev) => (prev === '/' ? null : '/'));
                 setIsSubfolderMode(false);
                 setSubfolderInput('');
               }}
-              className="w-8 h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] hover:border-[var(--ochre-accent)] shadow-xs flex items-center justify-center transition-all cursor-pointer"
+              className="w-8 h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] hover:border-[var(--ochre-accent)] shadow-xs flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 touch-manipulation"
               title={`${t.newNote} / ${t.newFolder}`}
+              aria-label={t.newNote}
             >
               <Plus className="w-4 h-4" />
             </button>
             <button
+              type="button"
               onClick={onCloseMobile}
-              className="w-8 h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-500 hover:text-neutral-900 dark:hover:text-white shadow-xs flex items-center justify-center lg:hidden cursor-pointer"
+              className="w-8 h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-500 hover:text-neutral-900 dark:hover:text-white shadow-xs flex items-center justify-center lg:hidden cursor-pointer shrink-0 touch-manipulation"
+              aria-label="Vault schließen"
             >
               <X className="w-4 h-4" />
             </button>
@@ -289,7 +323,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         {/* Render Root Creation Box when target is '/' */}
-        {renderCreationBox('/')}
+        <div className="px-2">
+          {renderCreationBox('/')}
+        </div>
 
         {/* Search Input & Tag Filter */}
         <div className="p-3 pb-1 flex items-center gap-1.5">
@@ -372,8 +408,156 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* Scrollable Tree View with physically scaled font, icon dimensions, and touch targets */}
         <div 
-          className="flex-1 overflow-y-auto px-2 py-1 space-y-4 transition-all duration-150"
+          className="flex-1 overflow-y-auto overflow-x-hidden px-2 py-1 space-y-4 transition-all duration-150"
         >
+          {/* SECTION 0: INBOX (Unsorted Quick Notes) */}
+          {(inboxNotes.length > 0 || onCreateQuickNote) && (
+            <div className="rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white/70 dark:bg-[#222429] p-1.5 space-y-1">
+              <div className="flex items-center justify-between px-1.5 py-1 gap-1">
+                <button
+                  type="button"
+                  onClick={() => setIsInboxCollapsed(!isInboxCollapsed)}
+                  className="flex items-center gap-1.5 min-w-0 flex-1 text-left cursor-pointer"
+                >
+                  <Inbox className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-700 dark:text-neutral-200 truncate">
+                    Inbox
+                  </span>
+                  <span className="text-[10px] font-semibold text-neutral-400 tabular-nums shrink-0">
+                    ({inboxNotes.length})
+                  </span>
+                </button>
+                {onCreateQuickNote && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onCreateQuickNote();
+                    }}
+                    className="w-7 h-7 rounded-full bg-white dark:bg-[#2A2C31] border border-[var(--ochre-accent)]/50 text-[var(--ochre-accent)] hover:bg-[var(--ochre-accent)] hover:text-white flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 touch-manipulation"
+                    title="Schnelle Notiz in Inbox erstellen"
+                    aria-label="Schnelle Notiz in Inbox erstellen"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {!isInboxCollapsed && (
+                <div className="space-y-1">
+                  {inboxNotes.length === 0 ? (
+                    <div className="px-2 py-1.5 text-[11px] text-neutral-400 italic">
+                      Keine unsortierten Notizen.
+                    </div>
+                  ) : (
+                    inboxNotes.map((note) => {
+                      const isActive = activeNotePath === note.path && !activeIsShared;
+                      const isSorting = sortingInboxPath === note.path;
+                      return (
+                        <div key={note.path} className="space-y-1">
+                          <div
+                            draggable={true}
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData('text/plain', note.path);
+                              e.dataTransfer.setData('text/note-path', note.path);
+                              e.dataTransfer.setData('application/json', JSON.stringify({ path: note.path, isShared: false }));
+                              e.dataTransfer.effectAllowed = 'all';
+                              setDraggedNotePath(note.path);
+                            }}
+                            onDragEnd={() => {
+                              setDraggedNotePath(null);
+                              setDragOverFolder(null);
+                            }}
+                            onClick={() => onSelectNote(note.path, false)}
+                            className={`group flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg cursor-pointer transition-all ${
+                              isActive
+                                ? 'bg-[#EAE8E1] dark:bg-[#2A2C31] text-[var(--ochre-accent)] font-medium'
+                                : 'text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200/50 dark:hover:bg-neutral-800'
+                            }`}
+                          >
+                            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                              <FileText className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
+                              <span className="text-xs truncate">{note.title}</span>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              {folders.length > 0 && onMoveNote && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSortingInboxPath(isSorting ? null : note.path);
+                                  }}
+                                  className="w-6.5 h-6.5 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-500 hover:text-[var(--ochre-accent)] flex items-center justify-center cursor-pointer touch-manipulation"
+                                  title="In einen Ordner einsortieren"
+                                  aria-label="In Ordner einsortieren"
+                                >
+                                  <FolderInput className="w-3 h-3" />
+                                </button>
+                              )}
+                              {confirmDeletePath === note.path ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onDeleteNote(note.path);
+                                    setConfirmDeletePath(null);
+                                  }}
+                                  className="text-[10px] px-1.5 py-0.5 rounded bg-red-600 text-white font-medium"
+                                >
+                                  Löschen?
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setConfirmDeletePath(note.path);
+                                    setTimeout(() => setConfirmDeletePath(null), 3500);
+                                  }}
+                                  className="p-1 rounded-full text-neutral-400 hover:text-red-600 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
+                                  title="Inbox-Notiz löschen"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {isSorting && onMoveNote && (
+                            <div
+                              onClick={(e) => e.stopPropagation()}
+                              className="mx-1 p-1.5 rounded-lg bg-[#F4F3EF] dark:bg-[#18191B] border border-[#E5E3DC] dark:border-[#2F3136] space-y-1"
+                            >
+                              <span className="text-[10px] font-semibold text-neutral-500 block">
+                                In Ordner verschieben:
+                              </span>
+                              <div className="flex flex-wrap gap-1">
+                                {folders.map((folderPath) => (
+                                  <button
+                                    key={folderPath}
+                                    type="button"
+                                    onClick={async () => {
+                                      const fileName = note.path.split('/').pop() || note.path;
+                                      await onMoveNote(note.path, `${folderPath}/${fileName}`);
+                                      setSortingInboxPath(null);
+                                    }}
+                                    className="text-[11px] px-2 py-0.5 rounded-md bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[var(--ochre-accent)] text-neutral-700 dark:text-neutral-200 cursor-pointer"
+                                  >
+                                    📁 {folderPath}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* SECTION 1: Eigene Notizen */}
           <div>
             <div 
@@ -454,7 +638,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         paddingRight: dynamicPadX,
                       }}
                     >
-                      <div className="flex items-center gap-1.5 truncate">
+                      <div className="flex items-center gap-1.5 min-w-0 flex-1">
                         {isCollapsed ? (
                           <ChevronRight 
                             className="text-neutral-400 shrink-0" 
@@ -473,7 +657,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <span className="truncate">{folderKey}</span>
                       </div>
 
-                      <div className="flex items-center gap-1.5 shrink-0">
+                      <div className="flex items-center gap-1 shrink-0">
                         {/* Folder Delete Button (Safety: only if 0 notes inside) */}
                         {folderNotes.length === 0 ? (
                           confirmDeleteFolder === folderKey ? (
@@ -513,20 +697,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
                         {/* Plus button directly behind folder triggering Note/Unterordner creation */}
                         <button
+                          type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setCreateMenuTargetFolder(folderKey);
+                            setCollapsedFolders((prev) => ({ ...prev, [folderKey]: false }));
+                            setCreateMenuTargetFolder((prev) => (prev === folderKey ? null : folderKey));
                             setIsSubfolderMode(false);
                             setSubfolderInput('');
                           }}
-                          className="w-7.5 h-7.5 rounded-full bg-white dark:bg-[#25272C] border border-[var(--ochre-accent)]/50 text-[var(--ochre-accent)] hover:bg-amber-500/10 shadow-xs flex items-center justify-center transition-all cursor-pointer active:scale-95"
+                          className="w-8 h-8 lg:w-7 lg:h-7 rounded-full bg-white dark:bg-[#25272C] border border-[var(--ochre-accent)]/50 text-[var(--ochre-accent)] hover:bg-amber-500/10 shadow-xs flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 touch-manipulation"
                           title={`Neu in '${folderKey}' (Notiz oder Unterordner)`}
                           aria-label={`Neu in ${folderKey}`}
                         >
                           <Plus className="w-4 h-4" />
                         </button>
                         <span 
-                          className="text-neutral-400 tabular-nums"
+                          className="text-neutral-400 tabular-nums shrink-0"
                           style={{ fontSize: `${Math.max(9, Math.round((10 * vaultScale) / 100))}px` }}
                         >
                           {folderNotes.length}

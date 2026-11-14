@@ -18,8 +18,18 @@ import {
   Filter,
   Folder,
   RotateCcw,
-  Check
+  Check,
+  Bell,
+  BellRing
 } from 'lucide-react';
+import {
+  getNotificationPermission,
+  loadNotificationSettings,
+  saveNotificationSettings,
+  requestNotificationPermission,
+  checkAndNotifyDueTasks,
+  notifySingleTask,
+} from '../../services/notificationService';
 
 interface TasksDashboardProps {
   username: string;
@@ -105,6 +115,13 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
 
+  // Push Notification state (Mobile & Desktop)
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission | 'unsupported'>(() =>
+    getNotificationPermission()
+  );
+  const [notifSettings, setNotifSettings] = useState(() => loadNotificationSettings(username));
+  const [pushStatusMsg, setPushStatusMsg] = useState<string | null>(null);
+
   // Tag search popover state
   const [isTagFilterOpen, setIsTagFilterOpen] = useState(false);
   const [tagSearchQuery, setTagSearchQuery] = useState('');
@@ -136,6 +153,93 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
   useEffect(() => {
     localStorage.setItem(`ochre_task_lists_${username}`, JSON.stringify(customLists));
   }, [customLists, username]);
+
+  // Reload notification settings when user switches
+  useEffect(() => {
+    setNotifSettings(loadNotificationSettings(username));
+    setNotifPermission(getNotificationPermission());
+  }, [username]);
+
+  const showTempPushMessage = (msg: string) => {
+    setPushStatusMsg(msg);
+    window.setTimeout(() => setPushStatusMsg(null), 3500);
+  };
+
+  const handleTogglePush = async () => {
+    if (notifPermission === 'unsupported') {
+      showTempPushMessage('Browser unterstützt keine Push-Benachrichtigungen.');
+      return;
+    }
+
+    if (!notifSettings.enabled || notifPermission !== 'granted') {
+      const perm = await requestNotificationPermission();
+      setNotifPermission(perm);
+      if (perm === 'granted') {
+        const next = { ...notifSettings, enabled: true };
+        setNotifSettings(next);
+        saveNotificationSettings(username, next);
+        showTempPushMessage('Push-Benachrichtigungen aktiviert.');
+        checkAndNotifyDueTasks({ username, activeProfile: noteProfile, force: true })
+          .then((res) => {
+            if (res.pushedCount > 0) {
+              showTempPushMessage(`${res.pushedCount} fällige Aufgabe(n) gepusht.`);
+            }
+          })
+          .catch(() => {});
+      } else {
+        showTempPushMessage(
+          perm === 'denied'
+            ? 'Berechtigung im Browser blockiert.'
+            : 'Berechtigung nicht erteilt.'
+        );
+      }
+    } else {
+      const next = { ...notifSettings, enabled: false };
+      setNotifSettings(next);
+      saveNotificationSettings(username, next);
+      showTempPushMessage('Push-Benachrichtigungen pausiert.');
+    }
+  };
+
+  const handleCheckDueNow = async () => {
+    let perm = notifPermission;
+    if (perm === 'default') {
+      perm = await requestNotificationPermission();
+      setNotifPermission(perm);
+    }
+    if (perm !== 'granted') {
+      showTempPushMessage(
+        perm === 'unsupported'
+          ? 'Browser unterstützt keine Push-Benachrichtigungen.'
+          : 'Bitte Push-Berechtigung erlauben.'
+      );
+      return;
+    }
+    const res = await checkAndNotifyDueTasks({
+      username,
+      activeProfile: noteProfile,
+      force: true,
+    });
+    if (res.pushedCount > 0) {
+      showTempPushMessage(`${res.pushedCount} Erinnerung(en) gesendet`);
+    } else {
+      showTempPushMessage('Keine heute fälligen oder überfälligen Aufgaben');
+    }
+  };
+
+  const handleNotifyTaskNow = async (task: TaskItem) => {
+    let perm = notifPermission;
+    if (perm === 'default') {
+      perm = await requestNotificationPermission();
+      setNotifPermission(perm);
+    }
+    if (perm !== 'granted') {
+      showTempPushMessage('Bitte Push-Berechtigung erlauben.');
+      return;
+    }
+    const ok = await notifySingleTask(task);
+    showTempPushMessage(ok ? `Push für „${task.title}“ gesendet` : 'Push fehlgeschlagen');
+  };
 
   const loadTasks = async () => {
     setLoading(true);
@@ -296,13 +400,63 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
             </p>
           </div>
 
-          <button
-            onClick={loadTasks}
-            className="self-start sm:self-auto text-xs px-3 py-1.5 rounded-md bg-[#F4F3EF] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[var(--ochre-accent)] text-neutral-700 dark:text-neutral-300 font-medium transition-colors"
-          >
-            Aktualisieren
-          </button>
+          <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+            <button
+              type="button"
+              onClick={handleTogglePush}
+              className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border font-medium transition-colors cursor-pointer ${
+                notifSettings.enabled && notifPermission === 'granted'
+                  ? 'bg-[var(--ochre-accent)] text-white border-[var(--ochre-accent)] shadow-2xs'
+                  : 'bg-[#F4F3EF] dark:bg-[#202225] border-[#E5E3DC] dark:border-[#2F3136] hover:border-[var(--ochre-accent)] text-neutral-700 dark:text-neutral-300'
+              }`}
+              title="Push-Benachrichtigungen für Aufgaben mit Datum (Mobile & Desktop)"
+            >
+              {notifSettings.enabled && notifPermission === 'granted' ? (
+                <BellRing className="w-3.5 h-3.5" />
+              ) : (
+                <Bell className="w-3.5 h-3.5" />
+              )}
+              <span>
+                {notifSettings.enabled && notifPermission === 'granted'
+                  ? 'Push aktiv'
+                  : 'Push aktivieren'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleCheckDueNow}
+              className="text-xs px-3 py-1.5 rounded-md bg-[#F4F3EF] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[var(--ochre-accent)] text-neutral-700 dark:text-neutral-300 font-medium transition-colors cursor-pointer"
+              title="Fällige Aufgaben sofort als Push-Benachrichtigung senden"
+            >
+              Jetzt prüfen
+            </button>
+
+            <button
+              type="button"
+              onClick={loadTasks}
+              className="text-xs px-3 py-1.5 rounded-md bg-[#F4F3EF] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[var(--ochre-accent)] text-neutral-700 dark:text-neutral-300 font-medium transition-colors cursor-pointer"
+            >
+              Aktualisieren
+            </button>
+          </div>
         </div>
+
+        {pushStatusMsg && (
+          <div className="px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-[var(--ochre-accent)]/40 text-xs text-neutral-800 dark:text-neutral-200 flex items-center justify-between">
+            <span className="flex items-center gap-1.5">
+              <BellRing className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
+              <span>{pushStatusMsg}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setPushStatusMsg(null)}
+              className="text-neutral-400 hover:text-neutral-600 p-0.5 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         {/* 1. EIGENE AUFGABEN-LISTEN (Benutzerdefiniert erstellbar & filterbar) */}
         <div>
@@ -635,6 +789,7 @@ export const TasksDashboard: React.FC<TasksDashboardProps> = ({
                 onToggle={() => handleToggle(task)}
                 onOpenNote={() => onOpenNote(task.noteTitle)}
                 onSelectTag={(tag) => setSelectedTag(tag)}
+                onNotifyTask={!task.completed && task.dueDate ? () => handleNotifyTaskNow(task) : undefined}
               />
             ))
           )}
@@ -652,6 +807,7 @@ interface SwipeableTaskCardProps {
   onToggle: () => void;
   onOpenNote: () => void;
   onSelectTag: (tag: string) => void;
+  onNotifyTask?: () => void;
 }
 
 const SwipeableTaskCard: React.FC<SwipeableTaskCardProps> = ({
@@ -659,6 +815,7 @@ const SwipeableTaskCard: React.FC<SwipeableTaskCardProps> = ({
   onToggle,
   onOpenNote,
   onSelectTag,
+  onNotifyTask,
 }) => {
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
@@ -849,15 +1006,32 @@ const SwipeableTaskCard: React.FC<SwipeableTaskCardProps> = ({
           </div>
         </div>
 
-        {/* Right side: Button to jump directly to Note */}
-        <button
-          onClick={onOpenNote}
-          className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg bg-[#F4F3EF] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] font-medium hover:bg-[var(--ochre-accent)] hover:text-white transition-colors shrink-0 cursor-pointer shadow-2xs active:scale-95"
-          title="Zur Ursprungsnotiz springen"
-        >
-          <ExternalLink className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">Zur Notiz springen</span>
-        </button>
+        {/* Right side: Optional Push Reminder & Jump to Note Button */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {onNotifyTask && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onNotifyTask();
+              }}
+              className="p-1.5 rounded-lg bg-[#F4F3EF] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] hover:bg-[var(--ochre-accent)] hover:text-white transition-colors cursor-pointer shadow-2xs active:scale-95"
+              title="Aufgabe sofort als Push-Benachrichtigung senden"
+              aria-label="Push-Erinnerung senden"
+            >
+              <Bell className="w-3.5 h-3.5" />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onOpenNote}
+            className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg bg-[#F4F3EF] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] font-medium hover:bg-[var(--ochre-accent)] hover:text-white transition-colors shrink-0 cursor-pointer shadow-2xs active:scale-95"
+            title="Zur Ursprungsnotiz springen"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Zur Notiz springen</span>
+          </button>
+        </div>
       </div>
     </div>
   );

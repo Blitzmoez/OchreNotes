@@ -59,8 +59,7 @@
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
     <script>
-      // Only register service worker in standalone / production, not inside dev preview iframe
-      if ('serviceWorker' in navigator && window.location.hostname !== 'localhost' && !window.location.hostname.includes('ais-dev')) {
+      if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/sw.js').catch((err) => {
             console.log('SW registration error:', err);

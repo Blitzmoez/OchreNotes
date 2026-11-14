@@ -102,6 +102,62 @@ class ApiService {
     return await res.json();
   }
 
+  async createUser(payload: {
+    username: string;
+    displayName: string;
+    role?: 'admin' | 'user' | 'family';
+    description?: string;
+    password?: string;
+    avatarDataUrl?: string;
+    avatarUrl?: string;
+  }): Promise<User> {
+    const res = await fetch('/api/auth/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Benutzer konnte nicht erstellt werden');
+    }
+    const data = await res.json();
+    return data.user;
+  }
+
+  async updateUser(
+    username: string,
+    payload: {
+      displayName?: string;
+      role?: 'admin' | 'user' | 'family';
+      description?: string;
+      avatarDataUrl?: string;
+      avatarUrl?: string;
+      clearAvatar?: boolean;
+    }
+  ): Promise<User> {
+    const res = await fetch(`/api/auth/users/${encodeURIComponent(username)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Benutzerprofil konnte nicht aktualisiert werden');
+    }
+    const data = await res.json();
+    return data.user;
+  }
+
+  async deleteUser(username: string): Promise<void> {
+    const res = await fetch(`/api/auth/users/${encodeURIComponent(username)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Benutzer konnte nicht gelöscht werden');
+    }
+  }
+
   async fetchFolders(username: string, profile: NoteProfileId = 'profile1'): Promise<string[]> {
     try {
       const res = await fetch(`/api/vault/folders?username=${encodeURIComponent(username)}&profile=${encodeURIComponent(profile)}`);

@@ -12,8 +12,9 @@ import { ShareModal } from './components/modals/ShareModal';
 import { SystemLogsModal } from './components/modals/SystemLogsModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { LoginScreen } from './components/auth/LoginScreen';
-import { BookOpen, CheckSquare, Network, ChevronRight, ChevronLeft, X } from 'lucide-react';
+import { BookOpen, CheckSquare, Network, ChevronRight, ChevronLeft, X, Inbox } from 'lucide-react';
 import { printNoteA4, printWikiArticleA4, printMealPlanA4 } from './services/printService';
+import { checkAndNotifyDueTasks } from './services/notificationService';
 
 const mergeProfileSettings = (raw?: Partial<SuiteProfileSettings> | null): SuiteProfileSettings => {
   if (!raw) return DEFAULT_PROFILE_SETTINGS;
@@ -113,6 +114,38 @@ export default function App() {
   // Mobile swipe gestures state
   const touchStartXRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
+  const saveTimeoutRef = useRef<number | null>(null);
+  const pendingSaveRef = useRef<{
+    username: string;
+    path: string;
+    content: string;
+    isShared: boolean;
+    sharedFrom?: string;
+    profile: NoteProfileId;
+  } | null>(null);
+
+  const flushPendingSave = useCallback(() => {
+    if (saveTimeoutRef.current !== null) {
+      window.clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+    }
+    const pending = pendingSaveRef.current;
+    if (!pending) return;
+    pendingSaveRef.current = null;
+    api
+      .saveNote(
+        pending.username,
+        pending.path,
+        pending.content,
+        pending.isShared,
+        pending.sharedFrom,
+        pending.profile
+      )
+      .then(() => {
+        setLastSaved(Date.now());
+        setPendingSyncCount(api.getPendingSyncCount());
+      });
+  }, []);
 
   // Dark mode effect - accurately applying class to root & body
   useEffect(() => {
@@ -190,6 +223,26 @@ export default function App() {
       }
     };
     initApp();
+  }, []);
+
+  // Handle deep-link (?view=tasks) & Service Worker notification clicks
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('view') === 'tasks') {
+        setActiveSuiteModule('notes');
+        setViewMode('tasks');
+      }
+    } catch {}
+
+    const handleSwMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'OCHRE_NOTIFICATION_CLICK') {
+        setActiveSuiteModule('notes');
+        setViewMode('tasks');
+      }
+    };
+    navigator.serviceWorker?.addEventListener('message', handleSwMessage);
+    return () => navigator.serviceWorker?.removeEventListener('message', handleSwMessage);
   }, []);
 
   const handleUpdateAppTitle = (newTitle: string) => {
@@ -296,9 +349,30 @@ export default function App() {
     }
   }, [currentUser, loadVaultData]);
 
+  // Periodic push notification check for tasks with due dates (Mobile PWA & Desktop)
+  useEffect(() => {
+    if (!currentUser) return;
+    const runCheck = () => {
+      checkAndNotifyDueTasks({
+        username: currentUser.username,
+        activeProfile: activeProfileId,
+        enableSecondProfile: profileSettings.enableSecondProfile,
+      }).catch(() => {});
+    };
+
+    runCheck();
+    window.addEventListener('focus', runCheck);
+    const intervalId = window.setInterval(runCheck, 60000);
+    return () => {
+      window.removeEventListener('focus', runCheck);
+      window.clearInterval(intervalId);
+    };
+  }, [currentUser, activeProfileId, profileSettings.enableSecondProfile]);
+
   // Open note handler
   const openNote = async (notePath: string, isShared = false, sharedFrom = '') => {
     if (!currentUser) return;
+    flushPendingSave();
     try {
       const data = await api.readNote(currentUser.username, notePath, isShared, sharedFrom, activeProfileId);
       setActiveNotePath(data.path);
@@ -337,22 +411,26 @@ export default function App() {
     setViewMode('editor');
   };
 
-  // Content change auto-save handler
+  // Content change auto-save handler (debounced network write for 120fps typing)
   const handleContentChange = (newContent: string) => {
     setActiveNoteContent(newContent);
     if (!currentUser || !activeNotePath || activePermission === 'read') return;
 
-    api.saveNote(
-      currentUser.username,
-      activeNotePath,
-      newContent,
-      activeIsShared,
-      activeSharedFrom,
-      activeProfileId
-    ).then(() => {
-      setLastSaved(Date.now());
-      setPendingSyncCount(api.getPendingSyncCount());
-    });
+    pendingSaveRef.current = {
+      username: currentUser.username,
+      path: activeNotePath,
+      content: newContent,
+      isShared: activeIsShared,
+      sharedFrom: activeSharedFrom,
+      profile: activeProfileId,
+    };
+
+    if (saveTimeoutRef.current !== null) {
+      window.clearTimeout(saveTimeoutRef.current);
+    }
+    saveTimeoutRef.current = window.setTimeout(() => {
+      flushPendingSave();
+    }, 420);
   };
 
   // Create new note
@@ -370,6 +448,27 @@ export default function App() {
     await api.createNote(currentUser.username, path, defaultContent, activeProfileId);
     await loadVaultData();
     await openNote(path);
+  };
+
+  // Create unsorted quick note directly into Vault Root Inbox
+  const handleCreateQuickNote = async () => {
+    if (!currentUser) return;
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const stamp = `${pad(now.getDate())}.${pad(now.getMonth() + 1)}. ${pad(now.getHours())}-${pad(now.getMinutes())}`;
+    const baseTitle = `Schnelle Notiz ${stamp}`;
+    let path = `${baseTitle}.md`;
+    let counter = 2;
+    while (notes.some((n) => n.path.toLowerCase() === path.toLowerCase())) {
+      path = `${baseTitle} (${counter}).md`;
+      counter++;
+    }
+
+    const content = `---\ninbox: true\ncreatedAt: "${now.toISOString()}"\n---\n\n# Schnelle Notiz\n\n`;
+    await api.createNote(currentUser.username, path, content, activeProfileId);
+    await loadVaultData();
+    await openNote(path);
+    setIsMobileNavExpanded(false);
   };
 
   // Create folder in vault
@@ -564,8 +663,6 @@ export default function App() {
         activeNoteTitle={activeNoteTitle}
         isSharedNote={activeIsShared}
         sharedFrom={activeSharedFrom}
-        activeView={viewMode}
-        onChangeView={setViewMode}
         isDarkMode={isDarkMode}
         onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
         isOnline={isOnline}
@@ -682,6 +779,7 @@ export default function App() {
             activeIsShared={activeIsShared}
             onSelectNote={openNote}
             onCreateNote={handleCreateNote}
+            onCreateQuickNote={handleCreateQuickNote}
             onCreateFolder={handleCreateFolder}
             onDeleteNote={handleDeleteNote}
             onDeleteFolder={handleDeleteFolder}
@@ -723,29 +821,30 @@ export default function App() {
         </div>
       )}
 
-      {/* Mobile Floating Action Navigation (Only in Notes module): Positioned reliably on the right */}
+      {/* Floating Action Navigation (Only in Notes module): Positioned reliably bottom-right across mobile, tablet, and desktop */}
       {activeSuiteModule === 'notes' && isMobileNavExpanded && (
         <div 
           onClick={() => setIsMobileNavExpanded(false)}
-          className="fixed inset-0 bg-black/25 dark:bg-black/50 backdrop-blur-2xs z-40 lg:hidden animate-in fade-in duration-150"
+          className="fixed inset-0 bg-black/25 dark:bg-black/50 backdrop-blur-2xs z-40 animate-in fade-in duration-150"
         />
       )}
 
       {/* Floating Nav Button / Bottom-Right Expanded Capsule */}
       {activeSuiteModule === 'notes' && (
-        <div className="lg:hidden select-none">
+        <div className="select-none">
           {isMobileNavExpanded ? (
             <div
               style={{ borderColor: activeProfile.colors.notes }}
-              className="fixed bottom-5 right-4 z-50 h-14 px-2.5 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center gap-1.5 text-neutral-800 dark:text-neutral-200 animate-in fade-in zoom-in-95 duration-200"
+              className="fixed bottom-5 right-3 sm:right-4 z-50 h-14 px-2 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center gap-1 text-neutral-800 dark:text-neutral-200 animate-in fade-in zoom-in-95 duration-200 max-w-[calc(100vw-24px)]"
             >
               <button
+                type="button"
                 onClick={() => {
                   setViewMode('editor');
                   setIsMobileNavExpanded(false);
                 }}
                 style={viewMode === 'editor' ? { backgroundColor: activeProfile.colors.notes } : undefined}
-                className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 ${
+                className={`w-9.5 h-9.5 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 ${
                   viewMode === 'editor'
                     ? 'text-white shadow-xs'
                     : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
@@ -757,12 +856,13 @@ export default function App() {
               </button>
 
               <button
+                type="button"
                 onClick={() => {
                   setViewMode('tasks');
                   setIsMobileNavExpanded(false);
                 }}
                 style={viewMode === 'tasks' ? { backgroundColor: activeProfile.colors.notes } : undefined}
-                className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 ${
+                className={`w-9.5 h-9.5 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 ${
                   viewMode === 'tasks'
                     ? 'text-white shadow-xs'
                     : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
@@ -774,12 +874,13 @@ export default function App() {
               </button>
 
               <button
+                type="button"
                 onClick={() => {
                   setViewMode('graph');
                   setIsMobileNavExpanded(false);
                 }}
                 style={viewMode === 'graph' ? { backgroundColor: activeProfile.colors.notes } : undefined}
-                className={`w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 ${
+                className={`w-9.5 h-9.5 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 ${
                   viewMode === 'graph'
                     ? 'text-white shadow-xs'
                     : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
@@ -790,11 +891,24 @@ export default function App() {
                 <Network className="w-4.5 h-4.5" />
               </button>
 
-              <div className="w-px h-5 bg-[#E5E3DC] dark:bg-[#2F3136] mx-0.5"></div>
+              <div className="w-px h-5 bg-[#E5E3DC] dark:bg-[#2F3136] mx-0.5 shrink-0"></div>
 
               <button
+                type="button"
+                onClick={handleCreateQuickNote}
+                style={{ backgroundColor: `${activeProfile.colors.notes}1F`, color: activeProfile.colors.notes }}
+                className="flex items-center gap-1 h-9.5 px-2.5 rounded-full text-xs font-semibold transition-all cursor-pointer active:scale-95 shrink-0 hover:opacity-90"
+                title="Schnelle Notiz in die Inbox erstellen"
+                aria-label="Schnelle Notiz"
+              >
+                <Inbox className="w-4 h-4 shrink-0" />
+                <span className="whitespace-nowrap">Schnell</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setIsMobileNavExpanded(false)}
-                className="w-10 h-10 rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 flex items-center justify-center cursor-pointer shadow-2xs active:scale-95"
+                className="w-9.5 h-9.5 rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 flex items-center justify-center cursor-pointer shadow-2xs active:scale-95 shrink-0"
                 aria-label="Navigation schließen"
                 title="Navigation schließen"
               >
@@ -863,6 +977,11 @@ export default function App() {
               prev.map((u) => (u.username === updatedUser.username ? updatedUser : u))
             );
           }}
+          onUpdateAllUsers={setAllUsers}
+          onSwitchUser={(user) => {
+            handleSelectUser(user);
+            setIsSettingsModalOpen(false);
+          }}
           appTitle={appTitle}
           onUpdateAppTitle={handleUpdateAppTitle}
           activeNoteTitle={activeNoteTitle}
@@ -880,6 +999,10 @@ export default function App() {
         <LoginScreen
           users={allUsers}
           onSelectUser={handleSelectUser}
+          onUserCreated={(newUser) => {
+            setAllUsers((prev) => [...prev, newUser]);
+            handleSelectUser(newUser);
+          }}
           appTitle={appTitle}
           onManualLogin={(username, password) => {
             api.login(username, password).then((user) => {

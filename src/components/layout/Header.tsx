@@ -1,8 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   BookOpen, 
-  CheckSquare, 
-  Network, 
   Share2, 
   Printer, 
   Server, 
@@ -28,7 +26,7 @@ import {
   Folder,
   BookMarked
 } from 'lucide-react';
-import { User, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId } from '../../types';
+import { User, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId } from '../../types';
 import { useTranslation } from '../../services/i18n.tsx';
 
 interface HeaderProps {
@@ -36,8 +34,6 @@ interface HeaderProps {
   activeNoteTitle: string;
   isSharedNote?: boolean;
   sharedFrom?: string;
-  activeView: PaneType;
-  onChangeView: (view: PaneType) => void;
   isDarkMode: boolean;
   onToggleDarkMode: () => void;
   isOnline: boolean;
@@ -66,8 +62,6 @@ export const Header: React.FC<HeaderProps> = ({
   activeNoteTitle,
   isSharedNote,
   sharedFrom,
-  activeView,
-  onChangeView,
   isDarkMode,
   onToggleDarkMode,
   isOnline,
@@ -480,54 +474,7 @@ export const Header: React.FC<HeaderProps> = ({
         )}
       </div>
 
-      {/* Zone 2: Navigation Modes (Notizen, Aufgaben, Graph) - Desktop View in Notes */}
-      {activeSuiteModule === 'notes' && (
-        <div className="hidden lg:flex items-center gap-1 bg-[#F4F3EF] dark:bg-[#202225] p-1 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136]">
-          <button
-            onClick={() => onChangeView('editor')}
-            style={activeView === 'editor' ? { color: activeColors.notes } : undefined}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-              activeView === 'editor'
-                ? 'bg-white dark:bg-[#2B2D31] font-bold shadow-xs'
-                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
-            }`}
-            title={t.notes}
-          >
-            <BookOpen className="w-4 h-4" />
-            <span>{t.notes}</span>
-          </button>
-
-          <button
-            onClick={() => onChangeView('tasks')}
-            style={activeView === 'tasks' ? { color: activeColors.notes } : undefined}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-              activeView === 'tasks'
-                ? 'bg-white dark:bg-[#2B2D31] font-bold shadow-xs'
-                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
-            }`}
-            title={t.tasks}
-          >
-            <CheckSquare className="w-4 h-4" />
-            <span>{t.tasks}</span>
-          </button>
-
-          <button
-            onClick={() => onChangeView('graph')}
-            style={activeView === 'graph' ? { color: activeColors.notes } : undefined}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-              activeView === 'graph'
-                ? 'bg-white dark:bg-[#2B2D31] font-bold shadow-xs'
-                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
-            }`}
-            title={t.graph}
-          >
-            <Network className="w-4 h-4" />
-            <span>{t.graph}</span>
-          </button>
-        </div>
-      )}
-
-      {/* Zone 3: Wifi/Cloud Status Badge & Unified User Menu */}
+      {/* Zone 2: Wifi/Cloud Status Badge & Unified User Menu */}
       <div className="flex items-center gap-2">
         {/* Wifi / Sync / Document Stats Badge */}
         <div className="relative" ref={syncInfoRef}>

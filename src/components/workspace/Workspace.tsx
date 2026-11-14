@@ -205,12 +205,28 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     }
   };
 
+  const secondarySaveTimerRef = useRef<number | null>(null);
+  const mobileTabSaveTimerRef = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    return () => {
+      if (secondarySaveTimerRef.current !== null) window.clearTimeout(secondarySaveTimerRef.current);
+      Object.values(mobileTabSaveTimerRef.current).forEach((id) => window.clearTimeout(id));
+    };
+  }, []);
+
   const handleSecondaryContentChange = (newText: string) => {
     setSecondaryContent(newText);
     if (secondaryNotePath && secondaryNotePath !== '__empty__') {
-      api.saveNote(username, secondaryNotePath, newText, false, undefined, noteProfile).then(() => {
-        setSecondaryLastSaved(Date.now());
-      });
+      if (secondarySaveTimerRef.current !== null) {
+        window.clearTimeout(secondarySaveTimerRef.current);
+      }
+      const targetPath = secondaryNotePath;
+      secondarySaveTimerRef.current = window.setTimeout(() => {
+        api.saveNote(username, targetPath, newText, false, undefined, noteProfile).then(() => {
+          setSecondaryLastSaved(Date.now());
+        });
+      }, 420);
     }
   };
 
@@ -223,12 +239,17 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     if (path === activeNotePath) {
       onContentChange(newText);
     } else {
-      api.saveNote(username, path, newText, false, undefined, noteProfile).then(() => {
-        setTabContents((prev) => ({
-          ...prev,
-          [path]: { ...prev[path], lastSaved: Date.now() },
-        }));
-      });
+      if (mobileTabSaveTimerRef.current[path]) {
+        window.clearTimeout(mobileTabSaveTimerRef.current[path]);
+      }
+      mobileTabSaveTimerRef.current[path] = window.setTimeout(() => {
+        api.saveNote(username, path, newText, false, undefined, noteProfile).then(() => {
+          setTabContents((prev) => ({
+            ...prev,
+            [path]: { ...prev[path], lastSaved: Date.now() },
+          }));
+        });
+      }, 420);
     }
   };
 
@@ -407,33 +428,37 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                 </div>
               );
             })}
+          </div>
 
-            {/* Add Tab Button with circular bubble */}
+          {/* Pinned Add Tab (+) & Werkzeuge Bubble Buttons (never scroll off-screen on mobile/tablet) */}
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
+              type="button"
               onClick={handleOpenSplit}
-              className="w-8 h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] hover:border-[var(--ochre-accent)] shadow-xs flex items-center justify-center shrink-0 cursor-pointer"
-              title="Weitere Notiz als Tab hinzufügen"
+              className="w-8 h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] hover:border-[var(--ochre-accent)] shadow-xs flex items-center justify-center shrink-0 cursor-pointer active:scale-95 touch-manipulation"
+              title="Weitere Notiz als Tab hinzufügen (Lite Vault)"
+              aria-label="Weitere Notiz öffnen oder erstellen"
             >
               <Plus className="w-4 h-4" />
             </button>
-          </div>
 
-          {/* Werkzeuge Bubble Button mit dynamischem Pfeil */}
-          <button
-            onClick={() => setShowToolbar(!showToolbar)}
-            className={`w-8 h-8 rounded-full flex items-center justify-center shadow-xs border transition-all shrink-0 cursor-pointer ${
-              showToolbar
-                ? 'bg-white dark:bg-[#25272C] border-[var(--ochre-accent)] text-[var(--ochre-accent)]'
-                : 'bg-white dark:bg-[#25272C] border-[#E5E3DC] dark:border-[#2F3136] text-neutral-500 hover:text-neutral-800'
-            }`}
-            title={showToolbar ? 'Werkzeugleiste ausblenden (▲)' : 'Werkzeugleiste einblenden (▼)'}
-          >
-            {showToolbar ? (
-              <ChevronDown className="w-4 h-4 rotate-180 transition-transform" />
-            ) : (
-              <ChevronDown className="w-4 h-4 transition-transform text-[var(--ochre-accent)]" />
-            )}
-          </button>
+            <button
+              type="button"
+              onClick={() => setShowToolbar(!showToolbar)}
+              className={`w-8 h-8 rounded-full flex items-center justify-center shadow-xs border transition-all shrink-0 cursor-pointer touch-manipulation ${
+                showToolbar
+                  ? 'bg-white dark:bg-[#25272C] border-[var(--ochre-accent)] text-[var(--ochre-accent)]'
+                  : 'bg-white dark:bg-[#25272C] border-[#E5E3DC] dark:border-[#2F3136] text-neutral-500 hover:text-neutral-800'
+              }`}
+              title={showToolbar ? 'Werkzeugleiste ausblenden (▲)' : 'Werkzeugleiste einblenden (▼)'}
+            >
+              {showToolbar ? (
+                <ChevronDown className="w-4 h-4 rotate-180 transition-transform" />
+              ) : (
+                <ChevronDown className="w-4 h-4 transition-transform text-[var(--ochre-accent)]" />
+              )}
+            </button>
+          </div>
         </div>
 
         {/* Mobile Editor Surface */}
@@ -464,29 +489,53 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           />
         </div>
 
-        {/* Mobile Lite Vault Modal */}
+        {/* Mobile Lite Vault Modal — Positioned cleanly below the 56px top header bar and above the virtual keyboard */}
         {isLiteVaultOpen && (
-          <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-xs animate-in fade-in duration-150">
-            <div className="bg-white dark:bg-[#1E1F23] rounded-t-2xl sm:rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] w-full max-w-lg h-[80vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom-4 duration-200">
-              <div className="p-3.5 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between">
-                <div>
+          <div
+            onClick={() => setIsLiteVaultOpen(false)}
+            className="fixed inset-0 bg-black/50 z-[110] flex items-start justify-center px-2.5 pt-16 pb-3 sm:px-4 sm:pt-16 backdrop-blur-xs animate-in fade-in duration-150"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] w-full max-w-lg max-h-[56dvh] sm:max-h-[72dvh] flex flex-col overflow-hidden animate-in slide-in-from-top-3 duration-200"
+            >
+              <div className="p-3 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 shrink-0">
+                <div className="min-w-0 flex-1">
                   <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
-                    <Folder className="w-4 h-4 text-[var(--ochre-accent)]" />
-                    <span>Lite Vault: Notiz wählen</span>
+                    <Folder className="w-4 h-4 text-[var(--ochre-accent)] shrink-0" />
+                    <span className="truncate">Lite Vault: Notiz wählen</span>
                   </h3>
-                  <span className="text-[11px] text-neutral-400">
-                    Wähle oder erstelle eine Notiz für einen weiteren Tab
+                  <span className="text-[11px] text-neutral-400 block truncate">
+                    Oben verankert · Wähle oder erstelle eine Notiz
                   </span>
                 </div>
-                <button
-                  onClick={() => setIsLiteVaultOpen(false)}
-                  className="w-8 h-8 rounded-full bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center text-neutral-500 hover:text-neutral-900 dark:hover:text-white"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {onCreateNote && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onCreateNote();
+                        setIsLiteVaultOpen(false);
+                      }}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-[var(--ochre-accent)] text-white text-xs font-semibold shadow-xs cursor-pointer active:scale-95 touch-manipulation shrink-0"
+                      title="Neue Notiz erstellen"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Neu</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setIsLiteVaultOpen(false)}
+                    className="w-8 h-8 rounded-full bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center text-neutral-500 hover:text-neutral-900 dark:hover:text-white shrink-0 cursor-pointer touch-manipulation"
+                    aria-label="Lite Vault schließen"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
-              <div className="p-3 border-b border-[#E5E3DC] dark:border-[#2F3136]">
+              <div className="p-2.5 border-b border-[#E5E3DC] dark:border-[#2F3136] shrink-0">
                 <div className="relative">
                   <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
                   <input
@@ -495,12 +544,11 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                     value={liteVaultSearch}
                     onChange={(e) => setLiteVaultSearch(e.target.value)}
                     className="w-full text-xs pl-9 pr-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#151618] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
-                    autoFocus
                   />
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-3 space-y-3">
+              <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-3">
                 {Object.keys(groupedLiteVaultNotes).map((folderKey) => {
                   const folderNotes = groupedLiteVaultNotes[folderKey];
                   const isRoot = folderKey === '/';
@@ -509,30 +557,34 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                   return (
                     <div key={folderKey} className="space-y-1">
                       {!isRoot && (
-                        <div className="flex items-center justify-between p-2 rounded-xl bg-neutral-100 dark:bg-neutral-800/60 text-xs font-semibold text-neutral-700 dark:text-neutral-300">
+                        <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-neutral-100 dark:bg-neutral-800/60 text-xs font-semibold text-neutral-700 dark:text-neutral-300">
                           <button
+                            type="button"
                             onClick={() =>
                               setLiteVaultCollapsedFolders((prev) => ({
                                 ...prev,
                                 [folderKey]: !prev[folderKey],
                               }))
                             }
-                            className="flex items-center gap-1.5 flex-1 truncate text-left"
+                            className="flex items-center gap-1.5 flex-1 min-w-0 truncate text-left cursor-pointer"
                           >
-                            {isCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                            <Folder className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
+                            {isCollapsed ? <ChevronRight className="w-3.5 h-3.5 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0" />}
+                            <Folder className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
                             <span className="truncate">{folderKey}</span>
                           </button>
 
                           <button
-                            onClick={() => {
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
                               if (onCreateNote) {
                                 onCreateNote(folderKey);
                                 setIsLiteVaultOpen(false);
                               }
                             }}
-                            className="w-7 h-7 flex items-center justify-center rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] shadow-xs"
+                            className="w-7.5 h-7.5 flex items-center justify-center rounded-full bg-white dark:bg-[#25272C] border border-[var(--ochre-accent)]/50 text-[var(--ochre-accent)] shadow-xs shrink-0 cursor-pointer active:scale-95 touch-manipulation"
                             title={`Neue Notiz in '${folderKey}' erstellen`}
+                            aria-label={`Neue Notiz in ${folderKey}`}
                           >
                             <Plus className="w-3.5 h-3.5" />
                           </button>
@@ -872,8 +924,14 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
       {/* Desktop Lite Vault Modal (Triggered by subheader button or +) */}
       {isLiteVaultOpen && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] w-full max-w-lg h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+        <div
+          onClick={() => setIsLiteVaultOpen(false)}
+          className="fixed inset-0 bg-black/40 z-[110] flex items-center justify-center p-4 pt-16 backdrop-blur-xs animate-in fade-in duration-150"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] w-full max-w-lg max-h-[80dvh] h-[75dvh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200"
+          >
             <div className="p-3.5 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between">
               <div>
                 <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
@@ -915,29 +973,32 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                 return (
                   <div key={folderKey} className="space-y-1">
                     {!isRoot && (
-                      <div className="flex items-center justify-between p-2 rounded-xl bg-neutral-100 dark:bg-neutral-800/60 text-xs font-semibold text-neutral-700 dark:text-neutral-300">
+                      <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-neutral-100 dark:bg-neutral-800/60 text-xs font-semibold text-neutral-700 dark:text-neutral-300">
                         <button
+                          type="button"
                           onClick={() =>
                             setLiteVaultCollapsedFolders((prev) => ({
                               ...prev,
                               [folderKey]: !prev[folderKey],
                             }))
                           }
-                          className="flex items-center gap-1.5 flex-1 truncate text-left cursor-pointer"
+                          className="flex items-center gap-1.5 flex-1 min-w-0 truncate text-left cursor-pointer"
                         >
-                          {isCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                          <Folder className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
+                          {isCollapsed ? <ChevronRight className="w-3.5 h-3.5 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0" />}
+                          <Folder className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
                           <span className="truncate">{folderKey}</span>
                         </button>
 
                         <button
-                          onClick={() => {
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
                             if (onCreateNote) {
                               onCreateNote(folderKey);
                               setIsLiteVaultOpen(false);
                             }
                           }}
-                          className="w-7 h-7 flex items-center justify-center rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] shadow-xs cursor-pointer active:scale-95"
+                          className="w-7 h-7 flex items-center justify-center rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] shadow-xs cursor-pointer active:scale-95 shrink-0"
                           title={`Neue Notiz in '${folderKey}' erstellen`}
                         >
                           <Plus className="w-3.5 h-3.5" />

@@ -22,6 +22,7 @@ export interface NoteMetadata {
   sharedFromUser?: string;
   sharedFromDisplayName?: string;
   permission?: 'read' | 'write';
+  isInbox?: boolean;
 }
 
 export interface NoteContent extends NoteMetadata {
@@ -259,4 +260,11 @@ export interface FinanceTransaction {
   description: string;
   type: 'card' | 'transfer' | 'cash' | 'direct_debit';
   isCash?: boolean;
+}
+
+export interface TaskNotificationSettings {
+  enabled: boolean;
+  notifyToday: boolean;
+  notifyOverdue: boolean;
+  reminderTime: string; // HH:mm
 }

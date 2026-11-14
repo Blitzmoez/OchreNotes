@@ -502,6 +502,7 @@ interface ScannedNote {
   tags: string[];
   tasksCount: number;
   completedTasksCount: number;
+  isInbox?: boolean;
 }
 
 async function scanUserNotes(username: string, profile: string = 'profile1'): Promise<ScannedNote[]> {
@@ -533,6 +534,10 @@ async function scanUserNotes(username: string, profile: string = 'profile1'): Pr
           const taskMatches = content.match(/^[ \t]*- \[[ xX]\]/gm) || [];
           const completedMatches = content.match(/^[ \t]*- \[[xX]\]/gm) || [];
 
+          // Detect Inbox quick notes: root-level notes marked inbox: true or named "Schnelle Notiz..."
+          const hasInboxFrontmatter = /^---\s*[\r\n]+[\s\S]*?\binbox:\s*true\b[\s\S]*?---/i.test(content);
+          const isInbox = !relFolder && (hasInboxFrontmatter || title.toLowerCase().startsWith('schnelle notiz'));
+
           notes.push({
             id: `${username}:${relPath}`,
             path: relPath,
@@ -543,6 +548,7 @@ async function scanUserNotes(username: string, profile: string = 'profile1'): Pr
             tags: uniqueTags,
             tasksCount: taskMatches.length,
             completedTasksCount: completedMatches.length,
+            isInbox,
           });
         } catch (err) {
           log('warn', `Fehler beim Lesen der Notiz ${fullPath}: ${err}`, 'SCAN');
@@ -719,6 +725,165 @@ async function createServer() {
       hasPassword: !!user.password,
     };
     res.json({ success: true, user: safeUser });
+  });
+
+  // Serve uploaded user avatars cleanly
+  app.get('/api/auth/avatars/:filename', (req, res) => {
+    try {
+      const safeFile = path.basename(req.params.filename);
+      const inConfig = path.join(CONFIG_PATH, 'avatars', safeFile);
+      const inVault = path.join(VAULT_PATH, 'avatars', safeFile);
+      const fullPath = fs.existsSync(inConfig) ? inConfig : inVault;
+      if (!fs.existsSync(fullPath)) {
+        return res.status(404).send('Avatar not found');
+      }
+      res.sendFile(fullPath);
+    } catch {
+      res.status(404).send('Avatar not found');
+    }
+  });
+
+  async function saveAvatarDataUrl(username: string, dataUrl: string): Promise<string> {
+    const match = dataUrl.match(/^data:image\/(png|jpeg|jpg|webp|gif);base64,(.+)$/i);
+    if (!match) throw new Error('Ungültiges Bildformat für Profilbild');
+    const ext = match[1].toLowerCase() === 'jpeg' ? 'jpg' : match[1].toLowerCase();
+    const buffer = Buffer.from(match[2], 'base64');
+    const avatarsDir = path.join(CONFIG_PATH, 'avatars');
+    if (!fs.existsSync(avatarsDir)) {
+      await fsp.mkdir(avatarsDir, { recursive: true, mode: 0o775 });
+    }
+    const filename = `${username}_${Date.now()}.${ext}`;
+    await fsp.writeFile(path.join(avatarsDir, filename), buffer);
+    return `/api/auth/avatars/${encodeURIComponent(filename)}`;
+  }
+
+  // Create new user
+  app.post('/api/auth/users', async (req, res) => {
+    const { username: rawUsername, displayName, role = 'user', description = '', password, avatarDataUrl, avatarUrl } = req.body;
+    const cleanUsername = (rawUsername || displayName || '')
+      .toLowerCase()
+      .trim()
+      .replace(/ä/g, 'ae')
+      .replace(/ö/g, 'oe')
+      .replace(/ü/g, 'ue')
+      .replace(/ß/g, 'ss')
+      .replace(/[^a-z0-9_-]/g, '');
+
+    if (!cleanUsername) {
+      return res.status(400).json({ error: 'Bitte einen gültigen Benutzernamen angeben' });
+    }
+    const cleanDisplayName = (displayName || cleanUsername).trim();
+
+    try {
+      const users = await getUsers();
+      if (users.some((u) => u.username.toLowerCase() === cleanUsername)) {
+        return res.status(409).json({ error: `Benutzername '@${cleanUsername}' existiert bereits` });
+      }
+
+      let finalAvatar =
+        avatarUrl ||
+        `https://api.dicebear.com/9.x/initials/svg?seed=${encodeURIComponent(cleanDisplayName)}&backgroundColor=c87d20`;
+      if (avatarDataUrl && typeof avatarDataUrl === 'string' && avatarDataUrl.startsWith('data:image/')) {
+        finalAvatar = await saveAvatarDataUrl(cleanUsername, avatarDataUrl);
+      }
+
+      const validRole: StoredUser['role'] =
+        role === 'admin' || role === 'family' || role === 'user' ? role : 'user';
+
+      const newUser: StoredUser = {
+        id: `user_${cleanUsername}_${Date.now().toString(36)}`,
+        username: cleanUsername,
+        displayName: cleanDisplayName,
+        avatar: finalAvatar,
+        role: validRole,
+        description: description.trim() || undefined,
+        password: password && password.trim() ? password.trim() : undefined,
+      };
+
+      users.push(newUser);
+      await saveUsers(users);
+      ensureUserProfileStructure(cleanUsername);
+
+      log('info', `Neuer Benutzer '@${cleanUsername}' (${cleanDisplayName}) angelegt`, 'AUTH');
+      const safeUser = {
+        id: newUser.id,
+        username: newUser.username,
+        displayName: newUser.displayName,
+        avatar: newUser.avatar,
+        role: newUser.role,
+        description: newUser.description,
+        hasPassword: !!newUser.password,
+      };
+      res.status(201).json({ success: true, user: safeUser });
+    } catch (err: any) {
+      log('error', `Fehler beim Erstellen des Benutzers: ${err.message}`, 'AUTH');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Update existing user (displayName, role, description, avatar)
+  app.patch('/api/auth/users/:username', async (req, res) => {
+    const targetUsername = req.params.username;
+    const { displayName, role, description, avatarDataUrl, avatarUrl, clearAvatar } = req.body;
+
+    try {
+      const users = await getUsers();
+      const user = users.find((u) => u.username === targetUsername);
+      if (!user) return res.status(404).json({ error: 'Benutzer nicht gefunden' });
+
+      if (typeof displayName === 'string' && displayName.trim()) {
+        user.displayName = displayName.trim();
+      }
+      if (role === 'admin' || role === 'family' || role === 'user') {
+        user.role = role;
+      }
+      if (typeof description === 'string') {
+        user.description = description.trim() || undefined;
+      }
+      if (avatarDataUrl && typeof avatarDataUrl === 'string' && avatarDataUrl.startsWith('data:image/')) {
+        user.avatar = await saveAvatarDataUrl(user.username, avatarDataUrl);
+      } else if (typeof avatarUrl === 'string' && avatarUrl.trim()) {
+        user.avatar = avatarUrl.trim();
+      } else if (clearAvatar) {
+        user.avatar = '';
+      }
+
+      await saveUsers(users);
+      log('info', `Benutzerprofil '@${user.username}' aktualisiert`, 'AUTH');
+      const safeUser = {
+        id: user.id,
+        username: user.username,
+        displayName: user.displayName,
+        avatar: user.avatar,
+        role: user.role,
+        description: user.description,
+        hasPassword: !!user.password,
+      };
+      res.json({ success: true, user: safeUser });
+    } catch (err: any) {
+      log('error', `Fehler beim Aktualisieren des Benutzers: ${err.message}`, 'AUTH');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Delete user (protects last remaining user)
+  app.delete('/api/auth/users/:username', async (req, res) => {
+    const targetUsername = req.params.username;
+    try {
+      const users = await getUsers();
+      if (users.length <= 1) {
+        return res.status(400).json({ error: 'Der letzte verbleibende Benutzer kann nicht gelöscht werden' });
+      }
+      const next = users.filter((u) => u.username !== targetUsername);
+      if (next.length === users.length) {
+        return res.status(404).json({ error: 'Benutzer nicht gefunden' });
+      }
+      await saveUsers(next);
+      log('info', `Benutzer '@${targetUsername}' entfernt (Vault-Dateien bleiben erhalten)`, 'AUTH');
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.post('/api/auth/set-password', async (req, res) => {
@@ -979,6 +1144,17 @@ async function createServer() {
       }
 
       await fsp.rename(sourceFile, targetFile);
+      // If note was sorted into a folder, clear inbox: true from frontmatter cleanly
+      if (newPath.includes('/')) {
+        try {
+          const movedRaw = await fsp.readFile(targetFile, 'utf-8');
+          if (/^---\s*[\r\n]+[\s\S]*?\binbox:\s*true\b[\s\S]*?---/i.test(movedRaw)) {
+            let cleaned = movedRaw.replace(/^[ \t]*inbox:\s*true[ \t]*\r?\n?/gim, '');
+            cleaned = cleaned.replace(/^---\s*[\r\n]+---\s*[\r\n]*/m, '');
+            await fsp.writeFile(targetFile, cleaned, 'utf-8');
+          }
+        } catch {}
+      }
       log('info', `Notiz verschoben: '${username}/${profile}/${oldPath}' -> '${username}/${profile}/${newPath}'`, 'VAULT');
 
       // Update any shares
