@@ -1,5 +1,6 @@
 import { parseMarkdownToHtml } from './markdownParser';
 import { WikiArticle, MealCycle, Recipe, MealCalendarOverride } from '../types';
+import { getScaledIngredientDisplay } from './portionScaling';
 
 function escapeHtml(str: string): string {
   return String(str || '')
@@ -358,10 +359,11 @@ export function printMealPlanA4(params: {
     dayMonth: string;
     cycleDayIndex: number;
     isOverridden: boolean;
+    portions: number;
     dishes: Recipe[];
   }> = [];
 
-  const uniqueWeekRecipes = new Map<string, Recipe>();
+  const uniqueWeekRecipes = new Map<string, { recipe: Recipe; portions: number }>();
 
   for (let i = 0; i < 7; i++) {
     const d = new Date(monday);
@@ -375,8 +377,17 @@ export function printMealPlanA4(params: {
 
     const isOverridden = !!overrides[iso];
     const activeRecipeIds = isOverridden ? overrides[iso].recipeIds : cycleDay?.recipeIds || [];
+    const dayPortions =
+      (isOverridden ? overrides[iso]?.portions : undefined) ??
+      cycleDay?.portions ??
+      cycle.defaultPortions ??
+      2;
     const dishes = activeRecipeIds.map(getRecipeById).filter((r): r is Recipe => Boolean(r));
-    dishes.forEach((r) => uniqueWeekRecipes.set(r.id, r));
+    dishes.forEach((r) => {
+      if (!uniqueWeekRecipes.has(r.id)) {
+        uniqueWeekRecipes.set(r.id, { recipe: r, portions: dayPortions || r.portions || 2 });
+      }
+    });
 
     days.push({
       date: iso,
@@ -384,6 +395,7 @@ export function printMealPlanA4(params: {
       dayMonth: d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }),
       cycleDayIndex: cycleIndex,
       isOverridden,
+      portions: dayPortions,
       dishes,
     });
   }
@@ -398,7 +410,7 @@ export function printMealPlanA4(params: {
           <strong>${escapeHtml(d.weekday)}</strong><br/>
           <span style="font-size: 8.5pt; color: #666;">${escapeHtml(d.dayMonth)}</span><br/>
           <span style="font-size: 8pt; color: ${d.isOverridden ? accentColor : '#777'};">
-            ${d.isOverridden ? 'Einmalig geändert' : `Zyklus-Tag ${d.cycleDayIndex + 1}`}
+            ${d.isOverridden ? 'Einmalig geändert' : `Zyklus-Tag ${d.cycleDayIndex + 1}`} · ${d.portions} Port.
           </span>
         </td>
         <td>
@@ -410,7 +422,7 @@ export function printMealPlanA4(params: {
                     (r) => `
                   <div style="margin-bottom: 4px;">
                     <strong>${escapeHtml(r.title)}</strong>
-                    <span style="font-size: 8.5pt; color: #666;"> · ${escapeHtml(r.category)} · ${r.prepTimeMinutes} Min · ${r.portions} Port.</span>
+                    <span style="font-size: 8.5pt; color: #666;"> · ${escapeHtml(r.category)} · ${r.prepTimeMinutes} Min · ${d.portions} Port.</span>
                   </div>
                 `
                   )
@@ -428,21 +440,27 @@ export function printMealPlanA4(params: {
       <h2>Benötigte Zutaten &amp; Kurz-Übersicht dieser Woche</h2>
       <div class="recipe-grid">
         ${Array.from(uniqueWeekRecipes.values())
-          .map(
-            (r) => `
+          .map(({ recipe: r, portions }) => {
+            const targetP = portions || r.portions || 2;
+            return `
           <div class="recipe-box">
             <h3>${escapeHtml(r.title)}</h3>
             <div style="font-size: 8.5pt; color: #666; margin-bottom: 6px;">
-              ${escapeHtml(r.category)} · ${r.prepTimeMinutes} Min · ${r.portions} Portionen
+              ${escapeHtml(r.category)} · ${r.prepTimeMinutes} Min · ${targetP} Portionen${
+              targetP !== r.portions ? ` (skaliert von ${r.portions})` : ''
+            }
             </div>
             <ul>
               ${r.ingredients
-                .map((ing) => `<li>${escapeHtml(ing.name)}${ing.amount ? ` (${escapeHtml(ing.amount)})` : ''}</li>`)
+                .map((ing) => {
+                  const scaled = getScaledIngredientDisplay(ing, r.portions, targetP);
+                  return `<li>${escapeHtml(scaled.name)}${scaled.amount ? ` (${escapeHtml(scaled.amount)})` : ''}</li>`;
+                })
                 .join('')}
             </ul>
           </div>
-        `
-          )
+        `;
+          })
           .join('')}
       </div>
     `

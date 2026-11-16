@@ -12,6 +12,7 @@ import {
   Upload, 
   Layers, 
   Folder, 
+  FolderPlus,
   ChevronRight, 
   ChevronDown, 
   Search,
@@ -35,11 +36,17 @@ interface WorkspaceProps {
   onOpenNoteByTitle: (title: string) => void;
   // Multi-note snap / split support
   allNotes: NoteMetadata[];
+  folders?: string[];
   activeNotePath: string | null;
   activeNoteTitle: string;
+  isShared?: boolean;
+  sharedFrom?: string;
   onSelectPrimaryNote: (path: string, isShared?: boolean, sharedFrom?: string) => void;
   onRenameNote?: (oldPath: string, newTitle: string) => void;
   onCreateNote?: (folder?: string) => void;
+  onCreateFolder?: (folderPath: string) => Promise<boolean | void> | void;
+  onSwitchToEditor?: () => void;
+  openLiteVaultSignal?: number;
 }
 
 interface NoteTab {
@@ -63,12 +70,19 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   noteProfile = 'profile1',
   accentColor = '#C87D20',
   onOpenNoteByTitle,
+  // Multi-note snap / split support
   allNotes,
+  folders = [],
   activeNotePath,
   activeNoteTitle,
+  isShared = false,
+  sharedFrom,
   onSelectPrimaryNote,
   onRenameNote,
   onCreateNote,
+  onCreateFolder,
+  onSwitchToEditor,
+  openLiteVaultSignal,
 }) => {
   // Screen width detection for mobile lite vault & tab mode
   const [isMobile, setIsMobile] = useState<boolean>(() => typeof window !== 'undefined' && window.innerWidth < 1024);
@@ -171,22 +185,54 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   const [secondaryLastSaved, setSecondaryLastSaved] = useState<number | undefined>(undefined);
   const [isDragOverSplit, setIsDragOverSplit] = useState(false);
 
-  // Lite Vault modal state (used for mobile and desktop empty split)
+  // Lite Vault modal state (used across editor, tasks, graph and desktop empty split)
   const [isLiteVaultOpen, setIsLiteVaultOpen] = useState(false);
   const [liteVaultSearch, setLiteVaultSearch] = useState('');
   const [liteVaultCollapsedFolders, setLiteVaultCollapsedFolders] = useState<Record<string, boolean>>({});
+  const [isLiteVaultNewFolderOpen, setIsLiteVaultNewFolderOpen] = useState(false);
+  const [liteVaultNewFolderParent, setLiteVaultNewFolderParent] = useState<string>('/');
+  const [liteVaultNewFolderName, setLiteVaultNewFolderName] = useState('');
+  const [isCreatingLiteVaultFolder, setIsCreatingLiteVaultFolder] = useState(false);
+
+  const handleCreateFolderFromLiteVault = async () => {
+    if (!onCreateFolder || !liteVaultNewFolderName.trim() || isCreatingLiteVaultFolder) return;
+    const cleanName = liteVaultNewFolderName.trim().replace(/^\/+|\/+$/g, '');
+    if (!cleanName) return;
+    const parentClean = liteVaultNewFolderParent === '/' ? '' : liteVaultNewFolderParent.replace(/^\/+|\/+$/g, '');
+    const fullPath = parentClean ? `${parentClean}/${cleanName}` : cleanName;
+    setIsCreatingLiteVaultFolder(true);
+    try {
+      const ok = await onCreateFolder(fullPath);
+      if (ok !== false) {
+        setLiteVaultCollapsedFolders((prev) => ({ ...prev, [fullPath]: false }));
+        setLiteVaultNewFolderName('');
+        setIsLiteVaultNewFolderOpen(false);
+        setLiteVaultNewFolderParent('/');
+      }
+    } finally {
+      setIsCreatingLiteVaultFolder(false);
+    }
+  };
+
+  useEffect(() => {
+    if (openLiteVaultSignal && openLiteVaultSignal > 0) {
+      setIsLiteVaultNewFolderOpen(false);
+      setLiteVaultNewFolderName('');
+      setIsLiteVaultOpen(true);
+    }
+  }, [openLiteVaultSignal]);
 
   // Toolbar visibility state (shared / moved to header bar)
   const [showToolbar, setShowToolbar] = useState(true);
 
-  // Load note into secondary split (Desktop) or add tab (Mobile)
-  const loadSecondaryNote = async (path: string, isShared = false, sharedFrom = '') => {
+  // Load note into secondary split (Desktop) or add tab (Mobile), switching back to editor if currently on tasks/graph
+  const loadSecondaryNote = async (path: string, noteIsShared = false, noteSharedFrom = '') => {
     try {
-      const data = await api.readNote(username, path, isShared, sharedFrom, noteProfile);
+      const data = await api.readNote(username, path, noteIsShared, noteSharedFrom, noteProfile);
       if (isMobile) {
         setMobileTabs((prev) => {
           if (prev.some((t) => t.path === path)) return prev;
-          return [...prev, { path, title: data.title, isShared, sharedFrom }];
+          return [...prev, { path, title: data.title, isShared: noteIsShared, sharedFrom: noteSharedFrom }];
         });
         setActiveMobileTabPath(path);
         setTabContents((prev) => ({
@@ -194,11 +240,21 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           [path]: { content: data.content, title: data.title, lastSaved: Date.now() },
         }));
         setIsLiteVaultOpen(false);
+        if (viewMode !== 'editor') {
+          onSelectPrimaryNote(path, noteIsShared, noteSharedFrom);
+          onSwitchToEditor?.();
+        }
       } else {
-        setSecondaryNotePath(path);
-        setSecondaryTitle(data.title);
-        setSecondaryContent(data.content);
-        setSplitRatio(50);
+        if (viewMode !== 'editor') {
+          onSelectPrimaryNote(path, noteIsShared, noteSharedFrom);
+          onSwitchToEditor?.();
+        } else {
+          setSecondaryNotePath(path);
+          setSecondaryTitle(data.title);
+          setSecondaryContent(data.content);
+          setSplitRatio(50);
+        }
+        setIsLiteVaultOpen(false);
       }
     } catch (e) {
       console.error('Failed to load note', e);
@@ -317,9 +373,15 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     }
   };
 
-  // Group notes for the Lite Vault modal / split selector
+  // Group notes (and all known folders, including newly created empty folders) for Lite Vault
   const groupedLiteVaultNotes = useMemo(() => {
     const groups: Record<string, NoteMetadata[]> = { '/': [] };
+    if (!liteVaultSearch.trim()) {
+      folders.forEach((f) => {
+        const cleanF = f.replace(/^\/+|\/+$/g, '');
+        if (cleanF && !groups[cleanF]) groups[cleanF] = [];
+      });
+    }
     const filtered = allNotes.filter((n) => {
       if (!liteVaultSearch.trim()) return true;
       return n.title.toLowerCase().includes(liteVaultSearch.toLowerCase()) || n.path.toLowerCase().includes(liteVaultSearch.toLowerCase());
@@ -337,31 +399,256 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     });
 
     return groups;
-  }, [allNotes, liteVaultSearch]);
+  }, [allNotes, folders, liteVaultSearch]);
+
+  const renderLiteVaultModal = () => {
+    if (!isLiteVaultOpen) return null;
+    return (
+      <div
+        onClick={() => setIsLiteVaultOpen(false)}
+        className="fixed inset-0 bg-black/50 z-[110] flex items-start lg:items-center justify-center px-2.5 pt-16 pb-3 sm:px-4 lg:pt-4 backdrop-blur-xs animate-in fade-in duration-150"
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] w-full max-w-lg max-h-[62dvh] sm:max-h-[76dvh] lg:h-[75dvh] flex flex-col overflow-hidden animate-in slide-in-from-top-3 duration-200"
+        >
+          <div className="p-3 sm:p-3.5 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 shrink-0">
+            <div className="min-w-0 flex-1">
+              <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
+                <Folder className="w-4 h-4 text-[var(--ochre-accent)] shrink-0" />
+                <span className="truncate">Lite Vault: Notiz & Ordner</span>
+              </h3>
+              <span className="text-[11px] text-neutral-400 block truncate">
+                {isMobile ? 'Notiz wählen, Ordner anlegen oder neu erstellen' : 'Notiz oder Ordner wählen bzw. neu anlegen'}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {onCreateFolder && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLiteVaultNewFolderParent('/');
+                    setLiteVaultNewFolderName('');
+                    setIsLiteVaultNewFolderOpen((prev) => !prev);
+                  }}
+                  className={`flex items-center gap-1 px-2.5 py-1.5 rounded-full border text-xs font-semibold shadow-2xs cursor-pointer active:scale-95 touch-manipulation shrink-0 transition-colors ${
+                    isLiteVaultNewFolderOpen && liteVaultNewFolderParent === '/'
+                      ? 'bg-amber-500/15 border-[var(--ochre-accent)] text-[var(--ochre-accent)]'
+                      : 'bg-[#F4F3EF] dark:bg-[#25272C] border-[#E5E3DC] dark:border-[#3A3D44] text-neutral-700 dark:text-neutral-200 hover:border-[var(--ochre-accent)]'
+                  }`}
+                  title="Neuen Ordner im Lite Vault erstellen"
+                >
+                  <FolderPlus className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
+                  <span>Ordner</span>
+                </button>
+              )}
+              {onCreateNote && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onCreateNote();
+                    setIsLiteVaultOpen(false);
+                  }}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-[var(--ochre-accent)] text-white text-xs font-semibold shadow-xs cursor-pointer active:scale-95 touch-manipulation shrink-0"
+                  title="Neue Notiz erstellen"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Neu</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setIsLiteVaultOpen(false)}
+                className="w-8 h-8 rounded-full bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center text-neutral-500 hover:text-neutral-900 dark:hover:text-white shrink-0 cursor-pointer touch-manipulation"
+                aria-label="Lite Vault schließen"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          <div className="p-2.5 border-b border-[#E5E3DC] dark:border-[#2F3136] space-y-2 shrink-0">
+            <div className="relative">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+              <input
+                type="text"
+                placeholder="Notizen durchsuchen..."
+                value={liteVaultSearch}
+                onChange={(e) => setLiteVaultSearch(e.target.value)}
+                className="w-full text-xs pl-9 pr-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#151618] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
+              />
+            </div>
+
+            {isLiteVaultNewFolderOpen && onCreateFolder && (
+              <div className="p-2 rounded-xl bg-amber-50/80 dark:bg-amber-950/30 border border-[var(--ochre-accent)]/40 space-y-1.5 animate-in fade-in duration-100">
+                <div className="flex items-center justify-between text-[11px] font-semibold text-neutral-700 dark:text-neutral-200">
+                  <span className="truncate">
+                    {liteVaultNewFolderParent === '/'
+                      ? 'Neuen Ordner im Hauptverzeichnis erstellen:'
+                      : `Unterordner in "${liteVaultNewFolderParent}" erstellen:`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsLiteVaultNewFolderOpen(false)}
+                    className="p-0.5 text-neutral-400 hover:text-neutral-700 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    placeholder="Ordnername..."
+                    value={liteVaultNewFolderName}
+                    onChange={(e) => setLiteVaultNewFolderName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleCreateFolderFromLiteVault();
+                      } else if (e.key === 'Escape') {
+                        setIsLiteVaultNewFolderOpen(false);
+                      }
+                    }}
+                    className="flex-1 text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#18191B] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    disabled={!liteVaultNewFolderName.trim() || isCreatingLiteVaultFolder}
+                    onClick={handleCreateFolderFromLiteVault}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[var(--ochre-accent)] text-white text-xs font-semibold disabled:opacity-40 cursor-pointer active:scale-95 shrink-0"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>OK</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-3">
+            {Object.keys(groupedLiteVaultNotes).map((folderKey) => {
+              const folderNotes = groupedLiteVaultNotes[folderKey];
+              const isRoot = folderKey === '/';
+              const isCollapsed = liteVaultCollapsedFolders[folderKey];
+
+              return (
+                <div key={folderKey} className="space-y-1">
+                  {!isRoot && (
+                    <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-neutral-100 dark:bg-neutral-800/60 text-xs font-semibold text-neutral-700 dark:text-neutral-300">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setLiteVaultCollapsedFolders((prev) => ({
+                            ...prev,
+                            [folderKey]: !prev[folderKey],
+                          }))
+                        }
+                        className="flex items-center gap-1.5 flex-1 min-w-0 truncate text-left cursor-pointer"
+                      >
+                        {isCollapsed ? <ChevronRight className="w-3.5 h-3.5 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0" />}
+                        <Folder className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
+                        <span className="truncate">{folderKey}</span>
+                      </button>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        {onCreateFolder && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setLiteVaultNewFolderParent(folderKey);
+                              setLiteVaultNewFolderName('');
+                              setIsLiteVaultNewFolderOpen(true);
+                            }}
+                            className="w-7 h-7 flex items-center justify-center rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#3A3D44] text-neutral-600 dark:text-neutral-300 hover:border-[var(--ochre-accent)] hover:text-[var(--ochre-accent)] shadow-xs shrink-0 cursor-pointer active:scale-95 touch-manipulation"
+                            title={`Unterordner in '${folderKey}' erstellen`}
+                            aria-label={`Unterordner in ${folderKey}`}
+                          >
+                            <FolderPlus className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {onCreateNote && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onCreateNote(folderKey);
+                              setIsLiteVaultOpen(false);
+                            }}
+                            className="w-7 h-7 flex items-center justify-center rounded-full bg-white dark:bg-[#25272C] border border-[var(--ochre-accent)]/50 text-[var(--ochre-accent)] shadow-xs shrink-0 cursor-pointer active:scale-95 touch-manipulation"
+                            title={`Neue Notiz in '${folderKey}' erstellen`}
+                            aria-label={`Neue Notiz in ${folderKey}`}
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {(!isCollapsed || isRoot) && (
+                    <div className={!isRoot ? 'pl-3 space-y-1' : 'space-y-1'}>
+                      {folderNotes.length === 0 && !isRoot && (
+                        <div className="px-2.5 py-1.5 text-[11px] text-neutral-400 italic">
+                          Ordner ist noch leer
+                        </div>
+                      )}
+                      {folderNotes.map((note) => (
+                        <div
+                          key={note.path}
+                          onClick={() => loadSecondaryNote(note.path, note.isShared, note.sharedFromUser)}
+                          className="flex items-center justify-between p-2.5 rounded-xl hover:bg-amber-500/10 cursor-pointer border border-[#E5E3DC]/60 dark:border-[#2F3136]/60 hover:border-amber-500/40 transition-colors"
+                        >
+                          <div className="flex items-center gap-2 truncate">
+                            <FileText className="w-4 h-4 text-[var(--ochre-accent)] shrink-0" />
+                            <span className="text-xs font-medium text-neutral-800 dark:text-neutral-200 truncate">
+                              {note.title}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-neutral-400 shrink-0">Öffnen</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   if (viewMode === 'tasks') {
     return (
-      <main className="flex-1 h-full overflow-hidden flex flex-col bg-[#FBFBFA] dark:bg-[#18191B]">
-        <TasksDashboard
-          username={username}
-          noteProfile={noteProfile}
-          onOpenNote={onOpenNoteByTitle}
-          onTaskToggled={() => {}}
-        />
-      </main>
+      <>
+        <main className="flex-1 h-full overflow-hidden flex flex-col bg-[#FBFBFA] dark:bg-[#18191B]">
+          <TasksDashboard
+            username={username}
+            noteProfile={noteProfile}
+            onOpenNote={onOpenNoteByTitle}
+            onTaskToggled={() => {}}
+          />
+        </main>
+        {renderLiteVaultModal()}
+      </>
     );
   }
 
   if (viewMode === 'graph') {
     return (
-      <main className="flex-1 h-full overflow-hidden flex flex-col bg-[#FBFBFA] dark:bg-[#18191B]">
-        <GraphView
-          username={username}
-          noteProfile={noteProfile}
-          accentColor={accentColor}
-          onSelectNote={onOpenNoteByTitle}
-        />
-      </main>
+      <>
+        <main className="flex-1 h-full overflow-hidden flex flex-col bg-[#FBFBFA] dark:bg-[#18191B]">
+          <GraphView
+            username={username}
+            noteProfile={noteProfile}
+            accentColor={accentColor}
+            onSelectNote={onOpenNoteByTitle}
+          />
+        </main>
+        {renderLiteVaultModal()}
+      </>
     );
   }
 
@@ -430,18 +717,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             })}
           </div>
 
-          {/* Pinned Add Tab (+) & Werkzeuge Bubble Buttons (never scroll off-screen on mobile/tablet) */}
+          {/* Pinned Toolbar Toggle Button (Add + removed — creation/selection is in Navigation & Lite Vault) */}
           <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              onClick={handleOpenSplit}
-              className="w-8 h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] hover:border-[var(--ochre-accent)] shadow-xs flex items-center justify-center shrink-0 cursor-pointer active:scale-95 touch-manipulation"
-              title="Weitere Notiz als Tab hinzufügen (Lite Vault)"
-              aria-label="Weitere Notiz öffnen oder erstellen"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
-
             <button
               type="button"
               onClick={() => setShowToolbar(!showToolbar)}
@@ -486,137 +763,18 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             }}
             showToolbar={showToolbar}
             onToggleToolbar={() => setShowToolbar(!showToolbar)}
+            noteContext={{
+              username,
+              notePath: activeTab?.path || activeNotePath,
+              noteProfile,
+              isShared: activeTab ? activeTab.isShared : isShared,
+              sharedFrom: activeTab ? activeTab.sharedFrom : sharedFrom,
+            }}
           />
         </div>
 
-        {/* Mobile Lite Vault Modal — Positioned cleanly below the 56px top header bar and above the virtual keyboard */}
-        {isLiteVaultOpen && (
-          <div
-            onClick={() => setIsLiteVaultOpen(false)}
-            className="fixed inset-0 bg-black/50 z-[110] flex items-start justify-center px-2.5 pt-16 pb-3 sm:px-4 sm:pt-16 backdrop-blur-xs animate-in fade-in duration-150"
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              className="bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] w-full max-w-lg max-h-[56dvh] sm:max-h-[72dvh] flex flex-col overflow-hidden animate-in slide-in-from-top-3 duration-200"
-            >
-              <div className="p-3 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 shrink-0">
-                <div className="min-w-0 flex-1">
-                  <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
-                    <Folder className="w-4 h-4 text-[var(--ochre-accent)] shrink-0" />
-                    <span className="truncate">Lite Vault: Notiz wählen</span>
-                  </h3>
-                  <span className="text-[11px] text-neutral-400 block truncate">
-                    Oben verankert · Wähle oder erstelle eine Notiz
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {onCreateNote && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onCreateNote();
-                        setIsLiteVaultOpen(false);
-                      }}
-                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-[var(--ochre-accent)] text-white text-xs font-semibold shadow-xs cursor-pointer active:scale-95 touch-manipulation shrink-0"
-                      title="Neue Notiz erstellen"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Neu</span>
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setIsLiteVaultOpen(false)}
-                    className="w-8 h-8 rounded-full bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center text-neutral-500 hover:text-neutral-900 dark:hover:text-white shrink-0 cursor-pointer touch-manipulation"
-                    aria-label="Lite Vault schließen"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-
-              <div className="p-2.5 border-b border-[#E5E3DC] dark:border-[#2F3136] shrink-0">
-                <div className="relative">
-                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
-                  <input
-                    type="text"
-                    placeholder="Notizen durchsuchen..."
-                    value={liteVaultSearch}
-                    onChange={(e) => setLiteVaultSearch(e.target.value)}
-                    className="w-full text-xs pl-9 pr-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#151618] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
-                  />
-                </div>
-              </div>
-
-              <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-3">
-                {Object.keys(groupedLiteVaultNotes).map((folderKey) => {
-                  const folderNotes = groupedLiteVaultNotes[folderKey];
-                  const isRoot = folderKey === '/';
-                  const isCollapsed = liteVaultCollapsedFolders[folderKey];
-
-                  return (
-                    <div key={folderKey} className="space-y-1">
-                      {!isRoot && (
-                        <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-neutral-100 dark:bg-neutral-800/60 text-xs font-semibold text-neutral-700 dark:text-neutral-300">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setLiteVaultCollapsedFolders((prev) => ({
-                                ...prev,
-                                [folderKey]: !prev[folderKey],
-                              }))
-                            }
-                            className="flex items-center gap-1.5 flex-1 min-w-0 truncate text-left cursor-pointer"
-                          >
-                            {isCollapsed ? <ChevronRight className="w-3.5 h-3.5 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0" />}
-                            <Folder className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
-                            <span className="truncate">{folderKey}</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (onCreateNote) {
-                                onCreateNote(folderKey);
-                                setIsLiteVaultOpen(false);
-                              }
-                            }}
-                            className="w-7.5 h-7.5 flex items-center justify-center rounded-full bg-white dark:bg-[#25272C] border border-[var(--ochre-accent)]/50 text-[var(--ochre-accent)] shadow-xs shrink-0 cursor-pointer active:scale-95 touch-manipulation"
-                            title={`Neue Notiz in '${folderKey}' erstellen`}
-                            aria-label={`Neue Notiz in ${folderKey}`}
-                          >
-                            <Plus className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      )}
-
-                      {(!isCollapsed || isRoot) && (
-                        <div className={!isRoot ? 'pl-3 space-y-1' : 'space-y-1'}>
-                          {folderNotes.map((note) => (
-                            <div
-                              key={note.path}
-                              onClick={() => loadSecondaryNote(note.path, note.isShared, note.sharedFromUser)}
-                              className="flex items-center justify-between p-2.5 rounded-xl hover:bg-amber-500/10 cursor-pointer border border-[#E5E3DC]/60 dark:border-[#2F3136]/60 hover:border-amber-500/40 transition-colors"
-                            >
-                              <div className="flex items-center gap-2 truncate">
-                                <FileText className="w-4 h-4 text-[var(--ochre-accent)] shrink-0" />
-                                <span className="text-xs font-medium text-neutral-800 dark:text-neutral-200 truncate">
-                                  {note.title}
-                                </span>
-                              </div>
-                              <span className="text-[10px] text-neutral-400">Öffnen</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        )}
+        {/* Shared Lite Vault Modal (Top-anchored above virtual keyboard) */}
+        {renderLiteVaultModal()}
       </main>
     );
   }
@@ -713,6 +871,13 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             }}
             showToolbar={showToolbar}
             onToggleToolbar={() => setShowToolbar(!showToolbar)}
+            noteContext={{
+              username,
+              notePath: activeNotePath,
+              noteProfile,
+              isShared,
+              sharedFrom,
+            }}
           />
         </div>
       </div>
@@ -916,125 +1081,19 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                 }}
                 showToolbar={showToolbar}
                 onToggleToolbar={() => setShowToolbar(!showToolbar)}
+                noteContext={{
+                  username,
+                  notePath: secondaryNotePath,
+                  noteProfile,
+                }}
               />
             )}
           </div>
         </div>
       )}
 
-      {/* Desktop Lite Vault Modal (Triggered by subheader button or +) */}
-      {isLiteVaultOpen && (
-        <div
-          onClick={() => setIsLiteVaultOpen(false)}
-          className="fixed inset-0 bg-black/40 z-[110] flex items-center justify-center p-4 pt-16 backdrop-blur-xs animate-in fade-in duration-150"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] w-full max-w-lg max-h-[80dvh] h-[75dvh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200"
-          >
-            <div className="p-3.5 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between">
-              <div>
-                <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
-                  <Folder className="w-4 h-4 text-[var(--ochre-accent)]" />
-                  <span>Lite Vault: Notiz wählen</span>
-                </h3>
-                <span className="text-[11px] text-neutral-400">
-                  Wähle oder erstelle eine Notiz für die geteilte Ansicht (Split)
-                </span>
-              </div>
-              <button
-                onClick={() => setIsLiteVaultOpen(false)}
-                className="w-8 h-8 rounded-full bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-3 border-b border-[#E5E3DC] dark:border-[#2F3136]">
-              <div className="relative">
-                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
-                <input
-                  type="text"
-                  placeholder="Notizen durchsuchen..."
-                  value={liteVaultSearch}
-                  onChange={(e) => setLiteVaultSearch(e.target.value)}
-                  className="w-full text-xs pl-9 pr-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#151618] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
-                  autoFocus
-                />
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-3 space-y-3">
-              {Object.keys(groupedLiteVaultNotes).map((folderKey) => {
-                const folderNotes = groupedLiteVaultNotes[folderKey];
-                const isRoot = folderKey === '/';
-                const isCollapsed = liteVaultCollapsedFolders[folderKey];
-
-                return (
-                  <div key={folderKey} className="space-y-1">
-                    {!isRoot && (
-                      <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-neutral-100 dark:bg-neutral-800/60 text-xs font-semibold text-neutral-700 dark:text-neutral-300">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setLiteVaultCollapsedFolders((prev) => ({
-                              ...prev,
-                              [folderKey]: !prev[folderKey],
-                            }))
-                          }
-                          className="flex items-center gap-1.5 flex-1 min-w-0 truncate text-left cursor-pointer"
-                        >
-                          {isCollapsed ? <ChevronRight className="w-3.5 h-3.5 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0" />}
-                          <Folder className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
-                          <span className="truncate">{folderKey}</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (onCreateNote) {
-                              onCreateNote(folderKey);
-                              setIsLiteVaultOpen(false);
-                            }
-                          }}
-                          className="w-7 h-7 flex items-center justify-center rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] shadow-xs cursor-pointer active:scale-95 shrink-0"
-                          title={`Neue Notiz in '${folderKey}' erstellen`}
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    )}
-
-                    {(!isCollapsed || isRoot) && (
-                      <div className={!isRoot ? 'pl-3 space-y-1' : 'space-y-1'}>
-                        {folderNotes.map((note) => (
-                          <div
-                            key={note.path}
-                            onClick={() => {
-                              loadSecondaryNote(note.path, note.isShared, note.sharedFromUser);
-                              setIsLiteVaultOpen(false);
-                            }}
-                            className="flex items-center justify-between p-2.5 rounded-xl hover:bg-amber-500/10 cursor-pointer border border-[#E5E3DC]/60 dark:border-[#2F3136]/60 hover:border-amber-500/40 transition-colors"
-                          >
-                            <div className="flex items-center gap-2 truncate">
-                              <FileText className="w-4 h-4 text-[var(--ochre-accent)] shrink-0" />
-                              <span className="text-xs font-medium text-neutral-800 dark:text-neutral-200 truncate">
-                                {note.title}
-                              </span>
-                            </div>
-                            <span className="text-[10px] text-neutral-400">Im Split öffnen</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Shared Lite Vault Modal */}
+      {renderLiteVaultModal()}
     </main>
   );
 };

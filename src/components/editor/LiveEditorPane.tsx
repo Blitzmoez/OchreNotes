@@ -16,8 +16,25 @@ import {
   Play,
   ExternalLink,
   Edit3,
+  ImagePlus,
+  Images,
+  Camera,
+  FolderOpen,
+  Trash2,
+  Maximize2,
+  Plus,
+  Upload,
 } from 'lucide-react';
-import { YouTubeDisplayMode } from '../../types';
+import { YouTubeDisplayMode, NoteMediaItem, NoteProfileId } from '../../types';
+import { api } from '../../services/api';
+
+export interface NoteMediaContext {
+  username: string;
+  notePath: string | null;
+  noteProfile: NoteProfileId;
+  isShared?: boolean;
+  sharedFrom?: string;
+}
 
 interface LiveEditorPaneProps {
   content: string;
@@ -32,6 +49,7 @@ interface LiveEditorPaneProps {
   onRenameNote?: (newTitle: string) => void;
   showToolbar?: boolean;
   onToggleToolbar?: () => void;
+  noteContext?: NoteMediaContext;
   // Mobile note tabs support
   openNoteTabs?: { path: string; title: string }[];
   activeTabPath?: string;
@@ -43,9 +61,29 @@ interface LiveEditorPaneProps {
 const YOUTUBE_REGEX =
   /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
 
+const MARKDOWN_IMAGE_REGEX = /!\[([^\]]*)\]\(([^)\s]+)\)/;
+
 function getYouTubeId(text: string): string | null {
   const match = text.match(YOUTUBE_REGEX);
   return match ? match[1] : null;
+}
+
+function getImageEmbed(text: string): { alt: string; url: string } | null {
+  const mdMatch = text.match(MARKDOWN_IMAGE_REGEX);
+  if (mdMatch) {
+    return {
+      alt: mdMatch[1] || 'Bild',
+      url: mdMatch[2],
+    };
+  }
+  const directMediaMatch = text.match(/(\/api\/notes\/media\/file\/[^\s)]+)/);
+  if (directMediaMatch) {
+    return {
+      alt: 'Notiz-Bild',
+      url: directMediaMatch[1],
+    };
+  }
+  return null;
 }
 
 function resizeTextarea(el: HTMLTextAreaElement | null) {
@@ -55,15 +93,51 @@ function resizeTextarea(el: HTMLTextAreaElement | null) {
   el.style.height = `${nextHeight}px`;
 }
 
-// Helper: Estimate character offset inside clicked inactive line
+// Helper: Resize large camera photos cleanly while keeping crisp quality and small PNGs/GIFs intact
+async function prepareNoteImageDataUrl(file: File): Promise<string> {
+  const rawDataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Datei konnte nicht gelesen werden'));
+    reader.readAsDataURL(file);
+  });
+
+  if (file.size <= 1_600_000 || file.type === 'image/gif' || file.type === 'image/svg+xml') {
+    return rawDataUrl;
+  }
+
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = reject;
+      i.src = rawDataUrl;
+    });
+    const maxDim = 2048;
+    const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+    const width = Math.max(1, Math.round(img.width * scale));
+    const height = Math.max(1, Math.round(img.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return rawDataUrl;
+    ctx.drawImage(img, 0, 0, width, height);
+    return canvas.toDataURL('image/jpeg', 0.88);
+  } catch {
+    return rawDataUrl;
+  }
+}
+
+// Helper: Estimate character offset inside clicked inactive line accurately
 function getClickCharOffset(e: React.MouseEvent<HTMLDivElement>, cleanText: string, rawPrefixLen: number): number {
+  if (!cleanText) return rawPrefixLen;
   try {
     const doc = document as any;
     let offsetInClean: number | null = null;
     if (typeof doc.caretPositionFromPoint === 'function') {
       const pos = doc.caretPositionFromPoint(e.clientX, e.clientY);
-      if (pos && typeof pos.offset === 'number') {
-        // Walk text nodes in container to accumulate character offset accurately
+      if (pos && pos.offsetNode && e.currentTarget.contains(pos.offsetNode)) {
         const range = document.createRange();
         range.selectNodeContents(e.currentTarget);
         range.setEnd(pos.offsetNode, pos.offset);
@@ -71,7 +145,7 @@ function getClickCharOffset(e: React.MouseEvent<HTMLDivElement>, cleanText: stri
       }
     } else if (typeof doc.caretRangeFromPoint === 'function') {
       const caretRange = doc.caretRangeFromPoint(e.clientX, e.clientY);
-      if (caretRange) {
+      if (caretRange && e.currentTarget.contains(caretRange.startContainer)) {
         const range = document.createRange();
         range.selectNodeContents(e.currentTarget);
         range.setEnd(caretRange.startContainer, caretRange.startOffset);
@@ -95,6 +169,7 @@ interface MarkdownLineRowProps {
   isDatePickerOpen: boolean;
   selectedDueDate: string;
   ytDisplayMode: YouTubeDisplayMode | undefined;
+  imgDisplayMode: 'embed' | 'link' | undefined;
   activeTextareaRef: React.MutableRefObject<HTMLTextAreaElement | null>;
   onFocusLine: (idx: number, cursorPos?: number) => void;
   onBlurLine: (idx: number) => void;
@@ -107,6 +182,8 @@ interface MarkdownLineRowProps {
   onSaveDueDate: (idx: number, val: string) => void;
   onCloseDatePicker: () => void;
   onSetYtDisplayMode: (ytId: string, mode: YouTubeDisplayMode) => void;
+  onSetImgDisplayMode: (imgUrl: string, mode: 'embed' | 'link') => void;
+  onPreviewImage: (url: string, alt: string) => void;
   onWikilinkClick?: (target: string) => void;
   onTagClick?: (tag: string) => void;
 }
@@ -121,6 +198,7 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
     isDatePickerOpen,
     selectedDueDate,
     ytDisplayMode,
+    imgDisplayMode,
     activeTextareaRef,
     onFocusLine,
     onBlurLine,
@@ -133,6 +211,8 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
     onSaveDueDate,
     onCloseDatePicker,
     onSetYtDisplayMode,
+    onSetImgDisplayMode,
+    onPreviewImage,
     onWikilinkClick,
     onTagClick,
   }) => {
@@ -140,7 +220,6 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
     const localInputRef = useRef<HTMLTextAreaElement | null>(null);
     const [localDraft, setLocalDraft] = useState(rawLine);
 
-    // Sync local draft only when inactive or when rawLine updates externally (not mid-IME composition)
     useEffect(() => {
       if (!isComposingRef.current) {
         setLocalDraft(rawLine);
@@ -164,6 +243,7 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
     const isBullet = !isTask && /^[ \t]*[-*][ ]/.test(rawLine);
     const isNumbered = /^[ \t]*\d+\.[ ]/.test(rawLine);
     const ytId = getYouTubeId(rawLine);
+    const imageEmbed = getImageEmbed(rawLine);
 
     // Clean text without markdown command prefix (for rendered view)
     let cleanText = rawLine;
@@ -191,27 +271,39 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
       rawPrefixLen = rawLine.length - cleanText.length;
     }
 
-    let typographyClass = 'text-[15px] leading-relaxed text-neutral-800 dark:text-neutral-200';
+    let typographyClass = 'text-[15px] leading-relaxed text-neutral-800 dark:text-neutral-200 min-h-[24px]';
     if (isHeading1) {
-      typographyClass = 'text-2xl md:text-3xl font-bold tracking-tight text-neutral-900 dark:text-neutral-100 pt-3 pb-1';
+      typographyClass = 'text-2xl md:text-3xl font-bold tracking-tight text-neutral-900 dark:text-neutral-100 pt-3 pb-1 min-h-[40px]';
     } else if (isHeading2) {
-      typographyClass = 'text-xl md:text-2xl font-bold tracking-tight text-neutral-800 dark:text-neutral-100 pt-2.5 pb-0.5';
+      typographyClass = 'text-xl md:text-2xl font-bold tracking-tight text-neutral-800 dark:text-neutral-100 pt-2.5 pb-0.5 min-h-[34px]';
     } else if (isHeading3) {
-      typographyClass = 'text-lg font-semibold text-neutral-800 dark:text-neutral-200 pt-1.5';
+      typographyClass = 'text-lg font-semibold text-neutral-800 dark:text-neutral-200 pt-1.5 min-h-[28px]';
     } else if (isQuote) {
       typographyClass =
-        'text-[14px] italic border-l-3 border-[var(--ochre-accent)] bg-amber-50/40 dark:bg-amber-950/25 pl-3 py-1 my-0.5 text-neutral-700 dark:text-neutral-300 rounded-r';
+        'text-[14px] italic border-l-3 border-[var(--ochre-accent)] bg-amber-50/40 dark:bg-amber-950/25 pl-3 py-1 my-0.5 text-neutral-700 dark:text-neutral-300 rounded-r min-h-[26px]';
     } else if (isTaskCompleted) {
-      typographyClass = 'text-[14px] line-through text-neutral-400 dark:text-neutral-500';
+      typographyClass = 'text-[14px] leading-relaxed line-through text-neutral-400 dark:text-neutral-500 min-h-[24px]';
     }
 
     const renderInlineFormatted = (text: string) => {
       if (!text) return <span className="inline-block min-w-1">&nbsp;</span>;
 
-      const regex = /(\[\[.*?\]\]|#[\w\d_-]+|\*\*.*?\*\*|`.*?`|\*.*?\*)/g;
+      const regex = /(!\[[^\]]*\]\([^)\s]+\)|\[\[.*?\]\]|#[\w\d_-]+|\*\*.*?\*\*|`.*?`|\*.*?\*)/g;
       const parts = text.split(regex);
 
       return parts.map((part, i) => {
+        const imgPart = part.match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/);
+        if (imgPart) {
+          const alt = imgPart[1] || 'Bild';
+          return (
+            <span
+              key={i}
+              className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md bg-amber-500/15 text-[var(--ochre-accent)] dark:text-[#E09228] font-medium"
+            >
+              <span>Bild: {alt}</span>
+            </span>
+          );
+        }
         if (part.startsWith('[[') && part.endsWith(']]')) {
           const inner = part.slice(2, -2);
           const [target, alias] = inner.split('|');
@@ -272,7 +364,7 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
     };
 
     return (
-      <div className="group relative flex flex-col">
+      <div data-line-row="true" className="group relative flex flex-col">
         <div className="flex items-start gap-2">
           {/* Task Checkbox & Calendar Due Date Button */}
           {isTask && (
@@ -310,6 +402,7 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
                 activeTextareaRef.current = el;
               }}
               value={localDraft}
+              onClick={(e) => e.stopPropagation()}
               onCompositionStart={() => {
                 isComposingRef.current = true;
               }}
@@ -345,6 +438,7 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
           ) : (
             <div
               onClick={(e) => {
+                e.stopPropagation();
                 if (isReadOnly) return;
                 const offset = getClickCharOffset(e, cleanText, rawPrefixLen);
                 onFocusLine(idx, offset);
@@ -362,7 +456,10 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
 
         {/* Due Date Popover Picker */}
         {isDatePickerOpen && (
-          <div className="ml-7 my-1.5 p-2 bg-white dark:bg-[#1E1F23] rounded-lg shadow-xl border border-[#E5E3DC] dark:border-[#2F3136] flex items-center gap-2 z-30 animate-in fade-in duration-100">
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="ml-7 my-1.5 p-2 bg-white dark:bg-[#1E1F23] rounded-lg shadow-xl border border-[#E5E3DC] dark:border-[#2F3136] flex items-center gap-2 z-30 animate-in fade-in duration-100"
+          >
             <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 flex items-center gap-1">
               <Calendar className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
               <span>Fälligkeitsdatum:</span>
@@ -390,9 +487,88 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
           </div>
         )}
 
+        {/* Interactive Embedded Image Card (matching YouTube Preview Embed style) */}
+        {imageEmbed && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="my-2 p-3 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA] dark:bg-[#1D1F23] max-w-xl"
+          >
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 min-w-0">
+                <Images className="w-4 h-4 text-[var(--ochre-accent)] shrink-0" />
+                <span className="truncate">{imageEmbed.alt}</span>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <div className="flex items-center gap-1 p-0.5 bg-neutral-200 dark:bg-neutral-800 rounded text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => onSetImgDisplayMode(imageEmbed.url, 'embed')}
+                    className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                      imgDisplayMode !== 'link'
+                        ? 'bg-white dark:bg-neutral-700 text-[var(--ochre-accent)] font-medium shadow-2xs'
+                        : 'text-neutral-500 hover:text-neutral-800'
+                    }`}
+                  >
+                    Bild
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onSetImgDisplayMode(imageEmbed.url, 'link')}
+                    className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                      imgDisplayMode === 'link'
+                        ? 'bg-white dark:bg-neutral-700 text-[var(--ochre-accent)] font-medium shadow-2xs'
+                        : 'text-neutral-500 hover:text-neutral-800'
+                    }`}
+                  >
+                    Link
+                  </button>
+                </div>
+                {imgDisplayMode !== 'link' && (
+                  <button
+                    type="button"
+                    onClick={() => onPreviewImage(imageEmbed.url, imageEmbed.alt)}
+                    className="p-1 rounded text-neutral-400 hover:text-[var(--ochre-accent)] cursor-pointer"
+                    title="Bild groß anzeigen"
+                  >
+                    <Maximize2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {imgDisplayMode === 'link' ? (
+              <a
+                href={imageEmbed.url}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-2 p-2 rounded-lg bg-amber-50/70 dark:bg-amber-950/20 text-[var(--ochre-accent)] text-xs hover:underline"
+              >
+                <Images className="w-4 h-4 shrink-0" />
+                <span className="truncate">{imageEmbed.alt}</span>
+                <ExternalLink className="w-3.5 h-3.5 ml-auto shrink-0" />
+              </a>
+            ) : (
+              <div
+                onClick={() => onPreviewImage(imageEmbed.url, imageEmbed.alt)}
+                className="relative rounded-lg overflow-hidden bg-neutral-100 dark:bg-neutral-900 cursor-zoom-in border border-[#E5E3DC]/60 dark:border-[#2F3136]"
+              >
+                <img
+                  src={imageEmbed.url}
+                  alt={imageEmbed.alt}
+                  loading="lazy"
+                  className="w-full max-h-[380px] object-contain mx-auto"
+                />
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Interactive YouTube Preview Embed */}
         {ytId && (
-          <div className="my-2 p-3 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA] dark:bg-[#1D1F23] max-w-xl">
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="my-2 p-3 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA] dark:bg-[#1D1F23] max-w-xl"
+          >
             <div className="flex items-center justify-between gap-2 mb-2">
               <div className="flex items-center gap-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300">
                 <Youtube className="w-4 h-4 text-red-500" />
@@ -453,7 +629,7 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
   }
 );
 
-export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
+export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
   content,
   onChange,
   isReadOnly = false,
@@ -463,6 +639,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
   noteTitle,
   onRenameNote,
   showToolbar: propShowToolbar,
+  noteContext,
   openNoteTabs = [],
   activeTabPath,
   onSelectTab,
@@ -488,6 +665,9 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
   const activeTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const blurTimerRef = useRef<number | null>(null);
   const toolbarScrollRef = useRef<HTMLDivElement>(null);
+  const toolbarDraggedRef = useRef<boolean>(false);
+  const imageFileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   // Due Date popover picker state
   const [datePickerLine, setDatePickerLine] = useState<number | null>(null);
@@ -497,8 +677,45 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
   const [isRenameModalOpen, setIsRenameModalOpen] = useState(false);
   const [newTitleInput, setNewTitleInput] = useState('');
 
-  // YouTube embed vs link preference per URL
+  // YouTube & Image embed vs link preferences
   const [ytDisplayModes, setYtDisplayModes] = useState<Record<string, YouTubeDisplayMode>>({});
+  const [imgDisplayModes, setImgDisplayModes] = useState<Record<string, 'embed' | 'link'>>({});
+
+  // Per-Note Media Browser, Upload & Drag-Drop state
+  const [noteMedia, setNoteMedia] = useState<NoteMediaItem[]>([]);
+  const [isMediaBrowserOpen, setIsMediaBrowserOpen] = useState(false);
+  const [isImageMenuOpen, setIsImageMenuOpen] = useState(false);
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+  const [isDraggingImage, setIsDraggingImage] = useState(false);
+  const [mediaNotice, setMediaNotice] = useState<string | null>(null);
+  const [lightboxImage, setLightboxImage] = useState<{ url: string; alt: string } | null>(null);
+
+  // Load media list for current note
+  const refreshNoteMedia = useCallback(async () => {
+    if (!noteContext?.username || !noteContext?.notePath) {
+      setNoteMedia([]);
+      return;
+    }
+    const items = await api.listNoteMedia(
+      noteContext.username,
+      noteContext.notePath,
+      noteContext.noteProfile,
+      noteContext.isShared,
+      noteContext.sharedFrom
+    );
+    setNoteMedia(items);
+  }, [
+    noteContext?.username,
+    noteContext?.notePath,
+    noteContext?.noteProfile,
+    noteContext?.isShared,
+    noteContext?.sharedFrom,
+  ]);
+
+  useEffect(() => {
+    refreshNoteMedia();
+    setIsImageMenuOpen(false);
+  }, [refreshNoteMedia]);
 
   // Sync incoming content ONLY when external change / note switch occurs (never on echo of our own edits)
   useEffect(() => {
@@ -512,13 +729,15 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
     }
   }, [content]);
 
-  // Synchronous layout-phase cursor positioning (zero 15ms timer race, zero cursor jumpback!)
+  // Synchronous layout-phase cursor positioning (zero timer race, instant focus)
   useLayoutEffect(() => {
     const pending = pendingCursorRef.current;
     if (!pending || focusedLineIndex !== pending.line) return;
     const el = activeTextareaRef.current;
     if (el) {
-      el.focus({ preventScroll: false });
+      if (document.activeElement !== el) {
+        el.focus({ preventScroll: false });
+      }
       const pos = Math.max(0, Math.min(el.value.length, pending.pos));
       try {
         el.setSelectionRange(pos, pos);
@@ -528,7 +747,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
     pendingCursorRef.current = null;
   }, [focusedLineIndex, draftLines]);
 
-  // Translate vertical mouse wheel into horizontal scroll on toolbar without scrolling page
+  // Translate wheel & desktop mouse-drag into crisp horizontal scroll (touch uses native OS momentum pan-x)
   useEffect(() => {
     const el = toolbarScrollRef.current;
     if (!el) return;
@@ -538,8 +757,47 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
         el.scrollLeft += e.deltaY * 1.2;
       }
     };
+
+    let isMouseDown = false;
+    let startX = 0;
+    let startScrollLeft = 0;
+
+    const handleMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      isMouseDown = true;
+      toolbarDraggedRef.current = false;
+      startX = e.clientX;
+      startScrollLeft = el.scrollLeft;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isMouseDown) return;
+      const dx = e.clientX - startX;
+      if (Math.abs(dx) > 5) {
+        toolbarDraggedRef.current = true;
+      }
+      if (toolbarDraggedRef.current) {
+        el.scrollLeft = startScrollLeft - dx;
+      }
+    };
+
+    const handleMouseUp = () => {
+      isMouseDown = false;
+      window.setTimeout(() => {
+        toolbarDraggedRef.current = false;
+      }, 40);
+    };
+
     el.addEventListener('wheel', handleWheel, { passive: false });
-    return () => el.removeEventListener('wheel', handleWheel);
+    el.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      el.removeEventListener('wheel', handleWheel);
+      el.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
   }, [showToolbar]);
 
   const commitLines = useCallback(
@@ -567,7 +825,6 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
     focusedLineRef.current = safeIdx;
     setFocusedLineIndex(safeIdx);
 
-    // If same line is already active, apply cursor immediately without waiting for effect
     if (activeTextareaRef.current && focusedLineRef.current === safeIdx && document.activeElement === activeTextareaRef.current) {
       try {
         activeTextareaRef.current.setSelectionRange(pos, pos);
@@ -598,7 +855,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
         setFocusedLineIndex(null);
       }
       blurTimerRef.current = null;
-    }, 100);
+    }, 60);
   }, []);
 
   const updateLine = useCallback(
@@ -609,6 +866,84 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
       commitLines(updated);
     },
     [commitLines]
+  );
+
+  const insertImageMarkdown = useCallback(
+    (alt: string, url: string) => {
+      const markdownLine = `![${alt}](${url})`;
+      const linesNow = [...draftLinesRef.current];
+      const idx = focusedLineRef.current !== null ? focusedLineRef.current : linesNow.length - 1;
+      const current = linesNow[idx] || '';
+      if (current.trim() === '') {
+        linesNow[idx] = markdownLine;
+        commitLines(linesNow);
+      } else {
+        linesNow.splice(idx + 1, 0, markdownLine);
+        commitLines(linesNow);
+      }
+    },
+    [commitLines]
+  );
+
+  const uploadAndInsertImages = useCallback(
+    async (files: FileList | File[], embedImmediately = true) => {
+      const imageFiles = Array.from(files).filter((f) => f.type.startsWith('image/'));
+      if (imageFiles.length === 0) return;
+
+      if (!noteContext?.username || !noteContext?.notePath) {
+        setMediaNotice('Bitte zuerst eine Notiz öffnen.');
+        window.setTimeout(() => setMediaNotice(null), 2500);
+        return;
+      }
+
+      setIsUploadingMedia(true);
+      setMediaNotice(null);
+      try {
+        for (const file of imageFiles) {
+          const dataUrl = await prepareNoteImageDataUrl(file);
+          const item = await api.uploadNoteMedia({
+            username: noteContext.username,
+            profile: noteContext.noteProfile,
+            notePath: noteContext.notePath,
+            filename: file.name || `bild_${Date.now()}.jpg`,
+            dataUrl,
+            isShared: noteContext.isShared,
+            sharedFrom: noteContext.sharedFrom,
+          });
+          setNoteMedia((prev) => [item, ...prev.filter((p) => p.filename !== item.filename)]);
+          if (embedImmediately) {
+            const cleanAlt = (file.name || 'Bild').replace(/\.[^.]+$/, '');
+            insertImageMarkdown(cleanAlt, item.url);
+          }
+        }
+        setMediaNotice('Bild im Notiz-Ordner gespeichert.');
+        window.setTimeout(() => setMediaNotice(null), 2500);
+      } catch (err: any) {
+        setMediaNotice(err?.message || 'Upload fehlgeschlagen');
+        window.setTimeout(() => setMediaNotice(null), 3500);
+      } finally {
+        setIsUploadingMedia(false);
+      }
+    },
+    [noteContext, insertImageMarkdown]
+  );
+
+  const handleDeleteMediaItem = useCallback(
+    async (item: NoteMediaItem) => {
+      if (!noteContext?.username || !noteContext?.notePath) return;
+      const ok = await api.deleteNoteMedia({
+        username: noteContext.username,
+        profile: noteContext.noteProfile,
+        notePath: noteContext.notePath,
+        filename: item.filename,
+        isShared: noteContext.isShared,
+        sharedFrom: noteContext.sharedFrom,
+      });
+      if (ok) {
+        setNoteMedia((prev) => prev.filter((m) => m.filename !== item.filename));
+      }
+    },
+    [noteContext]
   );
 
   const handleKeyDown = useCallback(
@@ -729,6 +1064,18 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent<HTMLTextAreaElement>, index: number) => {
+      // Support direct clipboard image paste (screenshots / copied photos)
+      const items = Array.from(e.clipboardData.items || []);
+      const imgFiles = items
+        .filter((item) => item.type.startsWith('image/'))
+        .map((item) => item.getAsFile())
+        .filter((f): f is File => !!f);
+      if (imgFiles.length > 0 && !isReadOnly) {
+        e.preventDefault();
+        uploadAndInsertImages(imgFiles, true);
+        return;
+      }
+
       const text = e.clipboardData.getData('text');
       if (text.includes('\n')) {
         e.preventDefault();
@@ -749,7 +1096,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
         focusLineAt(index + pasteLines.length - 1, pasteLines[pasteLines.length - 1].length);
       }
     },
-    [commitLines, focusLineAt]
+    [commitLines, focusLineAt, isReadOnly, uploadAndInsertImages]
   );
 
   const handleToggleTaskCheckbox = useCallback(
@@ -787,6 +1134,10 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
     setYtDisplayModes((prev) => ({ ...prev, [ytId]: mode }));
   }, []);
 
+  const handleSetImgDisplayMode = useCallback((imgUrl: string, mode: 'embed' | 'link') => {
+    setImgDisplayModes((prev) => ({ ...prev, [imgUrl]: mode }));
+  }, []);
+
   // Formatting Toolbar Buttons
   const applyPrefix = (prefix: string) => {
     const linesNow = draftLinesRef.current;
@@ -817,6 +1168,22 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
     }
   };
 
+  // Focus editor immediately when clicking/tapping anywhere in empty canvas area
+  const handleCanvasEmptyClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (isReadOnly) return;
+    if ((e.target as HTMLElement).closest('[data-line-row]')) return;
+    const currentLines = draftLinesRef.current;
+    const lastIdx = Math.max(0, currentLines.length - 1);
+    const lastLine = currentLines[lastIdx] || '';
+    if (lastLine.trim() !== '') {
+      const updated = [...currentLines, ''];
+      commitLines(updated);
+      focusLineAt(updated.length - 1, 0);
+    } else {
+      focusLineAt(lastIdx, lastLine.length);
+    }
+  };
+
   const toolbarButtons = [
     { id: 'h1', label: 'Titel (H1)', icon: <Heading1 className="w-4 h-4" />, action: () => applyPrefix('# ') },
     { id: 'h2', label: 'Untertitel (H2)', icon: <Heading2 className="w-4 h-4" />, action: () => applyPrefix('## ') },
@@ -830,6 +1197,23 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
     { id: 'quote', label: 'Zitat (> )', icon: <MessageSquareQuote className="w-4 h-4" />, action: () => applyPrefix('> ') },
     { id: 'link', label: 'Wikilink ([[...]])', icon: <Link2 className="w-4 h-4 text-[var(--ochre-accent)]" />, action: () => applySurround('[[', ']]') },
     { id: 'code', label: 'Code', icon: <Code className="w-4 h-4" />, action: () => applySurround('`', '`') },
+    { type: 'divider' },
+    {
+      id: 'image',
+      label: 'Bild anhängen / Kamera',
+      icon: <ImagePlus className="w-4 h-4 text-[var(--ochre-accent)]" />,
+      action: () => setIsImageMenuOpen((prev) => !prev),
+    },
+    {
+      id: 'mediabrowser',
+      label: `Medienbrowser (${noteMedia.length})`,
+      icon: <Images className="w-4 h-4" />,
+      badge: noteMedia.length > 0 ? noteMedia.length : undefined,
+      action: () => {
+        setIsImageMenuOpen(false);
+        setIsMediaBrowserOpen((prev) => !prev);
+      },
+    },
     {
       id: 'youtube',
       label: 'YouTube Video einfügen',
@@ -862,7 +1246,66 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
   ];
 
   return (
-    <div className="flex-1 h-full flex flex-col bg-[#FBFBFA] dark:bg-[#18191B] overflow-hidden select-text relative">
+    <div
+      onDragOver={(e) => {
+        if (isReadOnly) return;
+        const hasFiles = Array.from(e.dataTransfer.types || []).includes('Files');
+        if (hasFiles) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = 'copy';
+          setIsDraggingImage(true);
+        }
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+          setIsDraggingImage(false);
+        }
+      }}
+      onDrop={(e) => {
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) {
+          const hasImage = Array.from(files).some((f) => f.type.startsWith('image/'));
+          if (hasImage && !isReadOnly) {
+            e.preventDefault();
+            e.stopPropagation();
+            setIsDraggingImage(false);
+            uploadAndInsertImages(files, true);
+            return;
+          }
+        }
+        setIsDraggingImage(false);
+      }}
+      className="flex-1 h-full flex flex-col bg-[#FBFBFA] dark:bg-[#18191B] overflow-hidden select-text relative"
+    >
+      {/* Hidden File & Camera Inputs for Desktop / Tablet / Mobile */}
+      <input
+        ref={imageFileInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files) {
+            uploadAndInsertImages(e.target.files, true);
+          }
+          e.target.value = '';
+        }}
+      />
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files) {
+            uploadAndInsertImages(e.target.files, true);
+          }
+          e.target.value = '';
+        }}
+      />
+
       {/* Mobile Tabs Header Bar (if openNoteTabs provided) */}
       {openNoteTabs.length > 0 && (
         <div className="flex items-center gap-1 px-3 py-1 bg-[#F4F3EF] dark:bg-[#1A1B1E] border-b border-[#E5E3DC] dark:border-[#2F3136] overflow-x-auto no-scrollbar shrink-0 select-none">
@@ -910,34 +1353,54 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
       {!isReadOnly && showToolbar && (
         <div
           data-no-swipe="true"
-          className="border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA]/95 dark:bg-[#1D1F23]/95 shrink-0 select-none animate-in fade-in duration-100"
+          className="border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA]/95 dark:bg-[#1D1F23]/95 shrink-0 select-none animate-in fade-in duration-100 relative"
         >
-          <div className="flex items-center justify-between px-2 py-1.5">
+          <div className="flex items-center px-2 py-1 min-w-0">
             <div
               ref={toolbarScrollRef}
-              className="flex items-center gap-2 overflow-x-auto no-scrollbar scroll-smooth touch-pan-x flex-1 py-0.5 px-1"
+              onTouchStart={(e) => e.stopPropagation()}
+              onTouchMove={(e) => e.stopPropagation()}
+              style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-x' }}
+              className="flex items-center gap-2 overflow-x-auto overflow-y-hidden overscroll-x-contain touch-pan-x min-w-0 w-full flex-1 py-1 px-1 pr-6 [&::-webkit-scrollbar]:h-1 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-neutral-300/70 dark:[&::-webkit-scrollbar-thumb]:bg-neutral-700/70"
             >
               {toolbarButtons.map((btn, index) => {
                 if (btn.type === 'divider') {
                   return <div key={index} className="w-px h-5 bg-[#E5E3DC] dark:bg-[#2F3136] mx-0.5 shrink-0" />;
                 }
 
+                const isHighlighted =
+                  (btn.id === 'image' && isImageMenuOpen) ||
+                  (btn.id === 'mediabrowser' && isMediaBrowserOpen);
+
                 return (
-                  <div key={btn.id} className="relative group shrink-0">
+                  <div key={btn.id} className="relative group shrink-0 touch-pan-x">
                     <button
                       type="button"
                       onMouseDown={(e) => e.preventDefault()}
-                      onClick={btn.action}
+                      onClick={() => {
+                        if (toolbarDraggedRef.current) return;
+                        btn.action?.();
+                      }}
                       onMouseEnter={() => setActiveTooltip(btn.id!)}
                       onMouseLeave={() => setActiveTooltip(null)}
-                      className="w-9 h-9 sm:w-8 sm:h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] shadow-2xs flex items-center justify-center text-neutral-600 dark:text-neutral-300 hover:border-[var(--ochre-accent)] hover:text-[var(--ochre-accent)] active:scale-95 transition-all cursor-pointer touch-manipulation"
+                      className={`w-9 h-9 sm:w-8 sm:h-8 rounded-full bg-white dark:bg-[#25272C] border shadow-2xs flex items-center justify-center active:scale-95 transition-all cursor-pointer touch-pan-x ${
+                        isHighlighted
+                          ? 'border-[var(--ochre-accent)] text-[var(--ochre-accent)]'
+                          : 'border-[#E5E3DC] dark:border-[#2F3136] text-neutral-600 dark:text-neutral-300 hover:border-[var(--ochre-accent)] hover:text-[var(--ochre-accent)]'
+                      }`}
                       aria-label={btn.label}
                     >
                       {btn.icon}
                     </button>
 
+                    {typeof (btn as any).badge === 'number' && (
+                      <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[var(--ochre-accent)] text-white text-[9px] font-bold flex items-center justify-center pointer-events-none">
+                        {(btn as any).badge}
+                      </span>
+                    )}
+
                     {activeTooltip === btn.id && (
-                      <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 px-2 py-1 rounded bg-neutral-900 text-white text-[10px] whitespace-nowrap shadow-lg z-50 pointer-events-none">
+                      <div className="hidden md:block absolute top-full left-1/2 -translate-x-1/2 mt-1.5 px-2 py-1 rounded bg-neutral-900 text-white text-[10px] whitespace-nowrap shadow-lg z-50 pointer-events-none">
                         <span>{btn.label}</span>
                       </div>
                     )}
@@ -946,19 +1409,187 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
               })}
             </div>
           </div>
+
+          {/* Image Attachment Action Popover (Ordnerstruktur / Kamera / Medienbrowser) */}
+          {isImageMenuOpen && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="mx-3 mb-2 p-2.5 rounded-2xl bg-white dark:bg-[#1E1F23] border border-[#E5E3DC] dark:border-[#2F3136] shadow-xl flex flex-wrap items-center gap-2 z-40 animate-in fade-in slide-in-from-top-1 duration-150"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setIsImageMenuOpen(false);
+                  imageFileInputRef.current?.click();
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[var(--ochre-accent)] text-white text-xs font-semibold shadow-xs cursor-pointer active:scale-95 touch-manipulation"
+              >
+                <FolderOpen className="w-3.5 h-3.5" />
+                <span>Aus Ordner / Galerie</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsImageMenuOpen(false);
+                  cameraInputRef.current?.click();
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#2A2C31] border border-[#E5E3DC] dark:border-[#3A3D44] text-neutral-800 dark:text-neutral-200 text-xs font-semibold cursor-pointer active:scale-95 touch-manipulation hover:border-[var(--ochre-accent)]"
+              >
+                <Camera className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
+                <span>Kamera nutzen</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsImageMenuOpen(false);
+                  setIsMediaBrowserOpen(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#2A2C31] border border-[#E5E3DC] dark:border-[#3A3D44] text-neutral-800 dark:text-neutral-200 text-xs font-semibold cursor-pointer active:scale-95 touch-manipulation hover:border-[var(--ochre-accent)]"
+              >
+                <Images className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
+                <span>Medienbrowser ({noteMedia.length})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsImageMenuOpen(false)}
+                className="ml-auto p-1.5 rounded-full text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer"
+                aria-label="Schließen"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Upload / Media Notice Toast */}
+      {(isUploadingMedia || mediaNotice) && (
+        <div className="px-4 py-1.5 bg-amber-500/10 border-b border-amber-500/30 text-xs font-medium text-[var(--ochre-accent)] flex items-center justify-between shrink-0">
+          <span>{isUploadingMedia ? 'Bild wird in Media-Ordner hochgeladen...' : mediaNotice}</span>
+        </div>
+      )}
+
+      {/* Collapsible Per-Note Media Browser */}
+      {isMediaBrowserOpen && (
+        <div
+          data-no-swipe="true"
+          className="border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF]/85 dark:bg-[#1E2024] px-3 py-2.5 shrink-0 space-y-2 select-none animate-in fade-in duration-150"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <Images className="w-4 h-4 text-[var(--ochre-accent)] shrink-0" />
+              <span className="text-xs font-bold text-neutral-800 dark:text-neutral-100 truncate">
+                Notiz-Medienbrowser
+              </span>
+              <span className="hidden sm:inline font-mono text-[10px] px-1.5 py-0.5 rounded bg-white dark:bg-[#2A2C31] border border-[#E5E3DC] dark:border-[#3A3D44] text-neutral-500 truncate">
+                Media/{(noteTitle || 'Notiz').replace(/\.md$/i, '')}/
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {!isReadOnly && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => imageFileInputRef.current?.click()}
+                    className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[var(--ochre-accent)] text-white text-[11px] font-semibold cursor-pointer active:scale-95"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Bild</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => cameraInputRef.current?.click()}
+                    className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white dark:bg-[#2A2C31] border border-[#E5E3DC] dark:border-[#3A3D44] text-neutral-700 dark:text-neutral-200 text-[11px] font-semibold cursor-pointer active:scale-95"
+                  >
+                    <Camera className="w-3 h-3 text-[var(--ochre-accent)]" />
+                    <span className="hidden sm:inline">Kamera</span>
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => setIsMediaBrowserOpen(false)}
+                className="p-1 rounded-full text-neutral-400 hover:text-neutral-700 dark:hover:text-white cursor-pointer"
+                aria-label="Medienbrowser schließen"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {noteMedia.length === 0 ? (
+            <div className="p-3 rounded-xl border border-dashed border-[#D7D4CB] dark:border-[#34373E] text-center text-xs text-neutral-500">
+              Noch keine Bilder für diese Notiz. Ziehe Bilder per Drag & Drop auf die Notiz oder nutze Ordner / Kamera.
+            </div>
+          ) : (
+            <div className="flex items-center gap-2.5 overflow-x-auto pb-1">
+              {noteMedia.map((item) => (
+                <div
+                  key={item.filename}
+                  className="w-36 shrink-0 rounded-xl bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#32353D] overflow-hidden shadow-2xs flex flex-col"
+                >
+                  <div
+                    onClick={() => setLightboxImage({ url: item.url, alt: item.filename })}
+                    className="h-20 bg-neutral-100 dark:bg-neutral-900 overflow-hidden cursor-zoom-in relative group"
+                  >
+                    <img src={item.url} alt={item.filename} className="w-full h-full object-cover" loading="lazy" />
+                  </div>
+                  <div className="p-1.5 space-y-1">
+                    <span className="text-[10px] font-medium text-neutral-700 dark:text-neutral-300 truncate block">
+                      {item.filename}
+                    </span>
+                    <div className="flex items-center justify-between gap-1">
+                      {!isReadOnly && (
+                        <button
+                          type="button"
+                          onClick={() => insertImageMarkdown(item.filename.replace(/\.[^.]+$/, ''), item.url)}
+                          className="flex-1 text-[10px] font-semibold px-1.5 py-1 rounded bg-amber-500/15 text-[var(--ochre-accent)] hover:bg-[var(--ochre-accent)] hover:text-white transition-colors cursor-pointer"
+                          title="Als Vorschau in Notiz einbinden"
+                        >
+                          Einbinden
+                        </button>
+                      )}
+                      {!isReadOnly && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteMediaItem(item)}
+                          className="p-1 rounded text-neutral-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
+                          title="Bild aus Media-Ordner löschen"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Drag & Drop Image Overlay */}
+      {isDraggingImage && (
+        <div className="absolute inset-3 rounded-2xl bg-[var(--ochre-accent)]/12 border-2 border-dashed border-[var(--ochre-accent)] flex items-center justify-center pointer-events-none z-50 backdrop-blur-2xs animate-in fade-in duration-100">
+          <div className="p-4 px-5 rounded-2xl bg-white dark:bg-[#1E1F23] shadow-2xl border border-[var(--ochre-accent)] flex items-center gap-2.5 text-xs font-bold text-[var(--ochre-accent)]">
+            <Upload className="w-5 h-5" />
+            <span>Bild hier ablegen → wird in Media/{(noteTitle || 'Notiz').replace(/\.md$/i, '')}/ gespeichert</span>
+          </div>
         </div>
       )}
 
       {/* Main Fluid Document Canvas (Obsidian Live Preview Style) */}
       <div
-        onClick={(e) => {
-          if (e.target === e.currentTarget && !isReadOnly) {
-            focusLineAt(draftLines.length - 1);
-          }
-        }}
+        onClick={handleCanvasEmptyClick}
         className="flex-1 relative overflow-y-auto px-4 md:px-12 py-6 cursor-text"
       >
-        <div className="max-w-3xl mx-auto space-y-1 min-h-[400px]">
+        <div
+          onClick={handleCanvasEmptyClick}
+          className="max-w-3xl mx-auto space-y-1 min-h-[calc(100%-1rem)] pb-24"
+        >
           {draftLines.map((rawLine, idx) => (
             <MarkdownLineRow
               key={idx}
@@ -973,6 +1604,10 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
                 const ytId = getYouTubeId(rawLine);
                 return ytId ? ytDisplayModes[ytId] : undefined;
               })()}
+              imgDisplayMode={(() => {
+                const img = getImageEmbed(rawLine);
+                return img ? imgDisplayModes[img.url] : undefined;
+              })()}
               activeTextareaRef={activeTextareaRef}
               onFocusLine={handleRowFocus}
               onBlurLine={handleRowBlur}
@@ -985,12 +1620,42 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
               onSaveDueDate={handleSaveDueDate}
               onCloseDatePicker={() => setDatePickerLine(null)}
               onSetYtDisplayMode={handleSetYtDisplayMode}
+              onSetImgDisplayMode={handleSetImgDisplayMode}
+              onPreviewImage={(url, alt) => setLightboxImage({ url, alt })}
               onWikilinkClick={onWikilinkClick}
               onTagClick={onTagClick}
             />
           ))}
         </div>
       </div>
+
+      {/* Lightbox Image Preview Modal */}
+      {lightboxImage && (
+        <div
+          onClick={() => setLightboxImage(null)}
+          className="fixed inset-0 bg-black/80 z-[120] flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in duration-150"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative max-w-4xl max-h-[88dvh] flex flex-col items-center gap-2"
+          >
+            <button
+              type="button"
+              onClick={() => setLightboxImage(null)}
+              className="self-end w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center cursor-pointer"
+              aria-label="Vorschau schließen"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img
+              src={lightboxImage.url}
+              alt={lightboxImage.alt}
+              className="max-w-full max-h-[80dvh] rounded-xl object-contain shadow-2xl"
+            />
+            <span className="text-xs text-white/80 font-medium">{lightboxImage.alt}</span>
+          </div>
+        </div>
+      )}
 
       {/* Rename Note Modal */}
       {isRenameModalOpen && (
@@ -1058,4 +1723,4 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = ({
       )}
     </div>
   );
-};
+});

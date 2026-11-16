@@ -1,0 +1,41 @@
+{
+  "michael": {
+    "profileSettings": {
+      "enableSecondProfile": true,
+      "activeProfileId": "profile1",
+      "profile1": {
+        "id": "profile1",
+        "name": "Privat",
+        "colors": {
+          "notes": "#C87D20",
+          "wiki": "#6E7F4F",
+          "recipes": "#C26D2D",
+          "finance": "#8E6126"
+        }
+      },
+      "profile2": {
+        "id": "profile2",
+        "name": "Business",
+        "colors": {
+          "notes": "#8F5E1E",
+          "wiki": "#9E6B2B",
+          "recipes": "#B45309",
+          "finance": "#6D4C2F"
+        }
+      }
+    },
+    "enabledModules": {
+      "notes": true,
+      "wiki": true,
+      "recipes": true,
+      "finance": true
+    },
+    "dashboardSettings": {
+      "maxWidgets": 4,
+      "selectedWidgets": [
+        "notes_tasks_open",
+        "cookbook_shopping_open"
+      ]
+    }
+  }
+}

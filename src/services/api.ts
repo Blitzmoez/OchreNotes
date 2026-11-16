@@ -1,4 +1,4 @@
-import { NoteMetadata, NoteContent, TaskItem, User, ShareRecord, SystemHealth, SystemLog, GraphData, NoteProfileId, SuiteProfileSettings, EnabledModules, WikiArticle, Recipe, MealCycle, MealCalendarOverride, CookbookSharingSettings, SharedCookbookCatalog, SharedMealPlan } from '../types';
+import { NoteMetadata, NoteContent, NoteMediaItem, TaskItem, User, ShareRecord, SystemHealth, SystemLog, GraphData, NoteProfileId, SuiteProfileSettings, EnabledModules, WikiArticle, Recipe, MealCycle, MealCalendarOverride, CookbookSharingSettings, CookbookSettings, SharedCookbookCatalog, SharedMealPlan, DashboardSettings, IngredientMeta } from '../types';
 
 class ApiService {
   private isOnline: boolean = typeof navigator !== 'undefined' ? navigator.onLine : true;
@@ -187,7 +187,7 @@ class ApiService {
     return res.ok;
   }
 
-  async fetchProfileSettings(username: string): Promise<{ profileSettings?: SuiteProfileSettings; enabledModules?: EnabledModules } | null> {
+  async fetchProfileSettings(username: string): Promise<{ profileSettings?: SuiteProfileSettings; enabledModules?: EnabledModules; dashboardSettings?: DashboardSettings } | null> {
     try {
       const res = await fetch(`/api/system/profile-settings?username=${encodeURIComponent(username)}`);
       if (!res.ok) return null;
@@ -197,12 +197,17 @@ class ApiService {
     }
   }
 
-  async saveProfileSettings(username: string, profileSettings: SuiteProfileSettings, enabledModules: EnabledModules): Promise<boolean> {
+  async saveProfileSettings(
+    username: string,
+    profileSettings: SuiteProfileSettings,
+    enabledModules: EnabledModules,
+    dashboardSettings?: DashboardSettings
+  ): Promise<boolean> {
     try {
       const res = await fetch('/api/system/profile-settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, profileSettings, enabledModules }),
+        body: JSON.stringify({ username, profileSettings, enabledModules, dashboardSettings }),
       });
       return res.ok;
     } catch {
@@ -339,6 +344,61 @@ class ApiService {
     }
   }
 
+  async listNoteMedia(
+    username: string,
+    notePath: string,
+    profile: NoteProfileId = 'profile1',
+    isShared = false,
+    sharedFrom = ''
+  ): Promise<NoteMediaItem[]> {
+    try {
+      const url = `/api/notes/media/list?username=${encodeURIComponent(username)}&profile=${encodeURIComponent(profile)}&notePath=${encodeURIComponent(notePath)}&isShared=${isShared}&sharedFrom=${encodeURIComponent(sharedFrom)}`;
+      const res = await fetch(url);
+      if (!res.ok) return [];
+      return await res.json();
+    } catch {
+      return [];
+    }
+  }
+
+  async uploadNoteMedia(payload: {
+    username: string;
+    profile?: NoteProfileId;
+    notePath: string;
+    filename: string;
+    dataUrl: string;
+    isShared?: boolean;
+    sharedFrom?: string;
+  }): Promise<NoteMediaItem> {
+    const res = await fetch('/api/notes/media/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Bild-Upload fehlgeschlagen');
+    }
+    const data = await res.json();
+    return data.item;
+  }
+
+  async deleteNoteMedia(payload: {
+    username: string;
+    profile?: NoteProfileId;
+    notePath: string;
+    filename: string;
+    isShared?: boolean;
+    sharedFrom?: string;
+  }): Promise<boolean> {
+    const res = await fetch('/api/notes/media/file', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return res.ok;
+  }
+
   async fetchTasks(username: string, profile: NoteProfileId = 'profile1'): Promise<TaskItem[]> {
     try {
       const res = await fetch(`/api/tasks?username=${encodeURIComponent(username)}&profile=${encodeURIComponent(profile)}`);
@@ -455,6 +515,9 @@ class ApiService {
     cycle: MealCycle;
     overrides: Record<string, MealCalendarOverride>;
     sharing: CookbookSharingSettings;
+    settings?: CookbookSettings;
+    ingredientMeta?: Record<string, IngredientMeta>;
+    dismissedDuplicates?: string[];
     sharedCatalogs: SharedCookbookCatalog[];
     sharedPlans: SharedMealPlan[];
   }> {
@@ -471,6 +534,9 @@ class ApiService {
       cycle?: MealCycle;
       overrides?: Record<string, MealCalendarOverride>;
       sharing?: CookbookSharingSettings;
+      settings?: Partial<CookbookSettings>;
+      ingredientMeta?: Record<string, IngredientMeta>;
+      dismissedDuplicates?: string[];
     }
   ): Promise<boolean> {
     const res = await fetch('/api/cookbook/save', {
@@ -489,6 +555,50 @@ class ApiService {
     });
     if (!res.ok) throw new Error('Rezept konnte nicht geteilt werden');
     return await res.json();
+  }
+
+  async listRecipeMedia(username: string, recipeDir: string): Promise<NoteMediaItem[]> {
+    if (!recipeDir) return [];
+    try {
+      const res = await fetch(
+        `/api/cookbook/media/list?username=${encodeURIComponent(username)}&recipeDir=${encodeURIComponent(recipeDir)}`
+      );
+      if (!res.ok) return [];
+      return await res.json();
+    } catch {
+      return [];
+    }
+  }
+
+  async uploadRecipeMedia(
+    username: string,
+    recipeDir: string,
+    filename: string,
+    dataUrl: string,
+    recipeId?: string
+  ): Promise<NoteMediaItem | null> {
+    const res = await fetch('/api/cookbook/media/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, recipeDir, recipeId, filename, dataUrl }),
+    });
+    if (!res.ok) throw new Error('Rezept-Bild konnte nicht gespeichert werden');
+    const data = await res.json();
+    return data.item || null;
+  }
+
+  async deleteRecipeMedia(
+    username: string,
+    recipeDir: string,
+    filename: string,
+    recipeId?: string
+  ): Promise<boolean> {
+    const res = await fetch('/api/cookbook/media/file', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, recipeDir, recipeId, filename }),
+    });
+    return res.ok;
   }
 
   async fetchSharesForNote(owner: string, path: string): Promise<ShareRecord[]> {

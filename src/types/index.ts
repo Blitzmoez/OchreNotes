@@ -29,6 +29,13 @@ export interface NoteContent extends NoteMetadata {
   content: string;
 }
 
+export interface NoteMediaItem {
+  filename: string;
+  url: string;
+  size: number;
+  mtime: number;
+}
+
 export interface TaskItem {
   id: string;
   notePath: string;
@@ -114,9 +121,10 @@ export interface GraphData {
   links: GraphLink[];
 }
 
-export type SuiteModuleId = 'notes' | 'wiki' | 'recipes' | 'finance';
+export type SuiteModuleId = 'dashboard' | 'notes' | 'wiki' | 'recipes' | 'finance';
 
 export interface EnabledModules {
+  dashboard: boolean;
   notes: boolean;
   wiki: boolean;
   recipes: boolean;
@@ -126,6 +134,7 @@ export interface EnabledModules {
 export type NoteProfileId = 'profile1' | 'profile2';
 
 export interface ModuleColors {
+  dashboard?: string;
   notes: string;
   wiki: string;
   recipes: string;
@@ -143,6 +152,23 @@ export interface SuiteProfileSettings {
   activeProfileId: NoteProfileId;
   profile1: NoteProfileConfig;
   profile2: NoteProfileConfig;
+}
+
+export type DashboardWidgetId =
+  | 'notes_tasks_open'
+  | 'cookbook_shopping_open'
+  | 'cookbook_today_meals'
+  | 'notes_summary'
+  | 'finance_balance'
+  | 'wiki_overview'
+  | 'cookbook_catalog_stats'
+  | 'finance_recent_tx'
+  | 'system_health'
+  | 'quick_actions';
+
+export interface DashboardSettings {
+  maxWidgets: number;
+  selectedWidgets: DashboardWidgetId[];
 }
 
 // Open-Standard Wiki Types (saved as standard Markdown + YAML frontmatter + local asset files)
@@ -173,6 +199,19 @@ export interface WikiArticle {
 }
 
 // Recipes & Meal Planning Types
+export type CookbookTab = 'calendar' | 'cycle' | 'recipes' | 'shopping' | 'presentation';
+
+export interface CookbookSettings {
+  defaultCyclePortions: number;
+  enableShoppingList?: boolean;
+}
+
+export interface IngredientMeta {
+  key: string;
+  displayName: string;
+  excludeFromShoppingList?: boolean;
+}
+
 export interface RecipeIngredient {
   id: string;
   name: string;
@@ -191,12 +230,16 @@ export interface Recipe {
   tags: string[];
   color?: string;
   sharedFrom?: string;
+  images?: string[];
+  mediaDir?: string;
+  excludeFromShoppingList?: boolean;
 }
 
 export interface MealCycleDay {
   dayIndex: number; // 0 to cycleLength - 1
   label: string; // e.g. "Tag 1"
   recipeIds: string[]; // Assigned recipe ids for this cycle day
+  portions?: number; // Target portions for this cycle day
 }
 
 export interface MealCycle {
@@ -204,12 +247,14 @@ export interface MealCycle {
   name: string;
   cycleLengthDays: number; // e.g. 7, 14, 21
   startDate: string; // YYYY-MM-DD
+  defaultPortions?: number;
   days: MealCycleDay[];
 }
 
 export interface MealCalendarOverride {
   date: string; // YYYY-MM-DD
   recipeIds: string[]; // Specific recipes for this single date
+  portions?: number;
   note?: string;
   isOneTimeChange: boolean;
 }

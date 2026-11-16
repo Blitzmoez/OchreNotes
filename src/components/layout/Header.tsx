@@ -1,45 +1,38 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   BookOpen, 
+  CheckSquare,
+  Network,
   Share2, 
   Printer, 
   Server, 
   Sun, 
   Moon, 
-  Wifi, 
-  WifiOff, 
   Settings, 
-  UserCheck,
   ChevronDown,
   ChevronRight,
-  Check,
   Download,
   LogOut,
-  Sparkles,
   Utensils,
   BarChart3,
-  HardDrive,
-  Info,
-  Clock,
   Layers,
   X,
-  Folder,
-  BookMarked
+  BookMarked,
+  Calendar as CalendarIcon,
+  Repeat,
+  ShoppingCart,
+  Sparkles,
+  LayoutDashboard
 } from 'lucide-react';
-import { User, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId } from '../../types';
+import { User, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId, CookbookTab } from '../../types';
 import { useTranslation } from '../../services/i18n.tsx';
 
 interface HeaderProps {
   currentUser: User | null;
-  activeNoteTitle: string;
-  isSharedNote?: boolean;
-  sharedFrom?: string;
+  activeView: PaneType;
+  onChangeView: (view: PaneType) => void;
   isDarkMode: boolean;
   onToggleDarkMode: () => void;
-  isOnline: boolean;
-  pendingSyncCount: number;
-  lastSaved?: number;
-  documentStats?: { lines: number; words: number; chars: number };
   onOpenShareModal: () => void;
   onPrintA4: () => void;
   onOpenSystemLogs: () => void;
@@ -48,26 +41,22 @@ interface HeaderProps {
   onLogout?: () => void;
   canInstallPwa?: boolean;
   onInstallPwa?: () => void;
-  appTitle?: string;
-  onToggleVaultMobile?: () => void;
   activeSuiteModule: SuiteModuleId;
   onSelectSuiteModule: (mod: SuiteModuleId) => void;
   enabledModules: EnabledModules;
   profileSettings: SuiteProfileSettings;
   onSwitchProfile: (id: NoteProfileId) => void;
+  activeCookbookTab?: CookbookTab;
+  onChangeCookbookTab?: (tab: CookbookTab) => void;
+  enableCookbookShoppingList?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   currentUser,
-  activeNoteTitle,
-  isSharedNote,
-  sharedFrom,
+  activeView,
+  onChangeView,
   isDarkMode,
   onToggleDarkMode,
-  isOnline,
-  pendingSyncCount,
-  lastSaved,
-  documentStats = { lines: 0, words: 0, chars: 0 },
   onOpenShareModal,
   onPrintA4,
   onOpenSystemLogs,
@@ -76,16 +65,18 @@ export const Header: React.FC<HeaderProps> = ({
   onLogout,
   canInstallPwa,
   onInstallPwa,
-  appTitle = 'Ochre Suite',
-  onToggleVaultMobile,
   activeSuiteModule,
   onSelectSuiteModule,
   enabledModules,
   profileSettings,
   onSwitchProfile,
+  activeCookbookTab = 'calendar',
+  onChangeCookbookTab,
+  enableCookbookShoppingList = true,
 }) => {
   const activeProfile = profileSettings[profileSettings.activeProfileId] || profileSettings.profile1;
   const activeColors = {
+    dashboard: profileSettings.profile1.colors.dashboard || '#A67C21',
     notes: activeProfile.colors.notes,
     wiki: profileSettings.profile1.colors.wiki,
     recipes: profileSettings.profile1.colors.recipes,
@@ -97,12 +88,9 @@ export const Header: React.FC<HeaderProps> = ({
   const [isSuiteMenuOpen, setIsSuiteMenuOpen] = useState(false);
   // User & actions menu dropdown
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
-  // Wifi / Sync info popover
-  const [isSyncInfoOpen, setIsSyncInfoOpen] = useState(false);
 
   const suiteMenuRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
-  const syncInfoRef = useRef<HTMLDivElement>(null);
 
   // Close menus on outside click
   useEffect(() => {
@@ -113,22 +101,10 @@ export const Header: React.FC<HeaderProps> = ({
       if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
         setIsUserMenuOpen(false);
       }
-      if (syncInfoRef.current && !syncInfoRef.current.contains(e.target as Node)) {
-        setIsSyncInfoOpen(false);
-      }
     };
     document.addEventListener('mousedown', handleOutsideClick);
     return () => document.removeEventListener('mousedown', handleOutsideClick);
   }, []);
-
-  const formatLastSavedTime = () => {
-    if (!lastSaved) return 'Noch nicht gespeichert';
-    const diffSec = Math.floor((Date.now() - lastSaved) / 1000);
-    if (diffSec < 5) return 'gerade eben';
-    if (diffSec < 60) return `vor ${diffSec} Sekunden`;
-    const diffMin = Math.floor(diffSec / 60);
-    return `vor ${diffMin} Minute${diffMin > 1 ? 'n' : ''}`;
-  };
 
   return (
     <header className="h-14 border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA] dark:bg-[#18191B] px-3 md:px-4 flex items-center justify-between gap-2 md:gap-3 select-none shrink-0 relative z-[90]">
@@ -155,6 +131,14 @@ export const Header: React.FC<HeaderProps> = ({
             aria-label="Modulauswahl"
           >
             {/* Active Module Icon Badge */}
+            {activeSuiteModule === 'dashboard' && (
+              <div
+                style={{ backgroundColor: activeColors.dashboard }}
+                className="w-6.5 h-6.5 rounded-lg text-white flex items-center justify-center shadow-xs shrink-0"
+              >
+                <LayoutDashboard className="w-3.5 h-3.5" />
+              </div>
+            )}
             {activeSuiteModule === 'notes' && (
               <div
                 style={{ backgroundColor: activeColors.notes }}
@@ -200,7 +184,9 @@ export const Header: React.FC<HeaderProps> = ({
             {/* Active Module Name */}
             <div className="flex items-center gap-1 min-w-0">
               <span className="font-bold text-xs md:text-sm tracking-tight text-neutral-900 dark:text-neutral-100 whitespace-nowrap">
-                {activeSuiteModule === 'notes'
+                {activeSuiteModule === 'dashboard'
+                  ? 'Dashboard'
+                  : activeSuiteModule === 'notes'
                   ? 'Notes'
                   : activeSuiteModule === 'wiki'
                   ? 'Wiki'
@@ -246,6 +232,49 @@ export const Header: React.FC<HeaderProps> = ({
 
               {/* Module Items with rounded box cards for switching */}
               <div className="space-y-2">
+                {/* Module 0: Dashboard (Overview across all modules) */}
+                {enabledModules.dashboard ? (
+                  <div
+                    onClick={() => {
+                      onSelectSuiteModule('dashboard');
+                      setIsSuiteMenuOpen(false);
+                    }}
+                    style={
+                      activeSuiteModule === 'dashboard'
+                        ? { borderColor: activeColors.dashboard, backgroundColor: `${activeColors.dashboard}14` }
+                        : undefined
+                    }
+                    className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
+                      activeSuiteModule === 'dashboard'
+                        ? 'border-2'
+                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div
+                        style={{ backgroundColor: activeColors.dashboard }}
+                        className="w-8 h-8 rounded-xl text-white flex items-center justify-center shadow-xs"
+                      >
+                        <LayoutDashboard className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="font-bold text-neutral-900 dark:text-neutral-100 block">Dashboard</span>
+                        <span className="text-[11px] text-neutral-500">Alle Module, Aufgaben &amp; Forecast</span>
+                      </div>
+                    </div>
+                    {activeSuiteModule === 'dashboard' ? (
+                      <span
+                        style={{ backgroundColor: activeColors.dashboard }}
+                        className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
+                      >
+                        Aktiv
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-neutral-400">Öffnen →</span>
+                    )}
+                  </div>
+                ) : null}
+
                 {/* Module 1: Notes (Always available) */}
                 <div 
                   onClick={() => {
@@ -436,148 +465,133 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </div>
 
-        {/* Compact Top Bar Profile Slider: ONLY in Notes module, compact dots-only on mobile (< md) */}
-        {activeSuiteModule === 'notes' && profileSettings.enableSecondProfile && (
-          <div
-            role="group"
-            aria-label="Profil-Umschalter"
-            className="flex items-center gap-0.5 p-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] shrink-0"
-            title="Schnell zwischen Profil 1 und Profil 2 wechseln"
-          >
-            {(['profile1', 'profile2'] as NoteProfileId[]).map((pid) => {
-              const prof = profileSettings[pid];
-              const isSelected = profileSettings.activeProfileId === pid;
-              const pColor = prof.colors.notes;
-              return (
-                <button
-                  key={pid}
-                  type="button"
-                  onClick={() => onSwitchProfile(pid)}
-                  style={isSelected ? { backgroundColor: pColor } : undefined}
-                  aria-label={`Profil: ${prof.name}`}
-                  title={prof.name}
-                  className={`flex items-center justify-center md:gap-1.5 w-7 h-7 md:w-auto md:h-auto md:px-2.5 md:py-1 rounded-full text-[11px] font-semibold transition-all cursor-pointer active:scale-95 shrink-0 ${
-                    isSelected
-                      ? 'text-white shadow-xs'
-                      : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
-                  }`}
-                >
-                  <span
-                    className="w-2.5 h-2.5 md:w-1.5 md:h-1.5 rounded-full shrink-0"
-                    style={{ backgroundColor: isSelected ? '#FFFFFF' : pColor }}
-                  />
-                  <span className="hidden md:inline truncate max-w-[90px]">{prof.name}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
       </div>
 
-      {/* Zone 2: Wifi/Cloud Status Badge & Unified User Menu */}
-      <div className="flex items-center gap-2">
-        {/* Wifi / Sync / Document Stats Badge */}
-        <div className="relative" ref={syncInfoRef}>
+      {/* Desktop-Only Center Mode Switcher (Mobile/Tablet uses the bottom-right floating navigation button) */}
+      {activeSuiteModule === 'notes' && (
+        <div className="hidden lg:flex items-center gap-1 bg-[#F4F3EF] dark:bg-[#202225] p-1 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136]">
           <button
-            onClick={() => setIsSyncInfoOpen(!isSyncInfoOpen)}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
-              !isOnline
-                ? 'bg-red-50 dark:bg-red-950/30 border-red-200 text-red-600'
-                : pendingSyncCount > 0
-                ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-300 text-amber-700'
-                : 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800/40 text-emerald-700 dark:text-emerald-400'
+            type="button"
+            onClick={() => onChangeView('editor')}
+            style={activeView === 'editor' ? { color: activeColors.notes } : undefined}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeView === 'editor'
+                ? 'bg-white dark:bg-[#2B2D31] font-bold shadow-xs'
+                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
             }`}
-            title="WLAN-, Speicher- und Dokumentenstatistik anzeigen"
           >
-            {isOnline ? (
-              <Wifi className="w-3.5 h-3.5" />
-            ) : (
-              <WifiOff className="w-3.5 h-3.5" />
-            )}
-            <span className="hidden sm:inline">
-              {!isOnline
-                ? 'Offline'
-                : pendingSyncCount > 0
-                ? `${pendingSyncCount} ausstehend`
-                : 'Gespeichert'}
-            </span>
-            <Check className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+            <BookOpen className="w-4 h-4 shrink-0" />
+            <span>{t.notes}</span>
           </button>
 
-          {/* Sync & Stats Popover Card */}
-          {isSyncInfoOpen && (
-            <div className="absolute top-full right-0 mt-2 w-72 p-3 bg-white dark:bg-[#1E1F23] rounded-xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] z-[100] animate-in fade-in slide-in-from-top-1 duration-150 space-y-3">
-              <div className="flex items-center justify-between pb-2 border-b border-[#E5E3DC] dark:border-[#2F3136]">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-800 dark:text-neutral-200">
-                  <Info className="w-3.5 h-3.5 text-[#C87D20]" />
-                  <span>Speicher & Dokumentenstatus</span>
-                </div>
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 font-semibold">
-                  Aktiv
-                </span>
-              </div>
+          <button
+            type="button"
+            onClick={() => onChangeView('tasks')}
+            style={activeView === 'tasks' ? { color: activeColors.notes } : undefined}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeView === 'tasks'
+                ? 'bg-white dark:bg-[#2B2D31] font-bold shadow-xs'
+                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
+            }`}
+          >
+            <CheckSquare className="w-4 h-4 shrink-0" />
+            <span>{t.tasks}</span>
+          </button>
 
-              {/* Document Statistics */}
-              <div className="space-y-1.5 text-xs">
-                <span className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider block">
-                  Aktuelles Dokument
-                </span>
-                <div className="grid grid-cols-3 gap-2 text-center">
-                  <div className="p-2 rounded-lg bg-[#F4F3EF] dark:bg-[#2A2C31]">
-                    <span className="text-base font-bold text-neutral-900 dark:text-neutral-100 block">
-                      {documentStats.words}
-                    </span>
-                    <span className="text-[10px] text-neutral-500">Wörter</span>
-                  </div>
-                  <div className="p-2 rounded-lg bg-[#F4F3EF] dark:bg-[#2A2C31]">
-                    <span className="text-base font-bold text-neutral-900 dark:text-neutral-100 block">
-                      {documentStats.chars}
-                    </span>
-                    <span className="text-[10px] text-neutral-500">Zeichen</span>
-                  </div>
-                  <div className="p-2 rounded-lg bg-[#F4F3EF] dark:bg-[#2A2C31]">
-                    <span className="text-base font-bold text-neutral-900 dark:text-neutral-100 block">
-                      {documentStats.lines}
-                    </span>
-                    <span className="text-[10px] text-neutral-500">Zeilen</span>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between text-[11px] text-neutral-500 pt-1">
-                  <span className="flex items-center gap-1">
-                    <Clock className="w-3 h-3" />
-                    Geschätzte Lesezeit:
-                  </span>
-                  <span className="font-medium text-neutral-700 dark:text-neutral-300">
-                    ~{Math.max(1, Math.ceil(documentStats.words / 200))} min
-                  </span>
-                </div>
-              </div>
-
-              {/* Storage & Cloud Sync Status */}
-              <div className="space-y-1.5 text-xs pt-2 border-t border-[#E5E3DC] dark:border-[#2F3136]">
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-neutral-500">Zuletzt gespeichert:</span>
-                  <span className="font-medium text-neutral-800 dark:text-neutral-200">
-                    {formatLastSavedTime()}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-neutral-500">Synchronisation:</span>
-                  <span className="font-medium text-emerald-600 dark:text-emerald-400">
-                    {pendingSyncCount === 0 ? 'Alles synchron' : `${pendingSyncCount} in Warteschlange`}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-neutral-500">Docker Volume:</span>
-                  <span className="font-mono text-[10px] text-neutral-600 dark:text-neutral-400">/vault</span>
-                </div>
-              </div>
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={() => onChangeView('graph')}
+            style={activeView === 'graph' ? { color: activeColors.notes } : undefined}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeView === 'graph'
+                ? 'bg-white dark:bg-[#2B2D31] font-bold shadow-xs'
+                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
+            }`}
+          >
+            <Network className="w-4 h-4 shrink-0" />
+            <span>{t.graph}</span>
+          </button>
         </div>
+      )}
 
-        {/* Unified Profile & Actions Dropdown Menu */}
+      {activeSuiteModule === 'recipes' && onChangeCookbookTab && (
+        <div className="hidden lg:flex items-center gap-1 bg-[#F4F3EF] dark:bg-[#202225] p-1 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136]">
+          <button
+            type="button"
+            onClick={() => onChangeCookbookTab('calendar')}
+            style={activeCookbookTab === 'calendar' ? { color: activeColors.recipes } : undefined}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeCookbookTab === 'calendar'
+                ? 'bg-white dark:bg-[#2B2D31] font-bold shadow-xs'
+                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
+            }`}
+          >
+            <CalendarIcon className="w-4 h-4 shrink-0" />
+            <span>Essenskalender</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onChangeCookbookTab('cycle')}
+            style={activeCookbookTab === 'cycle' ? { color: activeColors.recipes } : undefined}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeCookbookTab === 'cycle'
+                ? 'bg-white dark:bg-[#2B2D31] font-bold shadow-xs'
+                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
+            }`}
+          >
+            <Repeat className="w-4 h-4 shrink-0" />
+            <span>Zyklus</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onChangeCookbookTab('recipes')}
+            style={activeCookbookTab === 'recipes' ? { color: activeColors.recipes } : undefined}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+              activeCookbookTab === 'recipes'
+                ? 'bg-white dark:bg-[#2B2D31] font-bold shadow-xs'
+                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
+            }`}
+          >
+            <BookOpen className="w-4 h-4 shrink-0" />
+            <span>Katalog</span>
+          </button>
+
+          {enableCookbookShoppingList && (
+            <button
+              type="button"
+              onClick={() => onChangeCookbookTab('shopping')}
+              style={activeCookbookTab === 'shopping' ? { color: activeColors.recipes } : undefined}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeCookbookTab === 'shopping'
+                  ? 'bg-white dark:bg-[#2B2D31] font-bold shadow-xs'
+                  : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
+              }`}
+            >
+              <ShoppingCart className="w-4 h-4 shrink-0" />
+              <span>Einkaufsliste</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => onChangeCookbookTab('presentation')}
+            style={activeCookbookTab === 'presentation' ? { color: activeColors.recipes } : undefined}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+              activeCookbookTab === 'presentation'
+                ? 'bg-white dark:bg-[#2B2D31] font-bold shadow-xs'
+                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
+            }`}
+          >
+            <Sparkles className="w-4 h-4 shrink-0" />
+            <span>Wochenshow</span>
+          </button>
+        </div>
+      )}
+
+      {/* Zone 2: Unified Profile & Actions Menu */}
+      <div className="flex items-center gap-2">
         <div className="relative" ref={userMenuRef}>
           {isUserMenuOpen && (
             <div 
@@ -603,15 +617,57 @@ export const Header: React.FC<HeaderProps> = ({
                 {currentUser?.displayName?.[0] || 'U'}
               </div>
             )}
-            <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 hidden md:inline max-w-[80px] truncate">
+            <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 hidden md:inline max-w-[90px] truncate">
               {currentUser?.displayName || 'Profil'}
             </span>
             <ChevronDown className={`w-3.5 h-3.5 text-neutral-400 transition-transform ${isUserMenuOpen ? 'rotate-180' : ''}`} />
           </button>
 
-          {/* Unified Dropdown Content: Every action in its own button card outline */}
+          {/* Unified Dropdown Content */}
           {isUserMenuOpen && (
-            <div className="absolute top-full right-0 mt-2 w-72 p-2.5 bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] z-[100] animate-in fade-in slide-in-from-top-1 duration-150 space-y-2">
+            <div className="absolute top-full right-0 mt-2 w-72 max-w-[calc(100vw-24px)] p-2.5 bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] z-[100] animate-in fade-in slide-in-from-top-1 duration-150 space-y-2">
+              {/* PLATZ 1 (Top Position): Profile 1 / Profile 2 Switch when enabled in Notes */}
+              {activeSuiteModule === 'notes' && profileSettings.enableSecondProfile && (
+                <div className="p-2 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] space-y-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 px-1 block">
+                    Notiz-Profil wechseln
+                  </span>
+                  <div
+                    role="group"
+                    aria-label="Profil-Umschalter"
+                    className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-white dark:bg-[#1A1B1E] border border-[#E5E3DC] dark:border-[#2F3136]"
+                  >
+                    {(['profile1', 'profile2'] as NoteProfileId[]).map((pid) => {
+                      const prof = profileSettings[pid];
+                      const isSelected = profileSettings.activeProfileId === pid;
+                      const pColor = prof.colors.notes;
+                      return (
+                        <button
+                          key={pid}
+                          type="button"
+                          onClick={() => {
+                            onSwitchProfile(pid);
+                            setIsUserMenuOpen(false);
+                          }}
+                          style={isSelected ? { backgroundColor: pColor } : undefined}
+                          className={`flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer active:scale-95 truncate ${
+                            isSelected
+                              ? 'text-white shadow-xs'
+                              : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
+                          }`}
+                        >
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ backgroundColor: isSelected ? '#FFFFFF' : pColor }}
+                          />
+                          <span className="truncate">{prof.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* User Header Box */}
               <div className="p-3 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-neutral-50 dark:bg-neutral-800/50 flex items-center justify-between">
                 <div>
@@ -635,7 +691,7 @@ export const Header: React.FC<HeaderProps> = ({
 
               {/* Action Items: Context-aware per active Suite Module */}
               <div className="space-y-1.5">
-                {activeSuiteModule !== 'finance' && (
+                {activeSuiteModule !== 'finance' && activeSuiteModule !== 'dashboard' && (
                   <>
                     <button
                       onClick={() => {

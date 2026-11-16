@@ -5,7 +5,7 @@
     "category": "Mittagessen",
     "prepTimeMinutes": 25,
     "portions": 3,
-    "description": "Aromatisches Curry mit Kokosmilch, frischem Spinat und Limette. Perfekt für Meal-Prep.",
+    "description": "# Cremiges Kichererbsen-Curry mit Kokos\n\n# Cremiges Kichererbsen-Curry mit Kokos\n\n# Cremiges Kichererbsen-Curry mit Kokos\n\nAromatisches Curry mit Kokosmilch, frischem Spinat und Limette. Perfekt für Meal-Prep.",
     "instructions": [
       "Zwiebeln, Knoblauch und Ingwer fein würfeln und in Kokosöl anbraten.",
       "Currypulver, Kreuzkümmel und Kurkuma kurz mitrösten.",
@@ -14,22 +14,22 @@
     ],
     "ingredients": [
       {
-        "id": "i1",
+        "id": "ing_r_1_0",
         "name": "Kichererbsen (Dose)",
         "amount": "1 Dose (400g)"
       },
       {
-        "id": "i2",
+        "id": "ing_r_1_1",
         "name": "Kokosmilch",
         "amount": "250ml"
       },
       {
-        "id": "i3",
+        "id": "ing_r_1_2",
         "name": "Babyspinat",
         "amount": "150g"
       },
       {
-        "id": "i4",
+        "id": "ing_r_1_3",
         "name": "Basmatireis",
         "amount": "200g"
       }
@@ -38,7 +38,9 @@
       "vegetarisch",
       "schnell",
       "meal-prep"
-    ]
+    ],
+    "mediaDir": "Cremiges_Kichererbsen-Curry_mit_Kokos_r_1",
+    "images": []
   },
   {
     "id": "r_2",
@@ -46,7 +48,7 @@
     "category": "Abendessen",
     "prepTimeMinutes": 30,
     "portions": 2,
-    "description": "Buntes Blechgemüse mit Rosmarin, Olivenöl und goldbraun gebackenem Feta.",
+    "description": "# Mediterrane Ofengemüse-Bowl mit Feta\n\n# Mediterrane Ofengemüse-Bowl mit Feta\n\n# Mediterrane Ofengemüse-Bowl mit Feta\n\nBuntes Blechgemüse mit Rosmarin, Olivenöl und goldbraun gebackenem Feta.",
     "instructions": [
       "Backofen auf 200°C Ober-/Unterhitze vorheizen.",
       "Zucchini, Paprika und rote Zwiebeln in mundgerechte Stücke schneiden.",
@@ -55,22 +57,22 @@
     ],
     "ingredients": [
       {
-        "id": "i5",
+        "id": "ing_r_2_0",
         "name": "Feta",
         "amount": "200g"
       },
       {
-        "id": "i6",
+        "id": "ing_r_2_1",
         "name": "Zucchini",
         "amount": "1 Stück"
       },
       {
-        "id": "i7",
+        "id": "ing_r_2_2",
         "name": "Paprika (rot & gelb)",
         "amount": "2 Stück"
       },
       {
-        "id": "i8",
+        "id": "ing_r_2_3",
         "name": "Olivenöl extra vergine",
         "amount": "3 EL"
       }
@@ -79,7 +81,9 @@
       "mediterran",
       "low-carb",
       "ofen"
-    ]
+    ],
+    "mediaDir": "Mediterrane_Ofengemuese-Bowl_mit_Feta_r_2",
+    "images": []
   },
   {
     "id": "r_3",
@@ -87,7 +91,7 @@
     "category": "Frühstück",
     "prepTimeMinutes": 5,
     "portions": 1,
-    "description": "Energiespendendes Frühstück, am Vorabend zusammengerührt.",
+    "description": "# Overnight Oats mit Beeren & Chiasamen\n\n# Overnight Oats mit Beeren & Chiasamen\n\n# Overnight Oats mit Beeren & Chiasamen\n\nEnergiespendendes Frühstück, am Vorabend zusammengerührt.",
     "instructions": [
       "Haferflocken, Chiasamen und Mandelmilch in einem Glas verrühren.",
       "Mit einer Prise Zimt und Ahornsirup verfeinern.",
@@ -96,22 +100,22 @@
     ],
     "ingredients": [
       {
-        "id": "i9",
+        "id": "ing_r_3_0",
         "name": "Zarte Haferflocken",
         "amount": "60g"
       },
       {
-        "id": "i10",
+        "id": "ing_r_3_1",
         "name": "Mandelmilch",
         "amount": "140ml"
       },
       {
-        "id": "i11",
+        "id": "ing_r_3_2",
         "name": "Chiasamen",
         "amount": "1 EL"
       },
       {
-        "id": "i12",
+        "id": "ing_r_3_3",
         "name": "Waldbeeren",
         "amount": "50g"
       }
@@ -120,7 +124,9 @@
       "frühstück",
       "protein",
       "vegan"
-    ]
+    ],
+    "mediaDir": "Overnight_Oats_mit_Beeren_&_Chiasamen_r_3",
+    "images": []
   },
   {
     "id": "r_4",
@@ -128,7 +134,7 @@
     "category": "Schnelle Küche",
     "prepTimeMinutes": 20,
     "portions": 2,
-    "description": "Klassische italienische Pasta mit sonnengereiften Tomaten und frischem Parmesan.",
+    "description": "# Pasta mit Tomaten-Basilikum-Sugo\n\n# Pasta mit Tomaten-Basilikum-Sugo\n\n# Pasta mit Tomaten-Basilikum-Sugo\n\nKlassische italienische Pasta mit sonnengereiften Tomaten und frischem Parmesan.",
     "instructions": [
       "Nudeln in reichlich Salzwasser al dente kochen.",
       "Knoblauch in Olivenöl sanft anbraten, gehackte Tomaten hinzugeben.",
@@ -137,22 +143,22 @@
     ],
     "ingredients": [
       {
-        "id": "i13",
+        "id": "ing_r_4_0",
         "name": "Spaghetti oder Penne",
         "amount": "250g"
       },
       {
-        "id": "i14",
+        "id": "ing_r_4_1",
         "name": "San Marzano Tomaten",
         "amount": "1 Dose"
       },
       {
-        "id": "i15",
+        "id": "ing_r_4_2",
         "name": "Frischer Basilikum",
         "amount": "1 Bund"
       },
       {
-        "id": "i16",
+        "id": "ing_r_4_3",
         "name": "Parmigiano Reggiano",
         "amount": "40g"
       }
@@ -161,6 +167,8 @@
       "italienisch",
       "klassiker",
       "schnell"
-    ]
+    ],
+    "mediaDir": "Pasta_mit_Tomaten-Basilikum-Sugo_r_4",
+    "images": []
   }
 ]

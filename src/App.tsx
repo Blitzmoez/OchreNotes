@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { User, NoteMetadata, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId, WikiArticle, Recipe } from './types';
+import { User, NoteMetadata, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId, WikiArticle, Recipe, CookbookTab, DashboardSettings } from './types';
 import { api } from './services/api';
-import { DEFAULT_ENABLED_MODULES, DEFAULT_PROFILE_SETTINGS } from './services/profileDefaults';
+import { DEFAULT_ENABLED_MODULES, DEFAULT_PROFILE_SETTINGS, DEFAULT_DASHBOARD_SETTINGS, MAX_DASHBOARD_WIDGETS, DASHBOARD_WIDGET_CATALOG } from './services/profileDefaults';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { Workspace } from './components/workspace/Workspace';
+import { DashboardView } from './components/dashboard/DashboardView';
 import { WikiView } from './components/wiki/WikiView';
 import { CookbookView, CookbookSnapshot } from './components/recipes/CookbookView';
 import { FinanceView } from './components/finance/FinanceView';
@@ -12,7 +13,7 @@ import { ShareModal } from './components/modals/ShareModal';
 import { SystemLogsModal } from './components/modals/SystemLogsModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { LoginScreen } from './components/auth/LoginScreen';
-import { BookOpen, CheckSquare, Network, ChevronRight, ChevronLeft, X, Inbox } from 'lucide-react';
+import { BookOpen, CheckSquare, Network, ChevronRight, ChevronLeft, X, Inbox, Plus, Folder, FolderPlus, FilePlus, Layers } from 'lucide-react';
 import { printNoteA4, printWikiArticleA4, printMealPlanA4 } from './services/printService';
 import { checkAndNotifyDueTasks } from './services/notificationService';
 
@@ -40,13 +41,26 @@ const mergeProfileSettings = (raw?: Partial<SuiteProfileSettings> | null): Suite
   };
 };
 
+const mergeDashboardSettings = (raw?: Partial<DashboardSettings> | null): DashboardSettings => {
+  if (!raw) return DEFAULT_DASHBOARD_SETTINGS;
+  const maxWidgets =
+    typeof raw.maxWidgets === 'number' && !Number.isNaN(raw.maxWidgets)
+      ? Math.max(2, Math.min(8, Math.round(raw.maxWidgets)))
+      : MAX_DASHBOARD_WIDGETS;
+  const validIds = new Set(DASHBOARD_WIDGET_CATALOG.map((w) => w.id));
+  const selectedWidgets = Array.isArray(raw.selectedWidgets)
+    ? raw.selectedWidgets.filter((id) => validIds.has(id)).slice(0, maxWidgets)
+    : DEFAULT_DASHBOARD_SETTINGS.selectedWidgets.slice(0, maxWidgets);
+  return { maxWidgets, selectedWidgets };
+};
+
 export default function App() {
   // Theme State
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     return localStorage.getItem('ochrenotes_theme') === 'dark';
   });
 
-  // Ochre Suite Active Module: 'notes' | 'wiki' | 'recipes' | 'finance'
+  // Ochre Suite Active Module: 'dashboard' | 'notes' | 'wiki' | 'recipes' | 'finance'
   const [activeSuiteModule, setActiveSuiteModule] = useState<SuiteModuleId>('notes');
 
   // Enabled Suite Modules State (persisted per device & server)
@@ -69,6 +83,21 @@ export default function App() {
     }
   });
 
+  // Dashboard Widget Configuration & Cookbook Shopping List Toggle
+  const [dashboardSettings, setDashboardSettings] = useState<DashboardSettings>(() => {
+    try {
+      const saved = localStorage.getItem('ochre_dashboard_settings');
+      return saved ? mergeDashboardSettings(JSON.parse(saved)) : DEFAULT_DASHBOARD_SETTINGS;
+    } catch {
+      return DEFAULT_DASHBOARD_SETTINGS;
+    }
+  });
+  const [enableCookbookShoppingList, setEnableCookbookShoppingList] = useState<boolean>(true);
+  const [settingsModalTarget, setSettingsModalTarget] = useState<{
+    tab?: 'general' | 'modules' | 'moduleSettings' | 'users' | 'backup';
+    module?: SuiteModuleId;
+  }>({});
+
   // User State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [allUsers, setAllUsers] = useState<User[]>([]);
@@ -88,12 +117,23 @@ export default function App() {
 
   // Workspace View Mode: 'editor' (Notizen) | 'tasks' (Aufgaben) | 'graph' (Graph)
   const [viewMode, setViewMode] = useState<PaneType>('editor');
+  const [cookbookTab, setCookbookTab] = useState<CookbookTab>('calendar');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   // App Title / Branding
   const [appTitle, setAppTitle] = useState<string>('Ochre Suite');
-  // Mobile Floating Ellipse Navigation State
+  // Mobile Floating Ellipse Navigation, Neu Slide-Out & Note Name Popup State
   const [isMobileNavExpanded, setIsMobileNavExpanded] = useState(false);
+  const [isNewNoteSlideOutOpen, setIsNewNoteSlideOutOpen] = useState(false);
+  const [slideOutFolder, setSlideOutFolder] = useState<string>('/');
+  const [slideOutNewFolderName, setSlideOutNewFolderName] = useState<string>('');
+  const [isSlideOutCreatingFolder, setIsSlideOutCreatingFolder] = useState(false);
+  const [openLiteVaultSignal, setOpenLiteVaultSignal] = useState<number>(0);
+  const [newNoteModal, setNewNoteModal] = useState<{ isOpen: boolean; folder: string; name: string }>({
+    isOpen: false,
+    folder: '/',
+    name: '',
+  });
 
   // Modals & Active Module Snapshots (Wiki, Cookbook)
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
@@ -111,9 +151,10 @@ export default function App() {
   // PWA Install Prompt State
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<any>(null);
 
-  // Mobile swipe gestures state
+  // Mobile swipe gestures state + live ref for fluid typing without parent keystroke lag
   const touchStartXRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
+  const activeNoteContentRef = useRef<string>('');
   const saveTimeoutRef = useRef<number | null>(null);
   const pendingSaveRef = useRef<{
     username: string;
@@ -132,6 +173,7 @@ export default function App() {
     const pending = pendingSaveRef.current;
     if (!pending) return;
     pendingSaveRef.current = null;
+    setActiveNoteContent(pending.content);
     api
       .saveNote(
         pending.username,
@@ -265,16 +307,27 @@ export default function App() {
     localStorage.setItem('ochre_profile_settings', JSON.stringify(next));
     if (currentUser) {
       localStorage.setItem(`ochre_profile_settings_${currentUser.username}`, JSON.stringify(next));
-      api.saveProfileSettings(currentUser.username, next, enabledModules).catch(console.error);
+      api.saveProfileSettings(currentUser.username, next, enabledModules, dashboardSettings).catch(console.error);
+    }
+  };
+
+  const handleUpdateDashboardSettings = (next: DashboardSettings) => {
+    const normalized = mergeDashboardSettings(next);
+    setDashboardSettings(normalized);
+    localStorage.setItem('ochre_dashboard_settings', JSON.stringify(normalized));
+    if (currentUser) {
+      api.saveProfileSettings(currentUser.username, profileSettings, enabledModules, normalized).catch(console.error);
     }
   };
 
   const handleSwitchProfile = (pid: NoteProfileId) => {
     if (pid === activeProfileId) return;
+    flushPendingSave();
     const next: SuiteProfileSettings = { ...profileSettings, activeProfileId: pid };
     handleUpdateProfileSettings(next);
     setActiveNotePath(null);
     setActiveNoteTitle(next[pid].name);
+    activeNoteContentRef.current = '';
     setActiveNoteContent('');
     setActiveIsShared(false);
     setActiveSharedFrom(undefined);
@@ -287,7 +340,7 @@ export default function App() {
       const next = { ...prev, [moduleId]: !prev[moduleId] };
       localStorage.setItem('ochre_enabled_modules', JSON.stringify(next));
       if (currentUser) {
-        api.saveProfileSettings(currentUser.username, profileSettings, next).catch(console.error);
+        api.saveProfileSettings(currentUser.username, profileSettings, next, dashboardSettings).catch(console.error);
       }
       if (activeSuiteModule === moduleId && !next[moduleId]) {
         setActiveSuiteModule('notes');
@@ -296,7 +349,7 @@ export default function App() {
     });
   };
 
-  // Load saved profile settings whenever currentUser changes
+  // Load saved profile settings & cookbook feature flags whenever currentUser changes
   useEffect(() => {
     if (!currentUser) return;
     let cancelled = false;
@@ -312,7 +365,19 @@ export default function App() {
         setEnabledModules(mergedMods);
         localStorage.setItem('ochre_enabled_modules', JSON.stringify(mergedMods));
       }
+      if (data?.dashboardSettings) {
+        const mergedDash = mergeDashboardSettings(data.dashboardSettings);
+        setDashboardSettings(mergedDash);
+        localStorage.setItem('ochre_dashboard_settings', JSON.stringify(mergedDash));
+      }
     }).catch((err) => console.error('Failed to load profile settings', err));
+
+    api.fetchCookbook(currentUser.username).then((cb) => {
+      if (cancelled) return;
+      const enabled = cb?.settings?.enableShoppingList !== false;
+      setEnableCookbookShoppingList(enabled);
+    }).catch(() => {});
+
     return () => {
       cancelled = true;
     };
@@ -377,6 +442,7 @@ export default function App() {
       const data = await api.readNote(currentUser.username, notePath, isShared, sharedFrom, activeProfileId);
       setActiveNotePath(data.path);
       setActiveNoteTitle(data.title);
+      activeNoteContentRef.current = data.content;
       setActiveNoteContent(data.content);
       setActiveIsShared(isShared);
       setActiveSharedFrom(sharedFrom || data.sharedFromUser);
@@ -411,46 +477,65 @@ export default function App() {
     setViewMode('editor');
   };
 
-  // Content change auto-save handler (debounced network write for 120fps typing)
-  const handleContentChange = (newContent: string) => {
-    setActiveNoteContent(newContent);
-    if (!currentUser || !activeNotePath || activePermission === 'read') return;
+  // Content change auto-save handler: updates ref synchronously (0 parent re-renders on keystroke) and syncs state + network on 320ms debounce
+  const handleContentChange = useCallback(
+    (newContent: string) => {
+      activeNoteContentRef.current = newContent;
+      if (!currentUser || !activeNotePath || activePermission === 'read') return;
 
-    pendingSaveRef.current = {
-      username: currentUser.username,
-      path: activeNotePath,
-      content: newContent,
-      isShared: activeIsShared,
-      sharedFrom: activeSharedFrom,
-      profile: activeProfileId,
-    };
+      pendingSaveRef.current = {
+        username: currentUser.username,
+        path: activeNotePath,
+        content: newContent,
+        isShared: activeIsShared,
+        sharedFrom: activeSharedFrom,
+        profile: activeProfileId,
+      };
 
-    if (saveTimeoutRef.current !== null) {
-      window.clearTimeout(saveTimeoutRef.current);
-    }
-    saveTimeoutRef.current = window.setTimeout(() => {
-      flushPendingSave();
-    }, 420);
+      if (saveTimeoutRef.current !== null) {
+        window.clearTimeout(saveTimeoutRef.current);
+      }
+      saveTimeoutRef.current = window.setTimeout(() => {
+        flushPendingSave();
+      }, 320);
+    },
+    [currentUser, activeNotePath, activePermission, activeIsShared, activeSharedFrom, activeProfileId, flushPendingSave]
+  );
+
+  // Open Note Name Popup before creating a new note (across all screen sizes)
+  const openNewNoteDialog = (folder?: string) => {
+    setIsNewNoteSlideOutOpen(false);
+    setIsMobileNavExpanded(false);
+    setIsMobileSidebarOpen(false);
+    setNewNoteModal({
+      isOpen: true,
+      folder: folder && folder.trim() ? folder.trim().replace(/^\/+|\/+$/g, '') : '/',
+      name: '',
+    });
   };
 
-  // Create new note
-  const handleCreateNote = async (folder?: string) => {
+  const confirmCreateNamedNote = async () => {
     if (!currentUser) return;
-    const title = 'Neue Notiz';
-    let path = folder ? `${folder}/${title}.md` : `${title}.md`;
-    let counter = 1;
-    while (notes.some((n) => n.path === path)) {
-      path = folder ? `${folder}/${title} ${counter}.md` : `${title} ${counter}.md`;
+    const rawName = newNoteModal.name.trim().replace(/\.md$/i, '');
+    const safeTitle = (rawName || 'Neue Notiz').replace(/[\\/:*?"<>|]/g, '-').trim() || 'Neue Notiz';
+    const targetFolder = newNoteModal.folder === '/' ? '' : newNoteModal.folder.replace(/^\/+|\/+$/g, '');
+
+    let path = targetFolder ? `${targetFolder}/${safeTitle}.md` : `${safeTitle}.md`;
+    let counter = 2;
+    while (notes.some((n) => n.path.toLowerCase() === path.toLowerCase())) {
+      path = targetFolder ? `${targetFolder}/${safeTitle} (${counter}).md` : `${safeTitle} (${counter}).md`;
       counter++;
     }
 
-    const defaultContent = `# ${title} ${counter > 1 ? counter : ''}\n\nSchreibe hier...`;
+    const finalTitle = counter > 2 ? `${safeTitle} (${counter - 1})` : safeTitle;
+    const defaultContent = `# ${finalTitle}\n\n`;
+    setNewNoteModal({ isOpen: false, folder: '/', name: '' });
     await api.createNote(currentUser.username, path, defaultContent, activeProfileId);
     await loadVaultData();
     await openNote(path);
   };
 
-  // Create unsorted quick note directly into Vault Root Inbox
+  // Create unsorted quick note directly into Vault Root Inbox (Quick Write)
   const handleCreateQuickNote = async () => {
     if (!currentUser) return;
     const now = new Date();
@@ -469,6 +554,7 @@ export default function App() {
     await loadVaultData();
     await openNote(path);
     setIsMobileNavExpanded(false);
+    setIsNewNoteSlideOutOpen(false);
   };
 
   // Create folder in vault
@@ -540,6 +626,7 @@ export default function App() {
       } else {
         setActiveNotePath(null);
         setActiveNoteTitle('');
+        activeNoteContentRef.current = '';
         setActiveNoteContent('');
       }
     }
@@ -562,6 +649,7 @@ export default function App() {
 
   // Switch User
   const handleSelectUser = (user: User) => {
+    flushPendingSave();
     setCurrentUser(user);
     localStorage.setItem('ochrenotes_current_user', user.username);
     setIsLoginModalOpen(false);
@@ -570,6 +658,7 @@ export default function App() {
 
   // A4 Print Handler (Module-aware: Notes, Wiki Article, Cookbook Weekly Plan)
   const handlePrintA4 = () => {
+    flushPendingSave();
     if (activeSuiteModule === 'wiki') {
       if (activeWikiArticle) {
         printWikiArticleA4(activeWikiArticle, profileSettings.profile1.colors.wiki);
@@ -592,14 +681,15 @@ export default function App() {
     if (activeSuiteModule === 'finance') {
       return;
     }
-    printNoteA4(activeNoteTitle, activeNoteContent, activeProfile.colors.notes);
+    printNoteA4(activeNoteTitle, activeNoteContentRef.current || activeNoteContent, activeProfile.colors.notes);
   };
 
-  // Document statistics computation
+  // Document statistics computation (kept updated cleanly for Diagnostics modal)
   const documentStats = useMemo(() => {
-    const lines = activeNoteContent.split('\n');
-    const words = activeNoteContent.trim() ? activeNoteContent.trim().split(/\s+/).length : 0;
-    const chars = activeNoteContent.length;
+    const text = activeNoteContent;
+    const lines = text.split('\n');
+    const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+    const chars = text.length;
     return { lines: lines.length, words, chars };
   }, [activeNoteContent]);
 
@@ -657,19 +747,15 @@ export default function App() {
       style={{ '--ochre-accent': activeAccentColor } as React.CSSProperties}
       className={`flex flex-col h-screen w-screen overflow-hidden ${isDarkMode ? 'dark' : ''} bg-[#FBFBFA] dark:bg-[#18191B] text-neutral-900 dark:text-neutral-100 font-sans`}
     >
-      {/* Top Bar Header with Modular Ochre Suite Logo, Profile Slider & Consolidated Menus */}
+      {/* Top Bar Header with Modular Ochre Suite Logo, Desktop Mode Switcher & Profile Menu (with Profile 1/2 at #1) */}
       <Header
         currentUser={currentUser}
-        activeNoteTitle={activeNoteTitle}
-        isSharedNote={activeIsShared}
-        sharedFrom={activeSharedFrom}
+        activeView={viewMode}
+        onChangeView={setViewMode}
         isDarkMode={isDarkMode}
         onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
-        isOnline={isOnline}
-        pendingSyncCount={pendingSyncCount}
-        lastSaved={lastSaved}
-        documentStats={documentStats}
         onOpenShareModal={() => {
+          flushPendingSave();
           if (activeSuiteModule === 'recipes') {
             setShareModalRecipe(
               cookbookSnapshotRef.current?.selectedRecipe ||
@@ -680,8 +766,15 @@ export default function App() {
           setIsShareModalOpen(true);
         }}
         onPrintA4={handlePrintA4}
-        onOpenSystemLogs={() => setIsSystemLogsModalOpen(true)}
-        onOpenSettings={() => setIsSettingsModalOpen(true)}
+        onOpenSystemLogs={() => {
+          flushPendingSave();
+          setIsSystemLogsModalOpen(true);
+        }}
+        onOpenSettings={() => {
+          flushPendingSave();
+          setSettingsModalTarget({});
+          setIsSettingsModalOpen(true);
+        }}
         onOpenUserSwitch={async () => {
           const fresh = await api.fetchUsers();
           setAllUsers(fresh);
@@ -694,16 +787,66 @@ export default function App() {
         }}
         canInstallPwa={true}
         onInstallPwa={handleInstallPwa}
-        appTitle={appTitle}
-        onToggleVaultMobile={() => setIsMobileSidebarOpen((prev) => !prev)}
         activeSuiteModule={activeSuiteModule}
         onSelectSuiteModule={setActiveSuiteModule}
         enabledModules={enabledModules}
         profileSettings={profileSettings}
         onSwitchProfile={handleSwitchProfile}
+        activeCookbookTab={cookbookTab}
+        onChangeCookbookTab={setCookbookTab}
+        enableCookbookShoppingList={enableCookbookShoppingList}
       />
 
-      {/* Main Container: Renders active Suite Module (Notes, Wiki, Recipes, Finance) */}
+      {/* Main Container: Renders active Suite Module (Dashboard, Notes, Wiki, Recipes, Finance) */}
+      {activeSuiteModule === 'dashboard' && (
+        <div className="flex-1 flex overflow-hidden">
+          <DashboardView
+            currentUser={
+              currentUser || {
+                id: 'user_michael',
+                username: 'michael',
+                displayName: 'Michael',
+                avatar: '',
+                role: 'admin',
+              }
+            }
+            activeProfileId={activeProfileId}
+            activeProfileName={activeProfile.name}
+            accentColors={{
+              ...profileSettings.profile1.colors,
+              notes: activeProfile.colors.notes,
+            }}
+            enabledModules={enabledModules}
+            enableCookbookShoppingList={enableCookbookShoppingList}
+            dashboardSettings={dashboardSettings}
+            onNavigateToModule={(mod, options) => {
+              if (mod !== 'notes' && !enabledModules[mod]) return;
+              flushPendingSave();
+              setActiveSuiteModule(mod);
+              if (options?.notesView) {
+                setViewMode(options.notesView);
+              }
+              if (options?.notePath) {
+                openNote(options.notePath, false);
+              }
+              if (options?.cookbookTab) {
+                setCookbookTab(
+                  options.cookbookTab === 'shopping' && !enableCookbookShoppingList
+                    ? 'calendar'
+                    : options.cookbookTab
+                );
+              }
+            }}
+            onOpenDashboardSettings={() => {
+              flushPendingSave();
+              setSettingsModalTarget({ tab: 'moduleSettings', module: 'dashboard' });
+              setIsSettingsModalOpen(true);
+            }}
+            onTasksMutated={loadVaultData}
+          />
+        </div>
+      )}
+
       {activeSuiteModule === 'wiki' && (
         <div className="flex-1 flex overflow-hidden">
           <WikiView
@@ -729,6 +872,10 @@ export default function App() {
             allUsers={allUsers}
             accentColor={profileSettings.profile1.colors.recipes}
             refreshKey={cookbookRefreshKey}
+            activeTab={cookbookTab}
+            onChangeTab={setCookbookTab}
+            enableShoppingList={enableCookbookShoppingList}
+            onShoppingListSettingLoaded={(enabled) => setEnableCookbookShoppingList(enabled)}
             onSnapshotChange={(snap) => {
               cookbookSnapshotRef.current = snap;
             }}
@@ -778,7 +925,7 @@ export default function App() {
             activeNotePath={activeNotePath}
             activeIsShared={activeIsShared}
             onSelectNote={openNote}
-            onCreateNote={handleCreateNote}
+            onCreateNote={openNewNoteDialog}
             onCreateQuickNote={handleCreateQuickNote}
             onCreateFolder={handleCreateFolder}
             onDeleteNote={handleDeleteNote}
@@ -795,12 +942,7 @@ export default function App() {
             content={activeNoteContent}
             onContentChange={handleContentChange}
             isReadOnly={activePermission === 'read'}
-            onSave={() => {
-              if (currentUser && activeNotePath) {
-                api.saveNote(currentUser.username, activeNotePath, activeNoteContent, activeIsShared, activeSharedFrom, activeProfileId);
-                setLastSaved(Date.now());
-              }
-            }}
+            onSave={flushPendingSave}
             lastSaved={lastSaved}
             onToggleTask={handleToggleTask}
             onWikilinkClick={openNoteByTitle}
@@ -812,26 +954,32 @@ export default function App() {
             accentColor={activeProfile.colors.notes}
             onOpenNoteByTitle={openNoteByTitle}
             allNotes={[...notes, ...sharedNotes]}
+            folders={folders}
             activeNotePath={activeNotePath}
             activeNoteTitle={activeNoteTitle}
+            isShared={activeIsShared}
+            sharedFrom={activeSharedFrom}
             onSelectPrimaryNote={openNote}
             onRenameNote={handleRenameNote}
-            onCreateNote={handleCreateNote}
+            onCreateNote={openNewNoteDialog}
+            onCreateFolder={handleCreateFolder}
+            onSwitchToEditor={() => setViewMode('editor')}
+            openLiteVaultSignal={openLiteVaultSignal}
           />
         </div>
       )}
 
-      {/* Floating Action Navigation (Only in Notes module): Positioned reliably bottom-right across mobile, tablet, and desktop */}
+      {/* Floating Action Navigation (ONLY Mobile & Tablet - hidden on Desktop) */}
       {activeSuiteModule === 'notes' && isMobileNavExpanded && (
-        <div 
+        <div
           onClick={() => setIsMobileNavExpanded(false)}
-          className="fixed inset-0 bg-black/25 dark:bg-black/50 backdrop-blur-2xs z-40 animate-in fade-in duration-150"
+          className="lg:hidden fixed inset-0 bg-black/25 dark:bg-black/50 backdrop-blur-2xs z-40 animate-in fade-in duration-150"
         />
       )}
 
-      {/* Floating Nav Button / Bottom-Right Expanded Capsule */}
+      {/* Mobile & Tablet Floating Nav Button / Expanded Capsule + "Neu" Slide-Out */}
       {activeSuiteModule === 'notes' && (
-        <div className="select-none">
+        <div className="lg:hidden select-none">
           {isMobileNavExpanded ? (
             <div
               style={{ borderColor: activeProfile.colors.notes }}
@@ -895,14 +1043,19 @@ export default function App() {
 
               <button
                 type="button"
-                onClick={handleCreateQuickNote}
-                style={{ backgroundColor: `${activeProfile.colors.notes}1F`, color: activeProfile.colors.notes }}
-                className="flex items-center gap-1 h-9.5 px-2.5 rounded-full text-xs font-semibold transition-all cursor-pointer active:scale-95 shrink-0 hover:opacity-90"
-                title="Schnelle Notiz in die Inbox erstellen"
-                aria-label="Schnelle Notiz"
+                onClick={() => {
+                  setIsMobileNavExpanded(false);
+                  setIsSlideOutCreatingFolder(false);
+                  setSlideOutNewFolderName('');
+                  setIsNewNoteSlideOutOpen(true);
+                }}
+                style={{ backgroundColor: activeProfile.colors.notes }}
+                className="flex items-center gap-1 h-9.5 px-3 rounded-full text-xs font-semibold text-white transition-all cursor-pointer active:scale-95 shrink-0 shadow-xs hover:opacity-95"
+                title="Neue Notiz, Ordner oder Quick Write"
+                aria-label="Neu"
               >
-                <Inbox className="w-4 h-4 shrink-0" />
-                <span className="whitespace-nowrap">Schnell</span>
+                <Plus className="w-4 h-4 shrink-0" />
+                <span className="whitespace-nowrap">Neu</span>
               </button>
 
               <button
@@ -917,11 +1070,12 @@ export default function App() {
             </div>
           ) : (
             <button
+              type="button"
               onClick={() => setIsMobileNavExpanded(true)}
               style={{ borderColor: activeProfile.colors.notes, color: activeProfile.colors.notes }}
               className="fixed bottom-5 right-4 z-40 w-13 h-13 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center justify-center transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
-              title="Navigation umschalten (Notizen, Aufgaben, Graph)"
-              aria-label="Navigation umschalten"
+              title="Navigation öffnen (Notizen, Aufgaben, Graph, Neu)"
+              aria-label="Navigation öffnen"
             >
               {viewMode === 'editor' && <BookOpen className="w-5 h-5" />}
               {viewMode === 'tasks' && <CheckSquare className="w-5 h-5" />}
@@ -932,6 +1086,268 @@ export default function App() {
               ></span>
             </button>
           )}
+        </div>
+      )}
+
+      {/* Mobile & Tablet "Neu" Slide-Out (Lite Vault, Ordnerwahl + Ordner erstellen, Quick Write) */}
+      {activeSuiteModule === 'notes' && isNewNoteSlideOutOpen && (
+        <div
+          onClick={() => setIsNewNoteSlideOutOpen(false)}
+          className="lg:hidden fixed inset-0 z-[105] bg-black/45 backdrop-blur-xs flex items-start justify-end px-3 pt-16 pb-4 animate-in fade-in duration-150"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm rounded-2xl bg-white dark:bg-[#1E1F23] border border-[#E5E3DC] dark:border-[#2F3136] shadow-2xl overflow-hidden animate-in slide-in-from-right-4 duration-200 max-h-[calc(100dvh-5rem)] flex flex-col"
+          >
+            <div className="p-3.5 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <div
+                  style={{ backgroundColor: activeProfile.colors.notes }}
+                  className="w-7 h-7 rounded-lg text-white flex items-center justify-center shrink-0"
+                >
+                  <Plus className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 truncate">
+                    Neue Notiz erstellen
+                  </h3>
+                  <span className="text-[11px] text-neutral-400 block truncate">
+                    Quick Write, Ordnerwahl oder Lite Vault
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsNewNoteSlideOutOpen(false)}
+                className="w-8 h-8 rounded-full bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer shrink-0"
+                aria-label="Slide-Out schließen"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 space-y-3 overflow-y-auto">
+              {/* 1. Quick Write -> Schnelle Notiz in Inbox */}
+              <button
+                type="button"
+                onClick={handleCreateQuickNote}
+                style={{ backgroundColor: activeProfile.colors.notes }}
+                className="w-full flex items-center justify-between p-3 rounded-xl text-white font-semibold shadow-sm cursor-pointer active:scale-[0.98] transition-all"
+              >
+                <div className="flex items-center gap-2.5 text-left">
+                  <Inbox className="w-4.5 h-4.5 shrink-0" />
+                  <div>
+                    <span className="text-xs font-bold block">Quick Write (Schnelle Notiz)</span>
+                    <span className="text-[11px] text-white/85 block font-normal">
+                      Direkt in Inbox ohne Ordner ablegen
+                    </span>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 shrink-0" />
+              </button>
+
+              {/* 2. Ordnerwahl + inline Ordner erstellen */}
+              <div className="p-3 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF]/70 dark:bg-[#23252A] space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-neutral-800 dark:text-neutral-100 flex items-center gap-1.5">
+                    <Folder className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
+                    <span>Ordner auswählen</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSlideOutCreatingFolder((prev) => !prev);
+                      setSlideOutNewFolderName('');
+                    }}
+                    className="flex items-center gap-1 text-[11px] font-semibold text-[var(--ochre-accent)] hover:underline cursor-pointer"
+                  >
+                    <FolderPlus className="w-3.5 h-3.5" />
+                    <span>Ordner erstellen</span>
+                  </button>
+                </div>
+
+                {isSlideOutCreatingFolder && (
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      placeholder={
+                        slideOutFolder === '/'
+                          ? 'Neuer Ordnername...'
+                          : `Unterordner in '${slideOutFolder}'...`
+                      }
+                      value={slideOutNewFolderName}
+                      onChange={(e) => setSlideOutNewFolderName(e.target.value)}
+                      onKeyDown={async (e) => {
+                        if (e.key === 'Enter' && slideOutNewFolderName.trim()) {
+                          const target =
+                            slideOutFolder === '/'
+                              ? slideOutNewFolderName.trim()
+                              : `${slideOutFolder}/${slideOutNewFolderName.trim()}`;
+                          const ok = await handleCreateFolder(target);
+                          if (ok) {
+                            setSlideOutFolder(target.replace(/^\/+|\/+$/g, ''));
+                            setIsSlideOutCreatingFolder(false);
+                            setSlideOutNewFolderName('');
+                          }
+                        }
+                      }}
+                      className="flex-1 text-xs px-2.5 py-2 rounded-lg bg-white dark:bg-[#18191B] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden focus:border-[var(--ochre-accent)]"
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      disabled={!slideOutNewFolderName.trim()}
+                      onClick={async () => {
+                        if (!slideOutNewFolderName.trim()) return;
+                        const target =
+                          slideOutFolder === '/'
+                            ? slideOutNewFolderName.trim()
+                            : `${slideOutFolder}/${slideOutNewFolderName.trim()}`;
+                        const ok = await handleCreateFolder(target);
+                        if (ok) {
+                          setSlideOutFolder(target.replace(/^\/+|\/+$/g, ''));
+                          setIsSlideOutCreatingFolder(false);
+                          setSlideOutNewFolderName('');
+                        }
+                      }}
+                      className="px-3 py-2 rounded-lg bg-[var(--ochre-accent)] text-white text-xs font-semibold disabled:opacity-40 cursor-pointer"
+                    >
+                      OK
+                    </button>
+                  </div>
+                )}
+
+                <select
+                  value={slideOutFolder}
+                  onChange={(e) => setSlideOutFolder(e.target.value)}
+                  className="w-full text-xs px-2.5 py-2 rounded-lg bg-white dark:bg-[#18191B] border border-[#E5E3DC] dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 outline-hidden focus:border-[var(--ochre-accent)]"
+                >
+                  <option value="/">/ (Hauptverzeichnis / Allgemein)</option>
+                  {folders.map((f) => (
+                    <option key={f} value={f}>
+                      📁 {f}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  type="button"
+                  onClick={() => openNewNoteDialog(slideOutFolder)}
+                  className="w-full flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-white dark:bg-[#2A2C31] border border-[var(--ochre-accent)] text-[var(--ochre-accent)] text-xs font-bold shadow-2xs hover:bg-[var(--ochre-accent)] hover:text-white transition-all cursor-pointer active:scale-95"
+                >
+                  <FilePlus className="w-3.5 h-3.5" />
+                  <span>
+                    {slideOutFolder === '/' ? 'Allgemeine Notiz erstellen' : `Notiz in "${slideOutFolder}"`}
+                  </span>
+                </button>
+              </div>
+
+              {/* 3. Mit Lite Vault wählen / öffnen */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsNewNoteSlideOutOpen(false);
+                  setOpenLiteVaultSignal((n) => n + 1);
+                }}
+                className="w-full flex items-center justify-between p-3 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#23252A] hover:border-[var(--ochre-accent)] transition-all cursor-pointer active:scale-[0.98]"
+              >
+                <div className="flex items-center gap-2.5 text-left">
+                  <div className="w-8 h-8 rounded-lg bg-amber-500/15 text-[var(--ochre-accent)] flex items-center justify-center shrink-0">
+                    <Layers className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="text-xs font-bold text-neutral-800 dark:text-neutral-100 block">
+                      Mit Lite Vault öffnen
+                    </span>
+                    <span className="text-[11px] text-neutral-400 block">
+                      Ordner & Notizen als kompakte Übersicht
+                    </span>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-neutral-400 shrink-0" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New Note Name Popup Modal (Top-anchored on Mobile/Tablet above Keyboard, compact centered overlay on Desktop) */}
+      {newNoteModal.isOpen && (
+        <div
+          onClick={() => setNewNoteModal({ isOpen: false, folder: '/', name: '' })}
+          className="fixed inset-0 z-[120] bg-black/50 backdrop-blur-xs flex items-start lg:items-center justify-center px-3 pt-16 lg:pt-4 pb-3 animate-in fade-in duration-150"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] p-4 sm:p-5 space-y-3.5 animate-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div
+                  style={{ backgroundColor: activeProfile.colors.notes }}
+                  className="w-7 h-7 rounded-lg text-white flex items-center justify-center shrink-0"
+                >
+                  <FilePlus className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 truncate">
+                    Neue Notiz benennen
+                  </h3>
+                  <span className="text-[11px] text-neutral-400 block truncate">
+                    Speicherort: {newNoteModal.folder === '/' ? 'Hauptverzeichnis (/)' : newNoteModal.folder}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setNewNoteModal({ isOpen: false, folder: '/', name: '' })}
+                className="p-1 rounded-full text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer"
+                aria-label="Abbrechen"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-neutral-600 dark:text-neutral-300 block">
+                Notizname:
+              </label>
+              <input
+                type="text"
+                placeholder="z.B. Projektideen, Einkaufsliste..."
+                value={newNoteModal.name}
+                onChange={(e) => setNewNoteModal((prev) => ({ ...prev, name: e.target.value }))}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    confirmCreateNamedNote();
+                  } else if (e.key === 'Escape') {
+                    setNewNoteModal({ isOpen: false, folder: '/', name: '' });
+                  }
+                }}
+                className="w-full text-sm px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#2A2C31] border border-[#E5E3DC] dark:border-neutral-700 text-neutral-900 dark:text-neutral-100 outline-hidden focus:border-[var(--ochre-accent)]"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setNewNoteModal({ isOpen: false, folder: '/', name: '' })}
+                className="px-3 py-1.5 text-xs rounded-lg text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
+              >
+                Abbrechen
+              </button>
+              <button
+                type="button"
+                onClick={confirmCreateNamedNote}
+                style={{ backgroundColor: activeProfile.colors.notes }}
+                className="px-4 py-1.5 text-xs font-semibold rounded-lg text-white shadow-xs hover:opacity-95 cursor-pointer active:scale-95"
+              >
+                Notiz erstellen
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -950,7 +1366,7 @@ export default function App() {
           accentColor={activeAccentColor}
           noteTitle={activeNoteTitle}
           notePath={activeNotePath || ''}
-          noteContent={activeNoteContent}
+          noteContent={activeNoteContentRef.current || activeNoteContent}
           wikiArticle={activeWikiArticle}
           activeRecipe={shareModalRecipe || cookbookSnapshotRef.current?.selectedRecipe || null}
           recipesList={cookbookSnapshotRef.current?.recipes || []}
@@ -962,12 +1378,20 @@ export default function App() {
       <SystemLogsModal
         isOpen={isSystemLogsModalOpen}
         onClose={() => setIsSystemLogsModalOpen(false)}
+        documentStats={documentStats}
+        lastSaved={lastSaved}
+        isOnline={isOnline}
+        pendingSyncCount={pendingSyncCount}
+        activeNoteTitle={activeNoteTitle}
       />
 
       {currentUser && (
         <SettingsModal
           isOpen={isSettingsModalOpen}
-          onClose={() => setIsSettingsModalOpen(false)}
+          onClose={() => {
+            setIsSettingsModalOpen(false);
+            setSettingsModalTarget({});
+          }}
           currentUser={currentUser}
           allUsers={allUsers}
           onRefreshVault={loadVaultData}
@@ -981,6 +1405,7 @@ export default function App() {
           onSwitchUser={(user) => {
             handleSelectUser(user);
             setIsSettingsModalOpen(false);
+            setSettingsModalTarget({});
           }}
           appTitle={appTitle}
           onUpdateAppTitle={handleUpdateAppTitle}
@@ -990,8 +1415,18 @@ export default function App() {
           onToggleModule={handleToggleModule}
           profileSettings={profileSettings}
           onUpdateProfileSettings={handleUpdateProfileSettings}
-          initialModuleContext={activeSuiteModule}
+          initialModuleContext={settingsModalTarget.module || activeSuiteModule}
+          initialSettingsTab={settingsModalTarget.tab}
+          dashboardSettings={dashboardSettings}
+          onUpdateDashboardSettings={handleUpdateDashboardSettings}
           onCookbookUpdated={() => setCookbookRefreshKey((k) => k + 1)}
+          onCookbookSettingsChange={(s) => {
+            const enabled = s.enableShoppingList !== false;
+            setEnableCookbookShoppingList(enabled);
+            if (!enabled && cookbookTab === 'shopping') {
+              setCookbookTab('calendar');
+            }
+          }}
         />
       )}
 

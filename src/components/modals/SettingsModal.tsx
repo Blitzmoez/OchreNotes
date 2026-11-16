@@ -31,6 +31,8 @@ import {
   UserPlus,
   UserCheck,
   Shield,
+  LayoutDashboard,
+  ShoppingCart,
 } from 'lucide-react';
 import {
   User,
@@ -39,11 +41,20 @@ import {
   SuiteProfileSettings,
   NoteProfileId,
   CookbookSharingSettings,
+  CookbookSettings,
   TaskNotificationSettings,
+  DashboardSettings,
+  DashboardWidgetId,
 } from '../../types';
 import { api } from '../../services/api';
 import { useTranslation, Language } from '../../services/i18n';
-import { OCHRE_COLOR_PRESETS, DEFAULT_PROFILE_SETTINGS } from '../../services/profileDefaults';
+import {
+  OCHRE_COLOR_PRESETS,
+  DEFAULT_PROFILE_SETTINGS,
+  DASHBOARD_WIDGET_CATALOG,
+  DEFAULT_DASHBOARD_SETTINGS,
+  MAX_DASHBOARD_WIDGETS,
+} from '../../services/profileDefaults';
 import {
   getNotificationPermission,
   loadNotificationSettings,
@@ -70,7 +81,11 @@ interface SettingsModalProps {
   profileSettings: SuiteProfileSettings;
   onUpdateProfileSettings: (next: SuiteProfileSettings) => void;
   initialModuleContext?: SuiteModuleId;
+  initialSettingsTab?: 'general' | 'modules' | 'moduleSettings' | 'users' | 'backup';
+  dashboardSettings: DashboardSettings;
+  onUpdateDashboardSettings: (next: DashboardSettings) => void;
   onCookbookUpdated?: () => void;
+  onCookbookSettingsChange?: (settings: CookbookSettings) => void;
 }
 
 const AVATAR_PRESETS = [
@@ -125,12 +140,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   profileSettings,
   onUpdateProfileSettings,
   initialModuleContext = 'notes',
+  initialSettingsTab,
+  dashboardSettings,
+  onUpdateDashboardSettings,
   onCookbookUpdated,
+  onCookbookSettingsChange,
 }) => {
   const { language, setLanguage, t } = useTranslation();
-  const [activeSettingsTab, setActiveSettingsTab] = useState<'general' | 'modules' | 'moduleSettings' | 'users' | 'backup'>('general');
+  const [activeSettingsTab, setActiveSettingsTab] = useState<'general' | 'modules' | 'moduleSettings' | 'users' | 'backup'>(
+    initialSettingsTab || 'general'
+  );
   const [selectedModuleSettingsTab, setSelectedModuleSettingsTab] = useState<SuiteModuleId>(initialModuleContext);
   const [editingProfileTab, setEditingProfileTab] = useState<NoteProfileId>('profile1');
+  const mainTabBarRef = React.useRef<HTMLDivElement>(null);
+  const modTabBarRef = React.useRef<HTMLDivElement>(null);
+  const settingsSwipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
   const [restoreLoading, setRestoreLoading] = useState(false);
   const [restoreStatus, setRestoreStatus] = useState<string | null>(null);
@@ -164,7 +188,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Docker copy state
   const [copiedDocker, setCopiedDocker] = useState(false);
 
-  // Cookbook module settings (sharing & food categories)
+  // Cookbook module settings (default portions, sharing & food categories)
   const [cookbookCategories, setCookbookCategories] = useState<string[]>([]);
   const [cookbookSharing, setCookbookSharing] = useState<CookbookSharingSettings>({
     shareCatalog: false,
@@ -172,6 +196,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     shareCycleAndCalendar: false,
     cycleSharedWith: ['*'],
   });
+  const [cookbookDefaultPortions, setCookbookDefaultPortions] = useState<number>(2);
+  const [cookbookEnableShoppingList, setCookbookEnableShoppingList] = useState<boolean>(true);
   const [newCatInput, setNewCatInput] = useState('');
   const [cookbookLoaded, setCookbookLoaded] = useState(false);
 
@@ -198,10 +224,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setSelectedModuleSettingsTab(initialModuleContext || 'notes');
+      if (initialSettingsTab) {
+        setActiveSettingsTab(initialSettingsTab);
+      }
       setNotifPerm(getNotificationPermission());
       setNotifSettings(loadNotificationSettings(currentUser.username));
     }
-  }, [isOpen, initialModuleContext, currentUser.username]);
+  }, [isOpen, initialModuleContext, initialSettingsTab, currentUser.username]);
+
+  useEffect(() => {
+    const activeBtn = mainTabBarRef.current?.querySelector('[data-active-tab="true"]') as HTMLElement | null;
+    activeBtn?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+  }, [activeSettingsTab, isOpen]);
+
+  useEffect(() => {
+    const activeBtn = modTabBarRef.current?.querySelector('[data-active-subtab="true"]') as HTMLElement | null;
+    activeBtn?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+  }, [selectedModuleSettingsTab, activeSettingsTab, isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -212,6 +251,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         if (cancelled) return;
         setCookbookCategories(data.categories || []);
         if (data.sharing) setCookbookSharing(data.sharing);
+        setCookbookDefaultPortions(data.settings?.defaultCyclePortions || 2);
+        setCookbookEnableShoppingList(data.settings?.enableShoppingList !== false);
         setCookbookLoaded(true);
       })
       .catch(() => {});
@@ -292,6 +333,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const activeProfile = profileSettings[profileSettings.activeProfileId] || profileSettings.profile1;
   const activeColors = {
+    dashboard: profileSettings.profile1.colors.dashboard || '#A67C21',
     notes: activeProfile.colors.notes,
     wiki: profileSettings.profile1.colors.wiki,
     recipes: profileSettings.profile1.colors.recipes,
@@ -322,7 +364,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     });
   };
 
-  const updateSuiteModuleColor = (mod: 'wiki' | 'recipes' | 'finance', hex: string) => {
+  const updateSuiteModuleColor = (mod: 'dashboard' | 'wiki' | 'recipes' | 'finance', hex: string) => {
     onUpdateProfileSettings({
       ...profileSettings,
       profile1: {
@@ -346,16 +388,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (mod === 'notes') {
       updateNoteProfileColor(DEFAULT_PROFILE_SETTINGS[editingProfileTab].colors.notes);
     } else {
-      updateSuiteModuleColor(mod, DEFAULT_PROFILE_SETTINGS.profile1.colors[mod]);
+      updateSuiteModuleColor(mod, DEFAULT_PROFILE_SETTINGS.profile1.colors[mod] || '#A67C21');
     }
   };
 
   const saveCookbookChanges = async (partial: {
     categories?: string[];
     sharing?: CookbookSharingSettings;
+    settings?: Partial<CookbookSettings>;
   }) => {
     if (partial.categories !== undefined) setCookbookCategories(partial.categories);
     if (partial.sharing !== undefined) setCookbookSharing(partial.sharing);
+    if (partial.settings !== undefined) {
+      if (partial.settings.defaultCyclePortions !== undefined) {
+        setCookbookDefaultPortions(partial.settings.defaultCyclePortions);
+      }
+      if (partial.settings.enableShoppingList !== undefined) {
+        setCookbookEnableShoppingList(partial.settings.enableShoppingList);
+      }
+      if (onCookbookSettingsChange) {
+        onCookbookSettingsChange({
+          defaultCyclePortions: partial.settings.defaultCyclePortions ?? cookbookDefaultPortions,
+          enableShoppingList: partial.settings.enableShoppingList ?? cookbookEnableShoppingList,
+        });
+      }
+    }
     await api.saveCookbook(currentUser.username, partial);
     if (onCookbookUpdated) onCookbookUpdated();
   };
@@ -570,10 +627,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         {/* 5 Tabs with Small Icons: Allgemein | Module | Modul-Einstellungen | Benutzer | Backup & Docker */}
-        <div className="flex items-center gap-1 px-4 pt-3 pb-2 border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#1A1C1F] overflow-x-auto no-scrollbar shrink-0">
+        <div
+          ref={mainTabBarRef}
+          className="flex items-center gap-1 px-4 pt-3 pb-2 border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#1A1C1F] overflow-x-auto no-scrollbar shrink-0 touch-pan-x overscroll-x-contain snap-x"
+        >
           <button
+            data-active-tab={activeSettingsTab === 'general' ? 'true' : undefined}
             onClick={() => setActiveSettingsTab('general')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+            className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
               activeSettingsTab === 'general'
                 ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
                 : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
@@ -584,8 +645,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
 
           <button
+            data-active-tab={activeSettingsTab === 'modules' ? 'true' : undefined}
             onClick={() => setActiveSettingsTab('modules')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+            className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
               activeSettingsTab === 'modules'
                 ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
                 : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
@@ -596,8 +658,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
 
           <button
+            data-active-tab={activeSettingsTab === 'moduleSettings' ? 'true' : undefined}
             onClick={() => setActiveSettingsTab('moduleSettings')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+            className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
               activeSettingsTab === 'moduleSettings'
                 ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
                 : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
@@ -608,8 +671,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
 
           <button
+            data-active-tab={activeSettingsTab === 'users' ? 'true' : undefined}
             onClick={() => setActiveSettingsTab('users')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+            className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
               activeSettingsTab === 'users'
                 ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
                 : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
@@ -620,8 +684,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
 
           <button
+            data-active-tab={activeSettingsTab === 'backup' ? 'true' : undefined}
             onClick={() => setActiveSettingsTab('backup')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+            className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
               activeSettingsTab === 'backup'
                 ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
                 : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
@@ -632,8 +697,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
         </div>
 
-        {/* Tab Content */}
-        <div className="p-4 space-y-5 text-xs text-neutral-700 dark:text-neutral-300 overflow-y-auto">
+        {/* Tab Content (supports horizontal swipe left/right between tabs on mobile) */}
+        <div
+          onTouchStart={(e) => {
+            const target = e.target as HTMLElement | null;
+            if (
+              target?.closest('input') ||
+              target?.closest('textarea') ||
+              target?.closest('select') ||
+              target?.closest('.overflow-x-auto')
+            ) {
+              settingsSwipeStartRef.current = null;
+              return;
+            }
+            settingsSwipeStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+          }}
+          onTouchEnd={(e) => {
+            if (!settingsSwipeStartRef.current) return;
+            const dx = e.changedTouches[0].clientX - settingsSwipeStartRef.current.x;
+            const dy = e.changedTouches[0].clientY - settingsSwipeStartRef.current.y;
+            settingsSwipeStartRef.current = null;
+            if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.6) {
+              const order: Array<'general' | 'modules' | 'moduleSettings' | 'users' | 'backup'> = [
+                'general',
+                'modules',
+                'moduleSettings',
+                'users',
+                'backup',
+              ];
+              const idx = order.indexOf(activeSettingsTab);
+              if (dx < 0 && idx < order.length - 1) setActiveSettingsTab(order[idx + 1]);
+              else if (dx > 0 && idx > 0) setActiveSettingsTab(order[idx - 1]);
+            }
+          }}
+          className="p-4 space-y-5 text-xs text-neutral-700 dark:text-neutral-300 overflow-y-auto"
+        >
           {/* ============================================================== */}
           {/* TAB 1: ALLGEMEIN                                               */}
           {/* ============================================================== */}
@@ -749,6 +847,35 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
 
               <div className="space-y-2.5">
+                {/* Dashboard */}
+                <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div
+                      style={{ backgroundColor: activeColors.dashboard }}
+                      className="w-9 h-9 rounded-xl text-white flex items-center justify-center shrink-0 shadow-xs"
+                    >
+                      <LayoutDashboard className="w-4.5 h-4.5" />
+                    </div>
+                    <div>
+                      <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
+                        Dashboard (Übersicht &amp; Kacheln)
+                      </span>
+                      <span className="text-[11px] text-neutral-500">
+                        Swipbare Kachel-Übersicht für Aufgaben, Einkaufs-Forecast &amp; Finanzen
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => onToggleModule('dashboard')}
+                    style={enabledModules.dashboard ? { backgroundColor: activeColors.dashboard } : undefined}
+                    className={`w-11 h-6 rounded-full transition-colors flex items-center px-1 cursor-pointer shrink-0 ${
+                      enabledModules.dashboard ? 'justify-end' : 'bg-neutral-300 dark:bg-neutral-700 justify-start'
+                    }`}
+                  >
+                    <span className="w-4 h-4 rounded-full bg-white shadow-xs" />
+                  </button>
+                </div>
+
                 {/* Notes */}
                 <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
@@ -886,9 +1013,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {activeSettingsTab === 'moduleSettings' && (
             <div className="space-y-4">
               {/* Sub-navigation per module */}
-              <div className="flex items-center gap-1.5 p-1 rounded-xl bg-[#F4F3EF] dark:bg-[#18191B] border border-[#E5E3DC] dark:border-[#2F3136] overflow-x-auto no-scrollbar">
+              <div
+                ref={modTabBarRef}
+                className="flex items-center gap-1.5 p-1 rounded-xl bg-[#F4F3EF] dark:bg-[#18191B] border border-[#E5E3DC] dark:border-[#2F3136] overflow-x-auto no-scrollbar touch-pan-x overscroll-x-contain snap-x"
+              >
                 {(
                   [
+                    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, color: activeColors.dashboard },
                     { id: 'notes', label: 'Notes', icon: BookOpen, color: activeColors.notes },
                     { id: 'wiki', label: 'Wiki', icon: BookMarked, color: activeColors.wiki },
                     { id: 'recipes', label: 'Kochbuch', icon: Utensils, color: activeColors.recipes },
@@ -900,10 +1031,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   return (
                     <button
                       key={item.id}
+                      data-active-subtab={isSelected ? 'true' : undefined}
                       type="button"
                       onClick={() => setSelectedModuleSettingsTab(item.id)}
                       style={isSelected ? { backgroundColor: item.color } : undefined}
-                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                      className={`snap-center shrink-0 min-w-[92px] sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
                         isSelected
                           ? 'text-white shadow-xs'
                           : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
@@ -915,6 +1047,164 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   );
                 })}
               </div>
+
+              {/* --- MODULE: DASHBOARD --- */}
+              {selectedModuleSettingsTab === 'dashboard' && (
+                <div className="space-y-4">
+                  {/* Counter & Max Limit Banner */}
+                  <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2 font-bold text-neutral-900 dark:text-neutral-100">
+                        <LayoutDashboard className="w-4 h-4" style={{ color: activeColors.dashboard }} />
+                        <span>Dashboard-Kacheln auswählen</span>
+                      </div>
+                      <span
+                        style={{ color: activeColors.dashboard }}
+                        className="text-xs font-extrabold tabular-nums"
+                      >
+                        {dashboardSettings.selectedWidgets.length} / {dashboardSettings.maxWidgets || MAX_DASHBOARD_WIDGETS} aktiv
+                      </span>
+                    </div>
+
+                    <p className="text-[11px] text-neutral-500 leading-relaxed">
+                      Wähle gezielt aus, welche Stats-Kacheln auf deinem Dashboard (Mobil als vertikaler Swipe-Feed, Desktop als Kachel-Grid) erscheinen. Das Maximal-Limit verhindert Überladung.
+                    </p>
+
+                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#E5E3DC] dark:border-[#2F3136] flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-semibold text-neutral-600 dark:text-neutral-300">
+                          Maximal-Limit (Total):
+                        </span>
+                        <div className="flex items-center gap-1 bg-white dark:bg-[#202225] p-0.5 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136]">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextMax = Math.max(2, (dashboardSettings.maxWidgets || MAX_DASHBOARD_WIDGETS) - 1);
+                              onUpdateDashboardSettings({
+                                maxWidgets: nextMax,
+                                selectedWidgets: dashboardSettings.selectedWidgets.slice(0, nextMax),
+                              });
+                            }}
+                            className="w-6 h-6 rounded hover:bg-neutral-100 dark:hover:bg-neutral-700 font-bold cursor-pointer"
+                          >
+                            −
+                          </button>
+                          <span className="px-2 font-bold text-xs tabular-nums">
+                            {dashboardSettings.maxWidgets || MAX_DASHBOARD_WIDGETS}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextMax = Math.min(8, (dashboardSettings.maxWidgets || MAX_DASHBOARD_WIDGETS) + 1);
+                              onUpdateDashboardSettings({
+                                ...dashboardSettings,
+                                maxWidgets: nextMax,
+                              });
+                            }}
+                            className="w-6 h-6 rounded hover:bg-neutral-100 dark:hover:bg-neutral-700 font-bold cursor-pointer"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => onUpdateDashboardSettings(DEFAULT_DASHBOARD_SETTINGS)}
+                        className="flex items-center gap-1 text-[11px] font-semibold text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Standard-Auswahl</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Widget Selection List */}
+                  <div className="space-y-2">
+                    {DASHBOARD_WIDGET_CATALOG.map((widget) => {
+                      const isSelected = dashboardSettings.selectedWidgets.includes(widget.id);
+                      const maxW = dashboardSettings.maxWidgets || MAX_DASHBOARD_WIDGETS;
+                      const limitReached = dashboardSettings.selectedWidgets.length >= maxW;
+                      const isBlocked = !isSelected && limitReached;
+                      const modBadgeColor =
+                        widget.module === 'notes'
+                          ? activeColors.notes
+                          : widget.module === 'recipes'
+                          ? activeColors.recipes
+                          : widget.module === 'wiki'
+                          ? activeColors.wiki
+                          : widget.module === 'finance'
+                          ? activeColors.finance
+                          : activeColors.dashboard;
+
+                      return (
+                        <div
+                          key={widget.id}
+                          className={`p-3 rounded-2xl border transition-all flex items-center justify-between gap-3 ${
+                            isSelected
+                              ? 'border-[#C87D20]/45 bg-[#FAF9F5] dark:bg-[#1C1E22]'
+                              : 'border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#1E2024]'
+                          } ${isBlocked ? 'opacity-65' : ''}`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className="w-2.5 h-2.5 rounded-full shrink-0"
+                                style={{ backgroundColor: modBadgeColor }}
+                              />
+                              <span className="font-bold text-xs text-neutral-900 dark:text-neutral-100 truncate">
+                                {widget.title}
+                              </span>
+                            </div>
+                            <span className="text-[11px] text-neutral-500 block mt-0.5 leading-snug">
+                              {widget.description}
+                            </span>
+                          </div>
+
+                          <button
+                            type="button"
+                            disabled={isBlocked}
+                            onClick={() => {
+                              const current = dashboardSettings.selectedWidgets;
+                              const nextWidgets: DashboardWidgetId[] = isSelected
+                                ? current.filter((w) => w !== widget.id)
+                                : current.length < maxW
+                                ? [...current, widget.id]
+                                : current;
+                              onUpdateDashboardSettings({
+                                ...dashboardSettings,
+                                selectedWidgets: nextWidgets,
+                              });
+                            }}
+                            style={isSelected ? { backgroundColor: activeColors.dashboard } : undefined}
+                            className={`w-11 h-6 rounded-full transition-colors flex items-center px-1 shrink-0 ${
+                              isBlocked ? 'cursor-not-allowed' : 'cursor-pointer'
+                            } ${
+                              isSelected ? 'justify-end' : 'bg-neutral-300 dark:bg-neutral-700 justify-start'
+                            }`}
+                            title={
+                              isBlocked
+                                ? `Maximal ${maxW} Kacheln möglich — zuerst eine andere Kachel abschalten`
+                                : isSelected
+                                ? 'Kachel ausblenden'
+                                : 'Kachel anzeigen'
+                            }
+                          >
+                            <span className="w-4 h-4 rounded-full bg-white shadow-xs" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {renderColorPickerBlock(
+                    activeColors.dashboard,
+                    (hex) => updateSuiteModuleColor('dashboard', hex),
+                    () => resetModuleColorsToOchre('dashboard'),
+                    'Dashboard Akzentfarbe (Ocker-Palette)'
+                  )}
+                </div>
+              )}
 
               {/* --- MODULE: NOTES --- */}
               {selectedModuleSettingsTab === 'notes' && (
@@ -1188,6 +1478,96 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {/* --- MODULE: KOCHBUCH --- */}
               {selectedModuleSettingsTab === 'recipes' && (
                 <div className="space-y-4">
+                  <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] space-y-1">
+                    <div className="flex items-center gap-2 font-bold text-neutral-900 dark:text-neutral-100">
+                      <Utensils className="w-4 h-4" style={{ color: activeColors.recipes }} />
+                      <span>Open-Standard Kochbuch &amp; Medien</span>
+                    </div>
+                    <p className="text-[11px] text-neutral-500 leading-relaxed">
+                      Rezepte werden im offenen Markdown-Standard in <span className="font-mono">User/{currentUser.username}/Cookbook/Rezepte/</span> und Gerichtsfotos je Rezept in <span className="font-mono">Cookbook/Media/</span> gespeichert.
+                    </p>
+                  </div>
+
+                  {/* Default Cycle Portions Setting */}
+                  <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#18191B] flex items-center justify-between gap-3 flex-wrap">
+                    <div>
+                      <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
+                        Standard-Portionen im Essenszyklus
+                      </span>
+                      <span className="text-[11px] text-neutral-500 block">
+                        Vorgabewert für neue Zyklustage. Zutatenmengen werden entsprechend automatisch skaliert.
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 bg-white dark:bg-[#202225] p-1 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextVal = Math.max(1, cookbookDefaultPortions - 1);
+                          saveCookbookChanges({ settings: { defaultCyclePortions: nextVal } });
+                        }}
+                        className="w-7 h-7 rounded-lg bg-[#F4F3EF] dark:bg-[#2A2C31] hover:bg-neutral-200 dark:hover:bg-neutral-700 font-bold text-sm cursor-pointer flex items-center justify-center"
+                        aria-label="Standard-Portionen verringern"
+                      >
+                        −
+                      </button>
+                      <span className="min-w-[3.5rem] text-center font-bold text-xs tabular-nums">
+                        {cookbookDefaultPortions} Port.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextVal = Math.min(24, cookbookDefaultPortions + 1);
+                          saveCookbookChanges({ settings: { defaultCyclePortions: nextVal } });
+                        }}
+                        style={{ backgroundColor: activeColors.recipes }}
+                        className="w-7 h-7 rounded-lg text-white font-bold text-sm cursor-pointer flex items-center justify-center shadow-2xs"
+                        aria-label="Standard-Portionen erhöhen"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Enable / Disable Einkaufsliste & Verbrauchs-Forecast */}
+                  <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#18191B] flex items-center justify-between gap-3">
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <div
+                        className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-white shadow-2xs"
+                        style={{ backgroundColor: activeColors.recipes }}
+                      >
+                        <ShoppingCart className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
+                          Einkaufsliste &amp; Verbrauchs-Forecast aktivieren
+                        </span>
+                        <span className="text-[11px] text-neutral-500 block">
+                          Blendet den Tab „Einkaufsliste“ im Kochbuch sowie den offenen Einkaufs-Forecast auf Wunsch ein oder aus.
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextVal = !cookbookEnableShoppingList;
+                        saveCookbookChanges({
+                          settings: {
+                            defaultCyclePortions: cookbookDefaultPortions,
+                            enableShoppingList: nextVal,
+                          },
+                        });
+                      }}
+                      style={cookbookEnableShoppingList ? { backgroundColor: activeColors.recipes } : undefined}
+                      className={`w-11 h-6 rounded-full transition-colors flex items-center px-1 cursor-pointer shrink-0 ${
+                        cookbookEnableShoppingList
+                          ? 'justify-end'
+                          : 'bg-neutral-300 dark:bg-neutral-700 justify-start'
+                      }`}
+                    >
+                      <span className="w-4 h-4 rounded-full bg-white shadow-xs" />
+                    </button>
+                  </div>
+
                   {renderColorPickerBlock(
                     activeColors.recipes,
                     (hex) => updateSuiteModuleColor('recipes', hex),
