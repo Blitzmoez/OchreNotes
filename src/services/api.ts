@@ -732,14 +732,25 @@ class ApiService {
     return res.ok;
   }
 
-  async uploadWikiImage(username: string, filename: string, dataUrl: string): Promise<{ url: string; filename: string }> {
+  async uploadWikiMedia(
+    username: string,
+    filename: string,
+    dataUrl: string
+  ): Promise<{ url: string; filename: string; mediaKind: 'image' | 'video' }> {
     const res = await fetch('/api/wiki/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, filename, dataUrl }),
     });
-    if (!res.ok) throw new Error('Bild-Upload fehlgeschlagen');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Medien-Upload fehlgeschlagen');
+    }
     return await res.json();
+  }
+
+  async uploadWikiImage(username: string, filename: string, dataUrl: string): Promise<{ url: string; filename: string }> {
+    return this.uploadWikiMedia(username, filename, dataUrl);
   }
 
   async shareWikiArticle(fromUsername: string, toUsername: string, slug: string): Promise<{ success: boolean; targetSlug?: string }> {

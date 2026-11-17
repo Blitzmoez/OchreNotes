@@ -682,7 +682,7 @@ async function createServer() {
     const viteImportPromise = !IS_PRODUCTION ? import('vite') : Promise.resolve(null);
     await initVaultDirectory();
 
-    app.use(express.json({ limit: '20mb' }));
+    app.use(express.json({ limit: '50mb' }));
 
   // Request & error logger middleware
   app.use((req, res, next) => {
@@ -1762,8 +1762,34 @@ async function createServer() {
   });
 
   // =========================================================================
-  // OPEN-STANDARD WIKI API (Standard Markdown + YAML Frontmatter + Local Assets)
+  // OPEN-STANDARD WIKI API (Modular Ordered Blocks in Standard Markdown + Assets)
   // =========================================================================
+  interface ServerWikiBlock {
+    id: string;
+    type: 'text' | 'media' | 'code';
+    title?: string;
+    content?: string;
+    mediaUrl?: string;
+    mediaKind?: 'image' | 'video';
+    alt?: string;
+    caption?: string;
+    language?: string;
+    code?: string;
+    collapsible?: boolean;
+    defaultCollapsed?: boolean;
+  }
+
+  function inferMediaKindFromUrl(url: string): 'image' | 'video' {
+    const clean = (url || '').split('?')[0].toLowerCase();
+    if (
+      /\.(mp4|webm|mov|m4v|ogg|ogv|mkv)$/i.test(clean) ||
+      /youtube\.com|youtu\.be|vimeo\.com/i.test(url || '')
+    ) {
+      return 'video';
+    }
+    return 'image';
+  }
+
   function parseWikiMarkdown(slug: string, raw: string) {
     let title = slug;
     let category = 'Allgemein';
@@ -1790,58 +1816,182 @@ async function createServer() {
       }
     }
 
-    // Split optional Fotos & Code-Ablage sections while keeping standard Markdown format
-    let body = content;
-    const images: Array<{ id: string; url: string; alt: string; caption?: string }> = [];
-    const snippets: Array<{ id: string; title: string; language: string; code: string }> = [];
+    const blocks: ServerWikiBlock[] = [];
+    const blockMarkerRegex = /<!--\s*wiki-block:(\{[^\n]*?\})\s*-->\r?\n?/g;
 
-    const imgSectionMarker = '\n## 📸 Fotos & Abbildungen\n';
-    const codeSectionMarker = '\n## 💻 Code-Ablage\n';
+    if (blockMarkerRegex.test(content)) {
+      blockMarkerRegex.lastIndex = 0;
+      const matches: Array<{ meta: any; start: number; end: number }> = [];
+      let m: RegExpExecArray | null;
+      while ((m = blockMarkerRegex.exec(content)) !== null) {
+        try {
+          const meta = JSON.parse(m[1]);
+          matches.push({ meta, start: m.index, end: m.index + m[0].length });
+        } catch {}
+      }
 
-    const codeIdx = body.indexOf(codeSectionMarker);
-    let codeSection = '';
-    if (codeIdx !== -1) {
-      codeSection = body.slice(codeIdx + codeSectionMarker.length);
-      body = body.slice(0, codeIdx);
-    }
+      for (let i = 0; i < matches.length; i++) {
+        const cur = matches[i];
+        const nextStart = i + 1 < matches.length ? matches[i + 1].start : content.length;
+        let chunk = content.slice(cur.end, nextStart).trim();
+        const meta = cur.meta || {};
+        const blockId = meta.id || `wb_${i}_${Date.now()}`;
 
-    const imgIdx = body.indexOf(imgSectionMarker);
-    let imgSection = '';
-    if (imgIdx !== -1) {
-      imgSection = body.slice(imgIdx + imgSectionMarker.length);
-      body = body.slice(0, imgIdx);
-    }
+        // Strip optional <details ...><summary>...</summary> ... </details> wrapper for clean inner parsing
+        let isDetails = meta.collapsible === true;
+        let defaultCollapsed = meta.defaultCollapsed === true;
+        const detailsMatch = chunk.match(/^<details(\s+open)?\s*>\s*\r?\n<summary>[\s\S]*?<\/summary>\s*\r?\n([\s\S]*?)\r?\n<\/details>$/i);
+        if (detailsMatch) {
+          isDetails = true;
+          defaultCollapsed = !detailsMatch[1];
+          chunk = detailsMatch[2].trim();
+        }
 
-    // Parse images from imgSection
-    if (imgSection) {
-      const imgLines = imgSection.split(/\r?\n/);
-      imgLines.forEach((line, i) => {
-        const m = line.match(/^!\[([^\]]*)\]\(([^)]+)\)(?:\s*<!--\s*caption:(.*?)\s*-->)?/);
-        if (m) {
-          images.push({
-            id: `img_${i}_${Date.now()}`,
-            alt: m[1] || 'Foto',
-            url: m[2],
-            caption: m[3] ? m[3].trim() : undefined,
+        if (meta.type === 'code') {
+          let blockTitle = meta.title || '';
+          const hMatch = chunk.match(/^###\s+([^\r\n]+)\r?\n+/);
+          if (hMatch) {
+            if (!blockTitle) blockTitle = hMatch[1].trim();
+            chunk = chunk.slice(hMatch[0].length);
+          }
+          const fenceMatch = chunk.match(/```([a-zA-Z0-9_-]*)\r?\n([\s\S]*?)```/);
+          blocks.push({
+            id: blockId,
+            type: 'code',
+            title: blockTitle || 'Code-Block',
+            language: fenceMatch?.[1]?.trim() || meta.language || 'bash',
+            content: fenceMatch ? fenceMatch[2].replace(/\r?\n$/, '') : chunk,
+            collapsible: isDetails,
+            defaultCollapsed,
+          });
+        } else if (meta.type === 'media') {
+          const imgM = chunk.match(/!\[([^\]]*)\]\(([^)]+)\)(?:\s*<!--\s*caption:(.*?)\s*-->)?/);
+          const vidHtmlM = chunk.match(/<video[^>]*src=["']([^"']+)["'][^>]*><\/video>/i);
+          const vidLinkM = chunk.match(/\[(?:🎥\s*)?([^\]]*)\]\(([^)]+)\)/);
+          const mediaUrl = imgM?.[2] || vidHtmlM?.[1] || vidLinkM?.[2] || meta.mediaUrl || '';
+          const alt = imgM?.[1] || vidLinkM?.[1] || meta.alt || meta.title || '';
+          let caption = imgM?.[3]?.trim() || meta.caption || '';
+          if (!caption) {
+            const capItalic = chunk.match(/\r?\n\*([^\n*]+)\*\s*$/);
+            if (capItalic) caption = capItalic[1].trim();
+          }
+          blocks.push({
+            id: blockId,
+            type: 'media',
+            title: meta.title || undefined,
+            mediaUrl,
+            mediaKind: meta.mediaKind || inferMediaKindFromUrl(mediaUrl),
+            alt,
+            caption: caption || undefined,
+            collapsible: isDetails,
+            defaultCollapsed,
+          });
+        } else {
+          blocks.push({
+            id: blockId,
+            type: 'text',
+            title: meta.title || undefined,
+            content: chunk,
+            collapsible: isDetails || undefined,
+            defaultCollapsed: defaultCollapsed || undefined,
           });
         }
-      });
-    }
+      }
+    } else {
+      // Legacy / external plain Markdown compatibility
+      let body = content;
+      const imgSectionMarker = '\n## 📸 Fotos & Abbildungen\n';
+      const codeSectionMarker = '\n## 💻 Code-Ablage\n';
 
-    // Parse code snippets from codeSection (### Title \n ```lang \n code \n ```)
-    if (codeSection) {
-      const snippetRegex = /###\s+([^\r\n]+)\r?\n```([a-zA-Z0-9_-]*)\r?\n([\s\S]*?)```/g;
-      let match;
-      let idx = 0;
-      while ((match = snippetRegex.exec(codeSection)) !== null) {
-        snippets.push({
-          id: `snip_${idx++}_${Date.now()}`,
-          title: match[1].trim(),
-          language: match[2].trim() || 'bash',
-          code: match[3].replace(/\r?\n$/, ''),
+      const codeIdx = body.indexOf(codeSectionMarker);
+      let codeSection = '';
+      if (codeIdx !== -1) {
+        codeSection = body.slice(codeIdx + codeSectionMarker.length);
+        body = body.slice(0, codeIdx);
+      }
+
+      const imgIdx = body.indexOf(imgSectionMarker);
+      let imgSection = '';
+      if (imgIdx !== -1) {
+        imgSection = body.slice(imgIdx + imgSectionMarker.length);
+        body = body.slice(0, imgIdx);
+      }
+
+      if (body.trim()) {
+        blocks.push({
+          id: `wb_txt_${Date.now()}`,
+          type: 'text',
+          content: body.trim(),
+        });
+      }
+
+      if (imgSection) {
+        const imgLines = imgSection.split(/\r?\n/);
+        imgLines.forEach((line, i) => {
+          const m = line.match(/^!\[([^\]]*)\]\(([^)]+)\)(?:\s*<!--\s*caption:(.*?)\s*-->)?/);
+          if (m) {
+            blocks.push({
+              id: `wb_img_${i}_${Date.now()}`,
+              type: 'media',
+              mediaUrl: m[2],
+              mediaKind: inferMediaKindFromUrl(m[2]),
+              alt: m[1] || 'Foto',
+              caption: m[3] ? m[3].trim() : undefined,
+            });
+          }
+        });
+      }
+
+      if (codeSection) {
+        const snippetRegex = /###\s+([^\r\n]+)\r?\n```([a-zA-Z0-9_-]*)\r?\n([\s\S]*?)```/g;
+        let match;
+        let idx = 0;
+        while ((match = snippetRegex.exec(codeSection)) !== null) {
+          blocks.push({
+            id: `wb_code_${idx++}_${Date.now()}`,
+            type: 'code',
+            title: match[1].trim(),
+            language: match[2].trim() || 'bash',
+            content: match[3].replace(/\r?\n$/, ''),
+          });
+        }
+      }
+
+      if (blocks.length === 0) {
+        blocks.push({
+          id: `wb_txt_empty_${Date.now()}`,
+          type: 'text',
+          content: '',
         });
       }
     }
+
+    // Aggregate legacy fields cleanly from blocks for search, Dashboard counters & compatibility
+    const body = blocks
+      .filter((b) => b.type === 'text')
+      .map((b) => (b.title ? `## ${b.title}\n\n${b.content || ''}` : b.content || ''))
+      .filter(Boolean)
+      .join('\n\n');
+
+    const images = blocks
+      .filter((b) => b.type === 'media' && b.mediaUrl)
+      .map((b) => ({
+        id: b.id,
+        url: b.mediaUrl || '',
+        alt: b.alt || b.title || 'Medien',
+        caption: b.caption,
+      }));
+
+    const snippets = blocks
+      .filter((b) => b.type === 'code')
+      .map((b) => ({
+        id: b.id,
+        title: b.title || 'Code-Block',
+        language: b.language || 'bash',
+        code: b.content || '',
+        collapsible: b.collapsible,
+        defaultCollapsed: b.defaultCollapsed,
+      }));
 
     return {
       slug,
@@ -1852,6 +2002,7 @@ async function createServer() {
       body: body.trim(),
       images,
       snippets,
+      blocks,
       rawMarkdown: raw,
     };
   }
@@ -1863,7 +2014,63 @@ async function createServer() {
     const tagsYaml = `[${tagsArr.map((t: string) => `"${String(t).replace(/"/g, '')}"`).join(', ')}]`;
     const updatedAt = article.updatedAt || new Date().toISOString();
 
-    let md = `---\ntitle: "${safeTitle}"\ncategory: "${safeCategory}"\ntags: ${tagsYaml}\nupdatedAt: "${updatedAt}"\n---\n\n${(article.body || '').trim()}\n`;
+    let md = `---\ntitle: "${safeTitle}"\ncategory: "${safeCategory}"\ntags: ${tagsYaml}\nupdatedAt: "${updatedAt}"\n---\n\n`;
+
+    if (Array.isArray(article.blocks) && article.blocks.length > 0) {
+      for (const blk of article.blocks as ServerWikiBlock[]) {
+        const meta: Record<string, any> = { id: blk.id, type: blk.type };
+        if (blk.title) meta.title = blk.title;
+        if (blk.collapsible) meta.collapsible = true;
+        if (blk.defaultCollapsed) meta.defaultCollapsed = true;
+        if (blk.type === 'media') {
+          if (blk.mediaKind) meta.mediaKind = blk.mediaKind;
+          if (blk.mediaUrl) meta.mediaUrl = blk.mediaUrl;
+          if (blk.alt) meta.alt = blk.alt;
+          if (blk.caption) meta.caption = blk.caption;
+        }
+        if (blk.type === 'code' && blk.language) {
+          meta.language = blk.language;
+        }
+        md += `<!-- wiki-block:${JSON.stringify(meta)} -->\n`;
+
+        if (blk.type === 'text') {
+          md += `${(blk.content || '').trim()}\n\n`;
+        } else if (blk.type === 'media') {
+          const kind = blk.mediaKind || inferMediaKindFromUrl(blk.mediaUrl || '');
+          const label = blk.alt || blk.title || (kind === 'video' ? 'Video' : 'Abbildung');
+          const url = blk.mediaUrl || '';
+          const isDirectVideo =
+            kind === 'video' &&
+            (/\.(mp4|webm|mov|m4v|ogg|ogv)(\?.*)?$/i.test(url) || url.startsWith('/api/wiki/assets/'));
+          const innerMedia = isDirectVideo
+            ? `<video src="${url}" controls></video>`
+            : kind === 'video'
+            ? `[🎥 ${label}](${url})`
+            : `![${label}](${url})${blk.caption ? ` <!-- caption:${blk.caption} -->` : ''}`;
+          const captionLine = blk.caption && kind === 'video' ? `\n*${blk.caption}*` : '';
+
+          if (blk.collapsible) {
+            const openAttr = blk.defaultCollapsed ? '' : ' open';
+            md += `<details${openAttr}>\n<summary>${kind === 'video' ? '🎬' : '🖼️'} ${blk.title || label}</summary>\n\n${innerMedia}${captionLine}\n\n</details>\n\n`;
+          } else {
+            md += `${innerMedia}${captionLine}\n\n`;
+          }
+        } else if (blk.type === 'code') {
+          const lang = blk.language || 'bash';
+          const codeTitle = blk.title || 'Code-Block';
+          const codeFence = `\`\`\`${lang}\n${blk.code ?? blk.content ?? ''}\n\`\`\``;
+          if (blk.collapsible) {
+            const openAttr = blk.defaultCollapsed ? '' : ' open';
+            md += `<details${openAttr}>\n<summary>💻 ${codeTitle} (${lang})</summary>\n\n${codeFence}\n\n</details>\n\n`;
+          } else {
+            md += `### ${codeTitle}\n${codeFence}\n\n`;
+          }
+        }
+      }
+      return md.trimEnd() + '\n';
+    }
+
+    md += `${(article.body || '').trim()}\n`;
 
     if (Array.isArray(article.images) && article.images.length > 0) {
       md += `\n## 📸 Fotos & Abbildungen\n\n`;
@@ -1959,15 +2166,16 @@ async function createServer() {
   });
 
   app.post('/api/wiki/upload', async (req, res) => {
-    const { username = 'michael', filename = 'photo.png', dataUrl } = req.body;
+    const { username = 'michael', filename = 'media.png', dataUrl } = req.body;
     if (!dataUrl || typeof dataUrl !== 'string') {
-      return res.status(400).json({ error: 'Bilddaten fehlen' });
+      return res.status(400).json({ error: 'Mediendaten fehlen' });
     }
     try {
-      const match = dataUrl.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
+      const match = dataUrl.match(/^data:(image|video)\/([a-zA-Z0-9+.-]+);base64,(.+)$/);
       if (!match) {
-        return res.status(400).json({ error: 'Ungültiges Bildformat' });
+        return res.status(400).json({ error: 'Ungültiges Foto- oder Videoformat' });
       }
+      const mediaKind = match[1].toLowerCase() === 'video' ? 'video' : 'image';
       const extMap: Record<string, string> = {
         jpeg: 'jpg',
         jpg: 'jpg',
@@ -1975,25 +2183,30 @@ async function createServer() {
         webp: 'webp',
         gif: 'gif',
         'svg+xml': 'svg',
+        mp4: 'mp4',
+        webm: 'webm',
+        quicktime: 'mov',
+        ogg: 'ogv',
+        'x-matroska': 'mkv',
       };
-      const ext = extMap[match[1].toLowerCase()] || 'png';
+      const ext = extMap[match[2].toLowerCase()] || (mediaKind === 'video' ? 'mp4' : 'png');
       const baseName = path.basename(filename, path.extname(filename))
         .replace(/[^a-zA-Z0-9\-_]/g, '_')
-        .slice(0, 40) || 'foto';
+        .slice(0, 40) || (mediaKind === 'video' ? 'video' : 'foto');
       const savedName = `${Date.now()}_${baseName}.${ext}`;
 
       const dirs = ensureUserProfileStructure(username);
       const assetsDir = path.join(dirs.wiki, 'assets');
       if (!fs.existsSync(assetsDir)) await fsp.mkdir(assetsDir, { recursive: true });
 
-      const buffer = Buffer.from(match[2], 'base64');
+      const buffer = Buffer.from(match[3], 'base64');
       await fsp.writeFile(path.join(assetsDir, savedName), buffer);
 
       const url = `/api/wiki/assets/${encodeURIComponent(username)}/${encodeURIComponent(savedName)}`;
-      log('info', `Wiki-Foto hochgeladen: ${savedName} (${buffer.length} Bytes)`, 'WIKI');
-      res.json({ success: true, url, filename: savedName });
+      log('info', `Wiki-${mediaKind === 'video' ? 'Video' : 'Foto'} hochgeladen: ${savedName} (${buffer.length} Bytes)`, 'WIKI');
+      res.json({ success: true, url, filename: savedName, mediaKind });
     } catch (err: any) {
-      log('error', `Fehler beim Wiki-Fotoupload: ${err.message}`, 'WIKI');
+      log('error', `Fehler beim Wiki-Medienupload: ${err.message}`, 'WIKI');
       res.status(500).json({ error: err.message });
     }
   });
@@ -2013,7 +2226,7 @@ async function createServer() {
     }
   });
 
-  // Share a Wiki article in-app to another user's Wiki folder (copying .md + local images)
+  // Share a Wiki article in-app to another user's Wiki folder (copying .md + local photos & videos)
   app.post('/api/wiki/share', async (req, res) => {
     const { fromUsername, toUsername, slug } = req.body;
     if (!fromUsername || !toUsername || !slug) {
@@ -2030,10 +2243,10 @@ async function createServer() {
       let raw = await fsp.readFile(srcFile, 'utf-8');
       const assetPrefix = `/api/wiki/assets/${encodeURIComponent(fromUsername)}/`;
       const destAssetPrefix = `/api/wiki/assets/${encodeURIComponent(toUsername)}/`;
-      // Copy referenced images if stored in sender's Wiki/assets
+      // Copy referenced images/videos if stored in sender's Wiki/assets
       const assetDirDest = path.join(destDirs.wiki, 'assets');
       if (!fs.existsSync(assetDirDest)) await fsp.mkdir(assetDirDest, { recursive: true });
-      const regex = new RegExp(assetPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '([^)\\s]+)', 'g');
+      const regex = new RegExp(assetPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '([^)"\'\\s]+)', 'g');
       let match;
       const toCopy = new Set<string>();
       while ((match = regex.exec(raw)) !== null) {

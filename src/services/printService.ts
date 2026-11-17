@@ -205,50 +205,108 @@ export function printNoteA4(title: string, markdownContent: string, accentColor 
 
 export function printWikiArticleA4(article: WikiArticle, accentColor = '#B87333') {
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  const bodyHtml = parseMarkdownToHtml(article.body || '');
   const updatedStr = article.updatedAt
     ? new Date(article.updatedAt).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' })
     : '';
   const tagsHtml = article.tags?.length ? ` · Tags: ${article.tags.map((t) => `#${escapeHtml(t)}`).join(', ')}` : '';
 
-  const imagesHtml =
-    article.images && article.images.length > 0
-      ? `
-      <h2>Fotos &amp; Abbildungen</h2>
-      <div class="wiki-images">
-        ${article.images
+  const renderTextHtml = (markdown: string) => {
+    const withWikilinks = (markdown || '').replace(
+      /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+      (_, target, label) => `<strong>${label || target}</strong>`
+    );
+    return parseMarkdownToHtml(withWikilinks);
+  };
+
+  let orderedBlocksHtml = '';
+  if (Array.isArray(article.blocks) && article.blocks.length > 0) {
+    orderedBlocksHtml = article.blocks
+      .map((blk) => {
+        if (blk.type === 'text') {
+          const titleHtml = blk.title ? `<h2>${escapeHtml(blk.title)}</h2>` : '';
+          return `<div class="content">${titleHtml}${renderTextHtml(blk.content || '')}</div>`;
+        }
+        if (blk.type === 'media' && blk.mediaUrl) {
+          const titleHtml = blk.title ? `<h3>${escapeHtml(blk.title)}</h3>` : '';
+          const isVideo =
+            blk.mediaKind === 'video' ||
+            /\.(mp4|webm|mov|m4v|ogg|ogv)$/i.test(blk.mediaUrl.split('?')[0]) ||
+            /youtube\.com|youtu\.be|vimeo\.com/i.test(blk.mediaUrl);
+          if (isVideo) {
+            return `
+              <div class="wiki-video-print">
+                ${titleHtml}
+                <div class="video-badge">VIDEO-BAUSTEIN</div>
+                <div class="video-title">${escapeHtml(blk.alt || blk.title || 'Verknüpftes Video')}</div>
+                ${blk.caption ? `<div class="video-caption">${escapeHtml(blk.caption)}</div>` : ''}
+                <div class="video-url">${escapeHtml(blk.mediaUrl)}</div>
+              </div>
+            `;
+          }
+          return `
+            <figure class="wiki-figure wiki-figure-block">
+              ${titleHtml}
+              <img src="${escapeHtml(blk.mediaUrl)}" alt="${escapeHtml(blk.alt || article.title)}" />
+              ${blk.caption || blk.alt ? `<figcaption>${escapeHtml(blk.caption || blk.alt || '')}</figcaption>` : ''}
+            </figure>
+          `;
+        }
+        if (blk.type === 'code') {
+          return `
+            <div class="wiki-snippet">
+              <div class="wiki-snippet-header">
+                <span>${escapeHtml(blk.title || 'Code-Block')}</span>
+                <span class="lang">${escapeHtml(blk.language || 'bash')}</span>
+              </div>
+              <pre><code>${escapeHtml(blk.content || '')}</code></pre>
+            </div>
+          `;
+        }
+        return '';
+      })
+      .join('\n');
+  } else {
+    const bodyHtml = renderTextHtml(article.body || '');
+    const imagesHtml =
+      article.images && article.images.length > 0
+        ? `
+        <h2>Fotos &amp; Abbildungen</h2>
+        <div class="wiki-images">
+          ${article.images
+            .map(
+              (img) => `
+            <figure class="wiki-figure">
+              <img src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || article.title)}" />
+              ${img.caption ? `<figcaption>${escapeHtml(img.caption)}</figcaption>` : ''}
+            </figure>
+          `
+            )
+            .join('')}
+        </div>
+      `
+        : '';
+
+    const snippetsHtml =
+      article.snippets && article.snippets.length > 0
+        ? `
+        <h2>Code-Ablage</h2>
+        ${article.snippets
           .map(
-            (img) => `
-          <figure class="wiki-figure">
-            <img src="${escapeHtml(img.url)}" alt="${escapeHtml(img.alt || article.title)}" />
-            ${img.caption ? `<figcaption>${escapeHtml(img.caption)}</figcaption>` : ''}
-          </figure>
+            (snip) => `
+          <div class="wiki-snippet">
+            <div class="wiki-snippet-header">
+              <span>${escapeHtml(snip.title || 'Code-Snippet')}</span>
+              <span class="lang">${escapeHtml(snip.language || 'text')}</span>
+            </div>
+            <pre><code>${escapeHtml(snip.code || '')}</code></pre>
+          </div>
         `
           )
           .join('')}
-      </div>
-    `
-      : '';
-
-  const snippetsHtml =
-    article.snippets && article.snippets.length > 0
-      ? `
-      <h2>Code-Ablage</h2>
-      ${article.snippets
-        .map(
-          (snip) => `
-        <div class="wiki-snippet">
-          <div class="wiki-snippet-header">
-            <span>${escapeHtml(snip.title || 'Code-Snippet')}</span>
-            <span class="lang">${escapeHtml(snip.language || 'text')}</span>
-          </div>
-          <pre><code>${escapeHtml(snip.code || '')}</code></pre>
-        </div>
       `
-        )
-        .join('')}
-    `
-      : '';
+        : '';
+    orderedBlocksHtml = `<div class="content">${bodyHtml}</div>${imagesHtml}${snippetsHtml}`;
+  }
 
   triggerIframePrint(
     `
@@ -272,10 +330,10 @@ export function printWikiArticleA4(article: WikiArticle, accentColor = '#B87333'
             margin-top: 8px;
           }
           .wiki-figure {
-            margin: 0;
+            margin: 10px 0;
             border: 1px solid #e5e3dc;
             border-radius: 6px;
-            padding: 6px;
+            padding: 8px;
             background: #faf9f5;
             break-inside: avoid;
             text-align: center;
@@ -283,7 +341,7 @@ export function printWikiArticleA4(article: WikiArticle, accentColor = '#B87333'
           .wiki-figure img,
           .content img {
             max-width: 100%;
-            max-height: 95mm;
+            max-height: 105mm;
             object-fit: contain;
             display: block;
             margin: 0 auto;
@@ -291,10 +349,41 @@ export function printWikiArticleA4(article: WikiArticle, accentColor = '#B87333'
           .wiki-figure figcaption {
             font-size: 8.5pt;
             color: #555;
-            margin-top: 4px;
+            margin-top: 5px;
+          }
+          .wiki-video-print {
+            margin: 10px 0;
+            border: 1px dashed ${accentColor};
+            border-radius: 6px;
+            padding: 8px 12px;
+            background: #fdfaf5;
+            break-inside: avoid;
+          }
+          .video-badge {
+            font-size: 7.5pt;
+            font-weight: 800;
+            color: ${accentColor};
+            letter-spacing: 0.05em;
+          }
+          .video-title {
+            font-weight: 700;
+            font-size: 10pt;
+            margin-top: 2px;
+          }
+          .video-caption {
+            font-size: 9pt;
+            color: #444;
+            margin-top: 2px;
+          }
+          .video-url {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 8pt;
+            color: #666;
+            word-break: break-all;
+            margin-top: 3px;
           }
           .wiki-snippet {
-            margin-bottom: 10px;
+            margin: 10px 0;
             break-inside: avoid;
           }
           .wiki-snippet-header {
@@ -326,9 +415,7 @@ export function printWikiArticleA4(article: WikiArticle, accentColor = '#B87333'
           Ochre Wiki · Kategorie: <strong>${escapeHtml(article.category || 'Allgemein')}</strong>${updatedStr ? ` · Stand: ${escapeHtml(updatedStr)}` : ''}${tagsHtml}
         </div>
         <h1>${escapeHtml(article.title)}</h1>
-        <div class="content">${bodyHtml}</div>
-        ${imagesHtml}
-        ${snippetsHtml}
+        ${orderedBlocksHtml}
       </body>
     </html>
   `,

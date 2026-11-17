@@ -51,6 +51,83 @@
   scrollbar-width: none;
 }
 
+@keyframes ochre-dish-wiggle {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  15% {
+    transform: rotate(-6deg) scale(1.04);
+  }
+  32% {
+    transform: rotate(5.5deg) scale(1.03);
+  }
+  48% {
+    transform: rotate(-4.5deg) scale(1.02);
+  }
+  64% {
+    transform: rotate(3.2deg) scale(1.015);
+  }
+  80% {
+    transform: rotate(-1.8deg) scale(1.005);
+  }
+  92% {
+    transform: rotate(0.8deg) scale(1);
+  }
+  100% {
+    transform: rotate(0deg) scale(1);
+  }
+}
+
+.animate-dish-wiggle {
+  animation: ochre-dish-wiggle 0.68s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+  transform-origin: center center;
+}
+
+@keyframes ochre-drawer-in-left {
+  from {
+    transform: translateX(-100%);
+    opacity: 0.6;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-drawer-in-left {
+  animation: ochre-drawer-in-left 0.18s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes ochre-drawer-in-right {
+  from {
+    transform: translateX(100%);
+    opacity: 0.6;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-drawer-in-right {
+  animation: ochre-drawer-in-right 0.18s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes ochre-drawer-close-up {
+  from {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+}
+
+.animate-drawer-close-up {
+  animation: ochre-drawer-close-up 0.2s cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+
 /* DIN A4 Print Optimization */
 @media print {
   @page {

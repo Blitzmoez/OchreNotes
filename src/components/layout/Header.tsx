@@ -9,7 +9,7 @@ import {
   Sun, 
   Moon, 
   Settings, 
-  ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Download,
   LogOut,
@@ -90,25 +90,69 @@ export const Header: React.FC<HeaderProps> = ({
   const { t } = useTranslation();
   // Ochre Suite modular menu dropdown
   const [isSuiteMenuOpen, setIsSuiteMenuOpen] = useState(false);
+  const [isSuiteMenuClosing, setIsSuiteMenuClosing] = useState(false);
   // User & actions menu dropdown
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isUserMenuClosing, setIsUserMenuClosing] = useState(false);
 
   const suiteMenuRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const suiteCloseTimerRef = useRef<number | null>(null);
+  const userCloseTimerRef = useRef<number | null>(null);
+
+  const openSuiteMenu = () => {
+    if (suiteCloseTimerRef.current) {
+      window.clearTimeout(suiteCloseTimerRef.current);
+      suiteCloseTimerRef.current = null;
+    }
+    setIsSuiteMenuClosing(false);
+    setIsSuiteMenuOpen(true);
+  };
+
+  const closeSuiteMenu = () => {
+    if (!isSuiteMenuOpen || isSuiteMenuClosing) return;
+    setIsSuiteMenuClosing(true);
+    if (suiteCloseTimerRef.current) window.clearTimeout(suiteCloseTimerRef.current);
+    suiteCloseTimerRef.current = window.setTimeout(() => {
+      setIsSuiteMenuOpen(false);
+      setIsSuiteMenuClosing(false);
+      suiteCloseTimerRef.current = null;
+    }, 195);
+  };
+
+  const openUserMenu = () => {
+    if (userCloseTimerRef.current) {
+      window.clearTimeout(userCloseTimerRef.current);
+      userCloseTimerRef.current = null;
+    }
+    setIsUserMenuClosing(false);
+    setIsUserMenuOpen(true);
+  };
+
+  const closeUserMenu = () => {
+    if (!isUserMenuOpen || isUserMenuClosing) return;
+    setIsUserMenuClosing(true);
+    if (userCloseTimerRef.current) window.clearTimeout(userCloseTimerRef.current);
+    userCloseTimerRef.current = window.setTimeout(() => {
+      setIsUserMenuOpen(false);
+      setIsUserMenuClosing(false);
+      userCloseTimerRef.current = null;
+    }, 195);
+  };
 
   // Close menus on outside click
   useEffect(() => {
     const handleOutsideClick = (e: MouseEvent) => {
       if (suiteMenuRef.current && !suiteMenuRef.current.contains(e.target as Node)) {
-        setIsSuiteMenuOpen(false);
+        closeSuiteMenu();
       }
       if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
-        setIsUserMenuOpen(false);
+        closeUserMenu();
       }
     };
     document.addEventListener('mousedown', handleOutsideClick);
     return () => document.removeEventListener('mousedown', handleOutsideClick);
-  }, []);
+  });
 
   const isBottomMobile = mobileBarPosition === 'bottom';
 
@@ -128,8 +172,10 @@ export const Header: React.FC<HeaderProps> = ({
           {isSuiteMenuOpen && (
             <div 
               data-no-swipe
-              onClick={() => setIsSuiteMenuOpen(false)}
-              className="fixed inset-0 z-[100] bg-black/25 backdrop-blur-2xs"
+              onClick={closeSuiteMenu}
+              className={`fixed inset-0 z-[100] bg-black/25 backdrop-blur-2xs transition-opacity duration-200 ${
+                isSuiteMenuClosing ? 'opacity-0' : 'opacity-100'
+              }`}
             />
           )}
 
@@ -137,7 +183,11 @@ export const Header: React.FC<HeaderProps> = ({
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              setIsSuiteMenuOpen((prev) => !prev);
+              if (isSuiteMenuOpen && !isSuiteMenuClosing) {
+                closeSuiteMenu();
+              } else {
+                openSuiteMenu();
+              }
             }}
             className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[#C87D20] shadow-2xs hover:shadow-xs transition-all text-left group cursor-pointer active:scale-95"
             title="Modulauswahl der Ochre Suite öffnen"
@@ -207,16 +257,18 @@ export const Header: React.FC<HeaderProps> = ({
                   ? 'Essensplan'
                   : 'Finanzen'}
               </span>
-              <ChevronDown className={`w-3.5 h-3.5 text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 transition-transform duration-200 ${isSuiteMenuOpen ? 'rotate-180' : ''}`} />
+              <ChevronRight className={`w-3.5 h-3.5 text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 transition-transform duration-200 ${isSuiteMenuOpen && !isSuiteMenuClosing ? 'rotate-180' : ''}`} />
             </div>
           </button>
 
-          {/* Module Switcher Full-Height Left Drawer (Desktop & Mobile, No Swipe Gesture) */}
+          {/* Module Switcher Full-Height Left Drawer (Slides in from left, closes upward) */}
           {isSuiteMenuOpen && (
             <div 
               data-no-swipe
               onClick={(e) => e.stopPropagation()}
-              className="fixed inset-y-0 left-0 h-[100dvh] w-72 sm:w-80 bg-white dark:bg-[#1E1F23] shadow-2xl border-r border-[#E5E3DC] dark:border-[#2F3136] z-[110] flex flex-col p-4 space-y-3 animate-in slide-in-from-left duration-150"
+              className={`fixed inset-y-0 left-0 h-[100dvh] w-72 sm:w-80 bg-white dark:bg-[#1E1F23] shadow-2xl border-r border-[#E5E3DC] dark:border-[#2F3136] z-[110] flex flex-col p-4 space-y-3 ${
+                isSuiteMenuClosing ? 'animate-drawer-close-up pointer-events-none' : 'animate-drawer-in-left'
+              }`}
             >
               {/* Prominent Ochre Suite Brand Header */}
               <div className="flex items-center justify-between pb-3 border-b border-[#E5E3DC] dark:border-[#2F3136] shrink-0">
@@ -238,7 +290,7 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
                 <button
                   type="button"
-                  onClick={() => setIsSuiteMenuOpen(false)}
+                  onClick={closeSuiteMenu}
                   className="w-8 h-8 rounded-full bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer"
                   aria-label="Menü schließen"
                 >
@@ -467,7 +519,7 @@ export const Header: React.FC<HeaderProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    setIsSuiteMenuOpen(false);
+                    closeSuiteMenu();
                     onOpenSettings();
                   }}
                   style={{ color: activeColors.notes }}
@@ -478,7 +530,7 @@ export const Header: React.FC<HeaderProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setIsSuiteMenuOpen(false)}
+                  onClick={closeSuiteMenu}
                   className="w-full min-h-[42px] rounded-xl bg-[#F4F3EF] hover:bg-neutral-200 dark:bg-[#25272C] dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-200 font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer active:scale-[0.98]"
                 >
                   <X className="w-4 h-4" />
@@ -622,13 +674,21 @@ export const Header: React.FC<HeaderProps> = ({
           {isUserMenuOpen && (
             <div 
               data-no-swipe
-              onClick={() => setIsUserMenuOpen(false)}
-              className="fixed inset-0 z-[100] bg-black/25 backdrop-blur-2xs"
+              onClick={closeUserMenu}
+              className={`fixed inset-0 z-[100] bg-black/25 backdrop-blur-2xs transition-opacity duration-200 ${
+                isUserMenuClosing ? 'opacity-0' : 'opacity-100'
+              }`}
             />
           )}
 
           <button
-            onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+            onClick={() => {
+              if (isUserMenuOpen && !isUserMenuClosing) {
+                closeUserMenu();
+              } else {
+                openUserMenu();
+              }
+            }}
             className="flex items-center gap-2 px-2.5 py-1.5 rounded-full border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[#C87D20] bg-white dark:bg-[#1E1F23] transition-all cursor-pointer shadow-2xs hover:shadow-xs active:scale-95"
             title="Benutzer- und Funktionsmenü öffnen"
           >
@@ -647,15 +707,17 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 hidden md:inline max-w-[90px] truncate">
               {currentUser?.displayName || 'Profil'}
             </span>
-            <ChevronDown className={`w-3.5 h-3.5 text-neutral-400 transition-transform ${isUserMenuOpen ? 'rotate-180' : ''}`} />
+            <ChevronLeft className={`w-3.5 h-3.5 text-neutral-400 transition-transform duration-200 ${isUserMenuOpen && !isUserMenuClosing ? 'rotate-180' : ''}`} />
           </button>
 
-          {/* Right-Anchored Full-Height Profile Drawer (Matches Module Drawer optics, keeps left edge free) */}
+          {/* Right-Anchored Full-Height Profile Drawer (Slides in from right, closes upward) */}
           {isUserMenuOpen && (
             <div
               data-no-swipe
               onClick={(e) => e.stopPropagation()}
-              className="fixed inset-y-0 right-0 h-[100dvh] w-72 sm:w-80 max-w-[85vw] bg-white dark:bg-[#1E1F23] shadow-2xl border-l border-[#E5E3DC] dark:border-[#2F3136] z-[110] flex flex-col p-4 space-y-3 animate-in slide-in-from-right duration-150"
+              className={`fixed inset-y-0 right-0 h-[100dvh] w-72 sm:w-80 max-w-[85vw] bg-white dark:bg-[#1E1F23] shadow-2xl border-l border-[#E5E3DC] dark:border-[#2F3136] z-[110] flex flex-col p-4 space-y-3 ${
+                isUserMenuClosing ? 'animate-drawer-close-up pointer-events-none' : 'animate-drawer-in-right'
+              }`}
             >
               {/* Drawer Header matching Module Drawer */}
               <div className="flex items-center justify-between pb-3 border-b border-[#E5E3DC] dark:border-[#2F3136] shrink-0">
@@ -686,7 +748,7 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
                 <button
                   type="button"
-                  onClick={() => setIsUserMenuOpen(false)}
+                  onClick={closeUserMenu}
                   className="w-8 h-8 rounded-full bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer shrink-0"
                   aria-label="Menü schließen"
                 >
@@ -947,7 +1009,7 @@ export const Header: React.FC<HeaderProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => setIsUserMenuOpen(false)}
+                  onClick={closeUserMenu}
                   className="w-full min-h-[42px] rounded-xl bg-[#F4F3EF] hover:bg-neutral-200 dark:bg-[#25272C] dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-200 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer active:scale-[0.98]"
                 >
                   <X className="w-4 h-4" />

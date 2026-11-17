@@ -62,9 +62,17 @@ const INITIAL_TRANSACTIONS: FinanceTransaction[] = [
 
 interface FinanceViewProps {
   accentColor?: string;
+  mobileBarPosition?: 'top' | 'bottom';
 }
 
-export const FinanceView: React.FC<FinanceViewProps> = ({ accentColor = '#8E6126' }) => {
+export const FinanceView: React.FC<FinanceViewProps> = ({
+  accentColor = '#8E6126',
+  mobileBarPosition = 'top',
+}) => {
+  const [isMobileNavExpanded, setIsMobileNavExpanded] = useState(false);
+  const [mobileFocusSection, setMobileFocusSection] = useState<'overview' | 'transactions'>('overview');
+  const overviewRef = React.useRef<HTMLDivElement>(null);
+  const transactionsRef = React.useRef<HTMLDivElement>(null);
   const [transactions, setTransactions] = useState<FinanceTransaction[]>(() => {
     const saved = localStorage.getItem('ochre_finance_tx');
     return saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
@@ -312,8 +320,8 @@ export const FinanceView: React.FC<FinanceViewProps> = ({ accentColor = '#8E6126
       </div>
 
       {/* Main Finance Canvas */}
-      <div className="flex-1 overflow-y-auto p-3 md:p-6 space-y-5">
-        <div className="max-w-6xl mx-auto space-y-5">
+      <div className="flex-1 overflow-y-auto overscroll-y-contain p-3 md:p-6 pb-24 lg:pb-6 space-y-5">
+        <div ref={overviewRef} className="max-w-6xl mx-auto space-y-5">
           
           {/* Top KPI Cards: Einnahmen, Ausgaben, Saldo, Baranteil */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -419,7 +427,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({ accentColor = '#8E6126
           </div>
 
           {/* Section: Transactions Table & Search */}
-          <div className="p-4 rounded-3xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-2xs space-y-3">
+          <div ref={transactionsRef} className="p-4 rounded-3xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-2xs space-y-3">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-1 border-b border-[#E5E3DC] dark:border-[#2B2D31]">
               <div className="flex items-center gap-2">
                 <FileText className="w-4 h-4 text-[var(--finance-accent)]" />
@@ -518,17 +526,126 @@ export const FinanceView: React.FC<FinanceViewProps> = ({ accentColor = '#8E6126
       </div>
 
       {/* ======================================================== */}
-      {/* MOBILE FLOATING ACTION BUTTON: SCHNELLE BARZAHLUNG */}
+      {/* MOBILE & TABLET FLOATING THUMB-ZONE NAVIGATION MENU */}
       {/* ======================================================== */}
-      <div className="lg:hidden">
-        <button
-          onClick={() => setIsCashModalOpen(true)}
-          className="fixed bottom-6 right-5 z-40 w-13 h-13 rounded-full bg-[var(--finance-accent)] text-white shadow-2xl flex items-center justify-center transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
-          title="Schnelle Barzahlung erfassen"
-          aria-label="Barzahlung erfassen"
-        >
-          <Banknote className="w-6 h-6" />
-        </button>
+      {isMobileNavExpanded && (
+        <div
+          onClick={() => setIsMobileNavExpanded(false)}
+          className="fixed inset-0 bg-black/25 dark:bg-black/50 backdrop-blur-2xs z-40 lg:hidden"
+        />
+      )}
+
+      <div className="lg:hidden select-none">
+        {isMobileNavExpanded ? (
+          <div
+            style={{ borderColor: accentColor }}
+            className={`fixed ${
+              mobileBarPosition === 'bottom' ? 'bottom-[4.75rem]' : 'bottom-5'
+            } left-3 right-3 sm:left-auto sm:right-4 sm:min-w-[340px] sm:max-w-[calc(100vw-2rem)] z-50 h-14 px-2 sm:px-3 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center justify-between gap-1 sm:gap-1.5 text-neutral-800 dark:text-neutral-200`}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setMobileFocusSection('overview');
+                overviewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                setIsMobileNavExpanded(false);
+              }}
+              style={mobileFocusSection === 'overview' ? { backgroundColor: accentColor } : undefined}
+              className={`flex-1 sm:flex-initial h-10 sm:px-3 rounded-full flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 ${
+                mobileFocusSection === 'overview'
+                  ? 'text-white shadow-xs'
+                  : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
+              }`}
+              title="Finanzübersicht & KPIs"
+              aria-label="Übersicht"
+            >
+              <PieChart className="w-4.5 h-4.5 shrink-0" />
+              <span className="hidden md:inline text-xs font-semibold whitespace-nowrap">Übersicht</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setMobileFocusSection('transactions');
+                transactionsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                setIsMobileNavExpanded(false);
+              }}
+              style={mobileFocusSection === 'transactions' ? { backgroundColor: accentColor } : undefined}
+              className={`flex-1 sm:flex-initial h-10 sm:px-3 rounded-full flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 ${
+                mobileFocusSection === 'transactions'
+                  ? 'text-white shadow-xs'
+                  : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
+              }`}
+              title="Buchungen & Filter"
+              aria-label="Buchungen"
+            >
+              <FileText className="w-4.5 h-4.5 shrink-0" />
+              <span className="hidden md:inline text-xs font-semibold whitespace-nowrap">Buchungen</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setIsMobileNavExpanded(false);
+                setIsCsvModalOpen(true);
+              }}
+              className="flex-1 sm:flex-initial h-10 sm:px-3 rounded-full flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800"
+              title="Bank-CSV importieren"
+              aria-label="CSV-Import"
+            >
+              <Upload className="w-4.5 h-4.5 shrink-0" />
+              <span className="hidden md:inline text-xs font-semibold whitespace-nowrap">CSV</span>
+            </button>
+
+            <div className="w-px h-5 bg-[#E5E3DC] dark:bg-[#2F3136] mx-0.5 shrink-0" />
+
+            <button
+              type="button"
+              onClick={() => {
+                setIsMobileNavExpanded(false);
+                setIsCashModalOpen(true);
+              }}
+              style={{ backgroundColor: accentColor }}
+              className="flex items-center justify-center gap-1.5 h-10 px-3 sm:px-3.5 rounded-full text-xs font-semibold text-white transition-all cursor-pointer active:scale-95 shrink-0 shadow-xs hover:opacity-95"
+              title="Schnelle Barzahlung erfassen"
+              aria-label="Barzahlung"
+            >
+              <Plus className="w-4 h-4 shrink-0" />
+              <span className="whitespace-nowrap">Bar</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsMobileNavExpanded(false)}
+              className="w-9.5 h-9.5 rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 flex items-center justify-center cursor-pointer shadow-2xs active:scale-95 shrink-0"
+              aria-label="Finanz-Navigation schließen"
+              title="Navigation schließen"
+            >
+              <X className="w-4.5 h-4.5" />
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setIsMobileNavExpanded(true)}
+            style={{ borderColor: accentColor, color: accentColor }}
+            className={`fixed ${
+              mobileBarPosition === 'bottom' ? 'bottom-[4.75rem]' : 'bottom-5'
+            } right-4 z-40 w-13 h-13 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center justify-center transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer`}
+            title="Finanzen-Navigation öffnen"
+            aria-label="Finanzen-Navigation umschalten"
+          >
+            {mobileFocusSection === 'transactions' ? (
+              <FileText className="w-5 h-5" />
+            ) : (
+              <BarChart3 className="w-5 h-5" />
+            )}
+            <span
+              style={{ backgroundColor: accentColor }}
+              className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white dark:border-[#1E1F23]"
+            />
+          </button>
+        )}
       </div>
 
       {/* ======================================================== */}

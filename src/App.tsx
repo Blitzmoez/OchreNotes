@@ -1004,7 +1004,12 @@ export default function App() {
           <WikiView
             username={currentUser?.username || 'michael'}
             accentColor={profileSettings.profile1.colors.wiki}
+            mobileBarPosition={profileSettings.mobileBarPosition || 'top'}
             onActiveArticleChange={setActiveWikiArticle}
+            onNavigateToNote={(noteTitle) => {
+              setActiveSuiteModule('notes');
+              openNoteByTitle(noteTitle);
+            }}
           />
         </div>
       )}
@@ -1048,7 +1053,10 @@ export default function App() {
 
       {activeSuiteModule === 'finance' && (
         <div className="flex-1 flex overflow-hidden">
-          <FinanceView accentColor={profileSettings.profile1.colors.finance} />
+          <FinanceView
+            accentColor={profileSettings.profile1.colors.finance}
+            mobileBarPosition={profileSettings.mobileBarPosition || 'top'}
+          />
         </div>
       )}
 

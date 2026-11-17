@@ -462,32 +462,35 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
         {isDatePickerOpen && (
           <div
             onClick={(e) => e.stopPropagation()}
-            className="ml-7 my-1.5 p-2 bg-white dark:bg-[#1E1F23] rounded-lg shadow-xl border border-[#E5E3DC] dark:border-[#2F3136] flex items-center gap-2 z-30 animate-in fade-in duration-100"
+            className="ml-0 sm:ml-7 my-1.5 p-2.5 w-full sm:w-fit max-w-full bg-white dark:bg-[#1E1F23] rounded-xl shadow-lg border border-[#E5E3DC] dark:border-[#2F3136] flex flex-wrap items-center gap-2 z-30 box-border"
           >
-            <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 flex items-center gap-1">
+            <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 flex items-center gap-1 shrink-0">
               <Calendar className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
-              <span>Fälligkeitsdatum:</span>
+              <span>Fällig:</span>
             </span>
             <input
               type="date"
               value={selectedDueDate}
               onChange={(e) => onChangeDueDate(e.target.value)}
-              className="text-xs px-2 py-1 rounded bg-[#F4F3EF] dark:bg-[#2A2C31] border border-[#E5E3DC] dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 outline-hidden"
+              className="flex-1 min-w-[130px] max-w-full text-xs px-2 py-1.5 rounded-lg bg-[#F4F3EF] dark:bg-[#2A2C31] border border-[#E5E3DC] dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 outline-hidden"
             />
-            <button
-              type="button"
-              onClick={() => onSaveDueDate(idx, selectedDueDate)}
-              className="text-xs px-2.5 py-1 rounded bg-[var(--ochre-accent)] text-white font-medium hover:bg-[#b06c19] cursor-pointer"
-            >
-              Speichern
-            </button>
-            <button
-              type="button"
-              onClick={onCloseDatePicker}
-              className="p-1 rounded-full text-neutral-400 hover:text-neutral-600 cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
+            <div className="flex items-center gap-1.5 ml-auto">
+              <button
+                type="button"
+                onClick={() => onSaveDueDate(idx, selectedDueDate)}
+                className="text-xs px-3 py-1.5 rounded-lg bg-[var(--ochre-accent)] text-white font-semibold hover:opacity-90 cursor-pointer shrink-0"
+              >
+                Speichern
+              </button>
+              <button
+                type="button"
+                onClick={onCloseDatePicker}
+                className="p-1.5 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-500 hover:text-neutral-700 cursor-pointer shrink-0"
+                aria-label="Schließen"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         )}
 

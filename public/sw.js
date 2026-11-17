@@ -1,10 +1,12 @@
 // Ochre Suite PWA Service Worker
-const CACHE_NAME = 'ochre-suite-v2';
+const CACHE_NAME = 'ochre-suite-v3';
 const PRECACHE_ASSETS = [
   '/manifest.json',
-  '/icons/icon-192.svg',
-  '/icons/icon-512.svg',
-  '/icons/icon-maskable.svg'
+  '/favicon.svg',
+  '/apple-touch-icon.png',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
+  '/icons/icon-maskable-512.png'
 ];
 
 self.addEventListener('install', (event) => {

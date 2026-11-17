@@ -6,26 +6,42 @@ import {
   Copy,
   Check,
   ImagePlus,
+  Video,
   Code2,
   Edit3,
-  Eye,
   Trash2,
   Download,
   FolderOpen,
   X,
   Menu,
   ChevronRight,
+  ChevronDown,
   Save,
   Maximize2,
   FileText,
+  ArrowUp,
+  ArrowDown,
+  Link2,
+  Camera,
+  Upload,
+  ExternalLink,
+  Layers,
 } from 'lucide-react';
-import { WikiArticle, WikiCodeSnippet, WikiImage } from '../../types';
+import {
+  WikiArticle,
+  WikiBlock,
+  WikiBlockType,
+  WikiCodeSnippet,
+  WikiImage,
+} from '../../types';
 import { api } from '../../services/api';
 
 interface WikiViewProps {
   username: string;
   accentColor?: string;
+  mobileBarPosition?: 'top' | 'bottom';
   onActiveArticleChange?: (article: WikiArticle | null) => void;
+  onNavigateToNote?: (title: string) => void;
 }
 
 const CODE_LANGUAGES = [
@@ -41,10 +57,75 @@ const CODE_LANGUAGES = [
   'text',
 ];
 
+function inferMediaKind(url: string): 'image' | 'video' {
+  const clean = (url || '').split('?')[0].toLowerCase();
+  if (
+    /\.(mp4|webm|mov|m4v|ogg|ogv|mkv)$/i.test(clean) ||
+    /youtube\.com|youtu\.be|vimeo\.com/i.test(url || '')
+  ) {
+    return 'video';
+  }
+  return 'image';
+}
+
+function extractYouTubeEmbedUrl(url: string): string | null {
+  if (!url) return null;
+  const watchMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{6,})/);
+  if (watchMatch?.[1]) {
+    return `https://www.youtube.com/embed/${watchMatch[1]}`;
+  }
+  return null;
+}
+
+function ensureArticleBlocks(article: WikiArticle): WikiBlock[] {
+  if (Array.isArray(article.blocks) && article.blocks.length > 0) {
+    return article.blocks;
+  }
+  const blocks: WikiBlock[] = [];
+  if (article.body?.trim()) {
+    blocks.push({
+      id: `wb_txt_${Date.now()}`,
+      type: 'text',
+      content: article.body,
+    });
+  }
+  (article.images || []).forEach((img, idx) => {
+    blocks.push({
+      id: img.id || `wb_img_${idx}_${Date.now()}`,
+      type: 'media',
+      mediaUrl: img.url,
+      mediaKind: inferMediaKind(img.url),
+      alt: img.alt,
+      caption: img.caption,
+    });
+  });
+  (article.snippets || []).forEach((snip, idx) => {
+    blocks.push({
+      id: snip.id || `wb_code_${idx}_${Date.now()}`,
+      type: 'code',
+      title: snip.title,
+      language: snip.language,
+      content: snip.code,
+      collapsible: snip.collapsible,
+      defaultCollapsed: snip.defaultCollapsed,
+    });
+  });
+  if (blocks.length === 0) {
+    blocks.push({
+      id: `wb_txt_default_${Date.now()}`,
+      type: 'text',
+      content: '',
+    });
+  }
+  return blocks;
+}
+
 export const WikiView: React.FC<WikiViewProps> = ({
   username,
   accentColor = '#B87333',
+  mobileBarPosition = 'top',
   onActiveArticleChange,
+  onNavigateToNote,
 }) => {
   const [articles, setArticles] = useState<WikiArticle[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -56,16 +137,27 @@ export const WikiView: React.FC<WikiViewProps> = ({
 
   // Draft state when editing or creating
   const [draft, setDraft] = useState<WikiArticle | null>(null);
+  const [draftBlocks, setDraftBlocks] = useState<WikiBlock[]>([]);
   const [originalSlug, setOriginalSlug] = useState<string | undefined>(undefined);
   const [tagsInput, setTagsInput] = useState('');
   const [saving, setSaving] = useState(false);
-  const [uploadingImage, setUploadingImage] = useState(false);
+  const [uploadingBlockId, setUploadingBlockId] = useState<string | null>(null);
+  const [mediaError, setMediaError] = useState<string | null>(null);
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [zoomedImage, setZoomedImage] = useState<WikiImage | null>(null);
   const [confirmDeleteSlug, setConfirmDeleteSlug] = useState<string | null>(null);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Collapsible blocks open/closed map in Reader mode
+  const [collapsedMap, setCollapsedMap] = useState<Record<string, boolean>>({});
+
+  // "+ Baustein" Chooser Modal (insert at specific index or append)
+  const [addBlockModalIndex, setAddBlockModalIndex] = useState<number | null>(null);
+
+  // Hidden file inputs for media block upload & mobile camera
+  const mediaFileInputRef = useRef<HTMLInputElement>(null);
+  const mediaCameraInputRef = useRef<HTMLInputElement>(null);
+  const activeUploadTargetRef = useRef<string | null>(null);
 
   const loadArticles = async (preferSlug?: string) => {
     setLoading(true);
@@ -94,6 +186,19 @@ export const WikiView: React.FC<WikiViewProps> = ({
     [articles, selectedSlug]
   );
 
+  // Reset collapsible states whenever switching article
+  useEffect(() => {
+    if (!activeArticle) return;
+    const blocks = ensureArticleBlocks(activeArticle);
+    const initial: Record<string, boolean> = {};
+    blocks.forEach((b) => {
+      if (b.collapsible) {
+        initial[b.id] = b.defaultCollapsed !== false ? Boolean(b.defaultCollapsed) : false;
+      }
+    });
+    setCollapsedMap(initial);
+  }, [activeArticle?.slug, activeArticle?.updatedAt]);
+
   useEffect(() => {
     if (onActiveArticleChange) {
       onActiveArticleChange(activeArticle);
@@ -116,7 +221,13 @@ export const WikiView: React.FC<WikiViewProps> = ({
         a.title.toLowerCase().includes(q) ||
         a.category.toLowerCase().includes(q) ||
         a.body.toLowerCase().includes(q) ||
-        a.tags.some((t) => t.toLowerCase().includes(q));
+        a.tags.some((t) => t.toLowerCase().includes(q)) ||
+        (a.blocks || []).some(
+          (b) =>
+            (b.title || '').toLowerCase().includes(q) ||
+            (b.content || '').toLowerCase().includes(q) ||
+            (b.caption || '').toLowerCase().includes(q)
+        );
       const matchesCat = selectedCategory === 'all' || a.category === selectedCategory;
       return matchesSearch && matchesCat;
     });
@@ -130,35 +241,69 @@ export const WikiView: React.FC<WikiViewProps> = ({
     } catch {}
   };
 
+  const handleWikilinkClick = (rawTarget: string) => {
+    const cleanTarget = rawTarget.replace(/\.md$/i, '').trim();
+    if (!cleanTarget) return;
+    const matchedWiki = articles.find(
+      (a) =>
+        a.title.toLowerCase() === cleanTarget.toLowerCase() ||
+        a.slug.toLowerCase() === cleanTarget.toLowerCase()
+    );
+    if (matchedWiki) {
+      setSelectedSlug(matchedWiki.slug);
+      setMode('read');
+      setDraft(null);
+      return;
+    }
+    if (onNavigateToNote) {
+      onNavigateToNote(cleanTarget);
+    }
+  };
+
   const handleStartNewArticle = () => {
+    const starterBlocks: WikiBlock[] = [
+      {
+        id: `wb_txt_${Date.now()}`,
+        type: 'text',
+        content: '1. Schritt eins beschreiben...\n2. Verknüpfe verwandte Seiten einfach mit [[Wikilink]].',
+      },
+      {
+        id: `wb_code_${Date.now() + 1}`,
+        type: 'code',
+        title: 'Beispiel-Befehl',
+        language: 'bash',
+        content: '# Hier Code oder Befehl für Copy & Paste ablegen',
+        collapsible: false,
+        defaultCollapsed: false,
+      },
+    ];
     const newArt: WikiArticle = {
       slug: '',
       title: '',
       category: selectedCategory !== 'all' ? selectedCategory : 'Anleitungen',
       tags: ['anleitung'],
       updatedAt: new Date().toISOString(),
-      body: '1. Schritt eins beschreiben...\n2. Schritt zwei beschreiben...',
+      body: starterBlocks[0].content || '',
       images: [],
-      snippets: [
-        {
-          id: `snip_${Date.now()}`,
-          title: 'Beispiel-Befehl',
-          language: 'bash',
-          code: '# Hier Code oder Befehl für Copy & Paste ablegen',
-        },
-      ],
+      snippets: [],
+      blocks: starterBlocks,
     };
     setDraft(newArt);
+    setDraftBlocks(starterBlocks);
     setOriginalSlug(undefined);
     setTagsInput(newArt.tags.join(', '));
+    setMediaError(null);
     setMode('edit');
     setIsMobileIndexOpen(false);
   };
 
   const handleStartEdit = (article: WikiArticle) => {
-    setDraft(JSON.parse(JSON.stringify(article)));
+    const cloned: WikiArticle = JSON.parse(JSON.stringify(article));
+    setDraft(cloned);
+    setDraftBlocks(ensureArticleBlocks(cloned));
     setOriginalSlug(article.slug);
     setTagsInput(article.tags.join(', '));
+    setMediaError(null);
     setMode('edit');
   };
 
@@ -171,6 +316,37 @@ export const WikiView: React.FC<WikiViewProps> = ({
         .map((t) => t.trim().replace(/^#/, ''))
         .filter(Boolean);
 
+      const cleanBlocks = draftBlocks.map((b) => ({
+        ...b,
+        title: b.title?.trim() || undefined,
+      }));
+
+      const aggregatedBody = cleanBlocks
+        .filter((b) => b.type === 'text')
+        .map((b) => (b.title ? `## ${b.title}\n\n${b.content || ''}` : b.content || ''))
+        .filter(Boolean)
+        .join('\n\n');
+
+      const aggregatedImages: WikiImage[] = cleanBlocks
+        .filter((b) => b.type === 'media' && b.mediaUrl)
+        .map((b) => ({
+          id: b.id,
+          url: b.mediaUrl || '',
+          alt: b.alt || b.title || 'Medien',
+          caption: b.caption,
+        }));
+
+      const aggregatedSnippets: WikiCodeSnippet[] = cleanBlocks
+        .filter((b) => b.type === 'code')
+        .map((b) => ({
+          id: b.id,
+          title: b.title || 'Code-Block',
+          language: b.language || 'bash',
+          code: b.content || '',
+          collapsible: b.collapsible,
+          defaultCollapsed: b.defaultCollapsed,
+        }));
+
       const saved = await api.saveWikiArticle(
         username,
         {
@@ -178,13 +354,17 @@ export const WikiView: React.FC<WikiViewProps> = ({
           title: draft.title.trim(),
           category: draft.category.trim() || 'Allgemein',
           tags: parsedTags,
+          blocks: cleanBlocks,
+          body: aggregatedBody,
+          images: aggregatedImages,
+          snippets: aggregatedSnippets,
         },
         originalSlug
       );
 
       await loadArticles(saved.slug);
       setMode('read');
-      setSaveFeedback('Als Standard-Markdown gespeichert');
+      setSaveFeedback('Als Bausteine in Standard-Markdown gespeichert');
       setTimeout(() => setSaveFeedback(null), 2500);
     } catch (err) {
       console.error(err);
@@ -203,9 +383,18 @@ export const WikiView: React.FC<WikiViewProps> = ({
     await loadArticles();
   };
 
-  const handleImageFile = async (file: File) => {
-    if (!file.type.startsWith('image/') || !draft) return;
-    setUploadingImage(true);
+  const handleUploadMediaFileForBlock = async (file: File, targetBlockId: string | null) => {
+    if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
+      setMediaError('Bitte eine Bild- oder Videodatei auswählen.');
+      return;
+    }
+    if (file.size > 35 * 1024 * 1024) {
+      setMediaError('Datei ist größer als 35 MB – für große Videos bitte direkt verlinken.');
+      return;
+    }
+    setMediaError(null);
+    const loadingKey = targetBlockId || 'new';
+    setUploadingBlockId(loadingKey);
     try {
       const dataUrl = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -213,19 +402,85 @@ export const WikiView: React.FC<WikiViewProps> = ({
         reader.onerror = reject;
         reader.readAsDataURL(file);
       });
-      const res = await api.uploadWikiImage(username, file.name, dataUrl);
-      const newImg: WikiImage = {
-        id: `img_${Date.now()}`,
-        url: res.url,
-        alt: file.name.replace(/\.[^.]+$/, ''),
-        caption: '',
-      };
-      setDraft((prev) => (prev ? { ...prev, images: [...prev.images, newImg] } : prev));
-    } catch (e) {
-      console.error('Upload failed', e);
+      const res = await api.uploadWikiMedia(username, file.name, dataUrl);
+      const cleanName = file.name.replace(/\.[^.]+$/, '');
+      if (targetBlockId) {
+        setDraftBlocks((prev) =>
+          prev.map((b) =>
+            b.id === targetBlockId
+              ? {
+                  ...b,
+                  mediaUrl: res.url,
+                  mediaKind: res.mediaKind,
+                  alt: b.alt || cleanName,
+                }
+              : b
+          )
+        );
+      } else {
+        const newBlock: WikiBlock = {
+          id: `wb_media_${Date.now()}`,
+          type: 'media',
+          mediaUrl: res.url,
+          mediaKind: res.mediaKind,
+          alt: cleanName,
+          caption: '',
+        };
+        setDraftBlocks((prev) => [...prev, newBlock]);
+      }
+    } catch (e: any) {
+      setMediaError(e?.message || 'Upload fehlgeschlagen');
     } finally {
-      setUploadingImage(false);
+      setUploadingBlockId(null);
     }
+  };
+
+  const handleInsertBlock = (type: WikiBlockType, atIndex?: number | null) => {
+    const uid = `wb_${type}_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+    const newBlock: WikiBlock =
+      type === 'text'
+        ? { id: uid, type: 'text', content: '' }
+        : type === 'media'
+        ? { id: uid, type: 'media', mediaKind: 'image', mediaUrl: '', alt: '', caption: '' }
+        : {
+            id: uid,
+            type: 'code',
+            title: 'Code-Block',
+            language: 'bash',
+            content: '',
+            collapsible: true,
+            defaultCollapsed: false,
+          };
+
+    setDraftBlocks((prev) => {
+      const idx =
+        typeof atIndex === 'number' && atIndex >= 0 && atIndex <= prev.length
+          ? atIndex
+          : prev.length;
+      const next = [...prev];
+      next.splice(idx, 0, newBlock);
+      return next;
+    });
+    setAddBlockModalIndex(null);
+  };
+
+  const moveBlock = (index: number, delta: -1 | 1) => {
+    const target = index + delta;
+    if (target < 0 || target >= draftBlocks.length) return;
+    setDraftBlocks((prev) => {
+      const next = [...prev];
+      const [item] = next.splice(index, 1);
+      next.splice(target, 0, item);
+      return next;
+    });
+  };
+
+  const removeBlock = (id: string) => {
+    setDraftBlocks((prev) => prev.filter((b) => b.id !== id));
+  };
+
+  const updateBlock = (id: string, patch: Partial<WikiBlock>) => {
+    setDraftBlocks((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
   };
 
   const handleDownloadMarkdown = (article: WikiArticle) => {
@@ -239,23 +494,83 @@ export const WikiView: React.FC<WikiViewProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  const addSnippetToDraft = () => {
-    if (!draft) return;
-    const next: WikiCodeSnippet = {
-      id: `snip_${Date.now()}`,
-      title: `Code-Block ${draft.snippets.length + 1}`,
-      language: 'bash',
-      code: '',
-    };
-    setDraft({ ...draft, snippets: [...draft.snippets, next] });
+  // Render inline Markdown tokens: [[Wikilinks]], `code`, **bold**, *italic*, [label](url)
+  const renderInlineTokens = (line: string): React.ReactNode[] => {
+    const tokenRegex = /(\[\[[^\]|]+(?:\|[^\]]+)?\]\]|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
+    const parts = line.split(tokenRegex);
+    return parts.map((part, idx) => {
+      if (!part) return null;
+      if (part.startsWith('[[') && part.endsWith(']]')) {
+        const inner = part.slice(2, -2);
+        const [target, alias] = inner.split('|');
+        const label = (alias || target || '').trim();
+        const existsInWiki = articles.some(
+          (a) =>
+            a.title.toLowerCase() === (target || '').trim().toLowerCase() ||
+            a.slug.toLowerCase() === (target || '').trim().toLowerCase()
+        );
+        return (
+          <button
+            key={idx}
+            type="button"
+            onClick={() => handleWikilinkClick(target)}
+            style={{ color: accentColor }}
+            className="inline font-semibold underline decoration-dotted underline-offset-2 hover:opacity-80 cursor-pointer"
+            title={existsInWiki ? `Wiki-Artikel "${target}" öffnen` : `Notiz "${target}" öffnen`}
+          >
+            {label}
+          </button>
+        );
+      }
+      if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
+        return (
+          <code
+            key={idx}
+            className="px-1.5 py-0.5 rounded bg-[#F0EEE8] dark:bg-[#26282E] font-mono text-[12px] text-neutral-900 dark:text-neutral-100"
+          >
+            {part.slice(1, -1)}
+          </code>
+        );
+      }
+      if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
+        return (
+          <strong key={idx} className="font-bold text-neutral-900 dark:text-neutral-100">
+            {part.slice(2, -2)}
+          </strong>
+        );
+      }
+      if (part.startsWith('*') && part.endsWith('*') && part.length >= 2) {
+        return (
+          <em key={idx} className="italic">
+            {part.slice(1, -1)}
+          </em>
+        );
+      }
+      const linkM = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      if (linkM) {
+        return (
+          <a
+            key={idx}
+            href={linkM[2]}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: accentColor }}
+            className="underline hover:opacity-80"
+          >
+            {linkM[1]}
+          </a>
+        );
+      }
+      return <React.Fragment key={idx}>{part}</React.Fragment>;
+    });
   };
 
-  // Render clean Markdown prose (with inline fenced code blocks + copy button)
+  // Render clean Markdown prose (with headings, lists, inline tokens, fenced code fallback, and Wikilinks)
   const renderMarkdownBody = (text: string) => {
-    const blocks = text.split(/(```[\s\S]*?```)/g);
-    return blocks.map((block, bIdx) => {
-      if (block.startsWith('```') && block.endsWith('```')) {
-        const lines = block.slice(3, -3).split('\n');
+    const chunks = (text || '').split(/(```[\s\S]*?```)/g);
+    return chunks.map((chunk, bIdx) => {
+      if (chunk.startsWith('```') && chunk.endsWith('```')) {
+        const lines = chunk.slice(3, -3).split('\n');
         const lang = lines[0]?.trim() || 'text';
         const code = lines.slice(1).join('\n').trimEnd();
         const blockId = `inline_${bIdx}`;
@@ -283,36 +598,49 @@ export const WikiView: React.FC<WikiViewProps> = ({
       }
 
       return (
-        <div key={bIdx} className="space-y-2">
-          {block.split('\n').map((line, lIdx) => {
+        <div key={bIdx} className="space-y-1.5">
+          {chunk.split('\n').map((line, lIdx) => {
             const trimmed = line.trim();
             if (!trimmed) return <div key={lIdx} className="h-1.5" />;
             if (trimmed.startsWith('### ')) {
               return (
                 <h4 key={lIdx} className="text-sm font-bold text-neutral-900 dark:text-neutral-100 pt-2">
-                  {trimmed.slice(4)}
+                  {renderInlineTokens(trimmed.slice(4))}
                 </h4>
               );
             }
             if (trimmed.startsWith('## ')) {
               return (
                 <h3 key={lIdx} className="text-base font-bold text-neutral-900 dark:text-neutral-100 pt-3">
-                  {trimmed.slice(3)}
+                  {renderInlineTokens(trimmed.slice(3))}
                 </h3>
               );
             }
             if (trimmed.startsWith('# ')) {
               return (
                 <h2 key={lIdx} className="text-lg font-bold text-neutral-900 dark:text-neutral-100 pt-2">
-                  {trimmed.slice(2)}
+                  {renderInlineTokens(trimmed.slice(2))}
                 </h2>
               );
             }
-            // Inline image in markdown body
+            if (trimmed.startsWith('> ')) {
+              return (
+                <blockquote
+                  key={lIdx}
+                  style={{ borderLeftColor: accentColor }}
+                  className="border-l-3 pl-3 py-1 bg-[#F4F3EF]/70 dark:bg-[#1E2024] rounded-r-lg text-sm text-neutral-700 dark:text-neutral-300"
+                >
+                  {renderInlineTokens(trimmed.slice(2))}
+                </blockquote>
+              );
+            }
             const imgMatch = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
             if (imgMatch) {
               return (
-                <div key={lIdx} className="my-3 rounded-xl overflow-hidden border border-[#E5E3DC] dark:border-[#2F3136] bg-neutral-100 dark:bg-neutral-900">
+                <div
+                  key={lIdx}
+                  className="my-3 rounded-xl overflow-hidden border border-[#E5E3DC] dark:border-[#2F3136] bg-neutral-100 dark:bg-neutral-900"
+                >
                   <img
                     src={imgMatch[2]}
                     alt={imgMatch[1]}
@@ -322,17 +650,16 @@ export const WikiView: React.FC<WikiViewProps> = ({
                 </div>
               );
             }
-            // Numbered or bulleted list
             if (/^\d+\.\s/.test(trimmed) || /^[-*]\s/.test(trimmed)) {
               return (
-                <p key={lIdx} className="text-sm leading-relaxed text-neutral-800 dark:text-neutral-200 pl-2">
-                  {trimmed}
+                <p key={lIdx} className="text-sm leading-relaxed text-neutral-800 dark:text-neutral-200 pl-2 select-text">
+                  {renderInlineTokens(trimmed)}
                 </p>
               );
             }
             return (
               <p key={lIdx} className="text-sm leading-relaxed text-neutral-800 dark:text-neutral-200 select-text">
-                {line}
+                {renderInlineTokens(line)}
               </p>
             );
           })}
@@ -341,11 +668,139 @@ export const WikiView: React.FC<WikiViewProps> = ({
     });
   };
 
+  const renderMediaContent = (blk: WikiBlock, isEditorPreview = false) => {
+    const url = blk.mediaUrl || '';
+    if (!url) {
+      return (
+        <div className="p-4 text-center text-xs text-neutral-400">
+          Noch kein Foto oder Video ausgewählt oder verlinkt.
+        </div>
+      );
+    }
+    const kind = blk.mediaKind || inferMediaKind(url);
+    const ytEmbed = kind === 'video' ? extractYouTubeEmbedUrl(url) : null;
+
+    if (kind === 'video') {
+      if (ytEmbed) {
+        return (
+          <div className="aspect-video w-full bg-black rounded-lg overflow-hidden">
+            <iframe
+              src={ytEmbed}
+              title={blk.alt || blk.title || 'YouTube Video'}
+              className="w-full h-full border-0"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+            />
+          </div>
+        );
+      }
+      const isDirectVideo =
+        url.startsWith('/api/wiki/assets/') ||
+        url.startsWith('data:video/') ||
+        /\.(mp4|webm|mov|m4v|ogg|ogv)(\?.*)?$/i.test(url);
+      if (isDirectVideo) {
+        return (
+          <video
+            src={url}
+            controls
+            playsInline
+            preload="metadata"
+            className={`w-full ${isEditorPreview ? 'max-h-56' : 'max-h-[420px]'} bg-black rounded-lg`}
+          />
+        );
+      }
+      return (
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center justify-between gap-3 p-3.5 rounded-xl bg-[#F4F3EF] dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#363940] hover:border-[var(--wiki-accent)] transition-colors"
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div
+              style={{ backgroundColor: `${accentColor}1F`, color: accentColor }}
+              className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+            >
+              <Video className="w-4.5 h-4.5" />
+            </div>
+            <div className="min-w-0">
+              <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 block truncate">
+                {blk.alt || blk.title || 'Video-Link öffnen'}
+              </span>
+              <span className="text-[11px] text-neutral-500 block truncate">{url}</span>
+            </div>
+          </div>
+          <ExternalLink className="w-4 h-4 text-neutral-400 shrink-0" />
+        </a>
+      );
+    }
+
+    return (
+      <div
+        onClick={() => {
+          if (!isEditorPreview) {
+            setZoomedImage({
+              id: blk.id,
+              url,
+              alt: blk.alt || blk.title || 'Foto',
+              caption: blk.caption,
+            });
+          }
+        }}
+        className={`relative bg-neutral-100 dark:bg-neutral-900 flex items-center justify-center overflow-hidden ${
+          isEditorPreview ? 'h-48 rounded-lg' : 'max-h-[460px] rounded-lg cursor-pointer group'
+        }`}
+      >
+        <img
+          src={url}
+          alt={blk.alt || blk.title || 'Wiki Foto'}
+          referrerPolicy="no-referrer"
+          className="max-h-full w-full object-contain"
+        />
+        {!isEditorPreview && (
+          <span className="absolute bottom-2.5 right-2.5 p-1.5 rounded-lg bg-black/60 text-white opacity-80 group-hover:opacity-100">
+            <Maximize2 className="w-3.5 h-3.5" />
+          </span>
+        )}
+      </div>
+    );
+  };
+
+  const activeBlocks = useMemo(
+    () => (activeArticle ? ensureArticleBlocks(activeArticle) : []),
+    [activeArticle]
+  );
+
   return (
     <div
       className="flex-1 h-full flex flex-col bg-[#FBFBFA] dark:bg-[#161719] text-neutral-900 dark:text-neutral-100 overflow-hidden relative"
       style={{ '--wiki-accent': accentColor } as React.CSSProperties}
     >
+      {/* Hidden File Inputs for Media Block Upload & Camera */}
+      <input
+        ref={mediaFileInputRef}
+        type="file"
+        accept="image/*,video/*"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleUploadMediaFileForBlock(f, activeUploadTargetRef.current);
+          e.target.value = '';
+        }}
+        className="hidden"
+      />
+      <input
+        ref={mediaCameraInputRef}
+        type="file"
+        accept="image/*,video/*"
+        capture="environment"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleUploadMediaFileForBlock(f, activeUploadTargetRef.current);
+          e.target.value = '';
+        }}
+        className="hidden"
+      />
+
       {/* Sub-header Bar */}
       <div className="h-12 border-b border-[#E5E3DC] dark:border-[#2B2D31] bg-[#F4F3EF]/90 dark:bg-[#1C1E22]/90 px-3 md:px-4 flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2 min-w-0">
@@ -366,7 +821,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
           </div>
           <div className="min-w-0">
             <h2 className="text-xs font-bold tracking-tight text-neutral-900 dark:text-neutral-100 truncate">
-              Ochre Wiki · Standard Markdown
+              Ochre Wiki · Baukasten
             </h2>
           </div>
         </div>
@@ -395,6 +850,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
                 onClick={() => {
                   setMode('read');
                   setDraft(null);
+                  setDraftBlocks([]);
                 }}
                 className="px-3 py-1.5 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#25272C] text-xs font-medium text-neutral-700 dark:text-neutral-300 cursor-pointer"
               >
@@ -427,7 +883,9 @@ export const WikiView: React.FC<WikiViewProps> = ({
 
         {/* Left Index Sidebar (Desktop static, Mobile slide-over) */}
         <aside
-          className={`fixed lg:static top-14 lg:top-0 bottom-0 left-0 z-40 w-72 bg-[#F4F3EF] dark:bg-[#1D1F23] border-r border-[#E5E3DC] dark:border-[#2F3136] flex flex-col transition-transform duration-200 ${
+          className={`fixed lg:static ${
+            mobileBarPosition === 'bottom' ? 'top-0 bottom-[3.75rem]' : 'top-14 bottom-0'
+          } lg:top-0 lg:bottom-0 left-0 z-40 w-72 bg-[#F4F3EF] dark:bg-[#1D1F23] border-r border-[#E5E3DC] dark:border-[#2F3136] flex flex-col transition-transform duration-200 ${
             isMobileIndexOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
           }`}
         >
@@ -439,13 +897,12 @@ export const WikiView: React.FC<WikiViewProps> = ({
               <button
                 type="button"
                 onClick={() => setIsMobileIndexOpen(false)}
-                className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-white"
+                className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Search */}
             <div className="relative">
               <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
               <input
@@ -457,7 +914,6 @@ export const WikiView: React.FC<WikiViewProps> = ({
               />
             </div>
 
-            {/* Category filter */}
             {categories.length > 0 && (
               <select
                 value={selectedCategory}
@@ -474,8 +930,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
             )}
           </div>
 
-          {/* Articles List */}
-          <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          <div className="flex-1 overflow-y-auto overscroll-y-contain p-2 space-y-1">
             {loading ? (
               <div className="p-4 text-xs text-neutral-400">Lade Wiki-Einträge...</div>
             ) : filteredArticles.length === 0 ? (
@@ -493,6 +948,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
             ) : (
               filteredArticles.map((art) => {
                 const isActive = art.slug === selectedSlug && mode === 'read';
+                const blockCount = ensureArticleBlocks(art).length;
                 return (
                   <button
                     key={art.slug}
@@ -517,7 +973,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
                         {art.title}
                       </span>
                       <span className="text-[11px] text-neutral-500 dark:text-neutral-400 block truncate mt-0.5">
-                        {art.category} · {art.snippets.length} Code · {art.images.length} Fotos
+                        {art.category} · {blockCount} Bausteine
                       </span>
                     </div>
                     <ChevronRight className="w-3.5 h-3.5 text-neutral-400 shrink-0 mt-0.5" />
@@ -536,35 +992,35 @@ export const WikiView: React.FC<WikiViewProps> = ({
           </div>
         </aside>
 
-        {/* Main Content Canvas: Reader or Editor */}
-        <main className="flex-1 overflow-y-auto p-4 md:p-8">
+        {/* Main Content Canvas: Reader or Modular Block Editor */}
+        <main className="flex-1 overflow-y-auto overscroll-y-contain p-4 md:p-8 pb-24 lg:pb-10">
           <div className="max-w-3xl mx-auto">
             {mode === 'edit' && draft ? (
               /* ======================================================= */
-              /* EDITOR MODE: Title, Category, Markdown, Photo Upload, Code-Ablage */
+              /* MODULAR BLOCK EDITOR MODE: Free-Order Chain of Blocks */
               /* ======================================================= */
-              <div className="space-y-6 pb-16">
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100">
-                      {originalSlug ? 'Wiki-Eintrag bearbeiten' : 'Neuen Wiki-Eintrag verfassen'}
+              <div className="space-y-5 pb-16">
+                <div className="p-4 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#1E2024] space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                      {originalSlug ? 'Wiki-Eintrag bearbeiten' : 'Neuer Wiki-Eintrag'}
                     </h3>
                     <span className="text-[11px] text-neutral-500">
-                      Speicherformat: Open-Standard Markdown (.md)
+                      Open-Standard Markdown (.md)
                     </span>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <label className="block text-xs font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
-                        Titel der Anleitung / Seite
+                        Titel der Seite
                       </label>
                       <input
                         type="text"
                         value={draft.title}
                         onChange={(e) => setDraft({ ...draft, title: e.target.value })}
                         placeholder="z. B. Nginx Reverse Proxy Setup"
-                        className="w-full text-sm px-3 py-2 rounded-lg bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden"
+                        className="w-full text-sm px-3 py-2 rounded-lg bg-[#FAF9F5] dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden"
                       />
                     </div>
                     <div>
@@ -576,7 +1032,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
                         value={draft.category}
                         onChange={(e) => setDraft({ ...draft, category: e.target.value })}
                         placeholder="z. B. Server & Docker"
-                        className="w-full text-sm px-3 py-2 rounded-lg bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden"
+                        className="w-full text-sm px-3 py-2 rounded-lg bg-[#FAF9F5] dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden"
                       />
                     </div>
                   </div>
@@ -590,224 +1046,340 @@ export const WikiView: React.FC<WikiViewProps> = ({
                       value={tagsInput}
                       onChange={(e) => setTagsInput(e.target.value)}
                       placeholder="linux, docker, backup"
-                      className="w-full text-xs px-3 py-2 rounded-lg bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden"
+                      className="w-full text-xs px-3 py-2 rounded-lg bg-[#FAF9F5] dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden"
                     />
                   </div>
                 </div>
 
-                {/* Instructions / Markdown Body */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-neutral-700 dark:text-neutral-300">
-                    Anleitung & Beschreibung (Markdown)
-                  </label>
-                  <textarea
-                    rows={8}
-                    value={draft.body}
-                    onChange={(e) => setDraft({ ...draft, body: e.target.value })}
-                    onPaste={(e) => {
-                      const items = e.clipboardData?.items;
-                      if (!items) return;
-                      for (let i = 0; i < items.length; i++) {
-                        if (items[i].type.startsWith('image/')) {
-                          const file = items[i].getAsFile();
-                          if (file) handleImageFile(file);
-                        }
-                      }
-                    }}
-                    placeholder="Schreibe hier deine Schritt-für-Schritt-Anleitung..."
-                    className="w-full text-sm p-3 rounded-xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden leading-relaxed select-text"
-                  />
-                </div>
+                {mediaError && (
+                  <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-xs text-red-700 dark:text-red-300 flex items-center justify-between gap-2">
+                    <span>{mediaError}</span>
+                    <button type="button" onClick={() => setMediaError(null)} className="cursor-pointer">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
 
-                {/* Photo Upload Section */}
-                <div className="p-4 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#1E2024] space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <ImagePlus className="w-4 h-4" style={{ color: accentColor }} />
-                      <h4 className="text-xs font-bold text-neutral-900 dark:text-neutral-100">
-                        Anleitungs-Fotos & Screenshots ({draft.images.length})
-                      </h4>
-                    </div>
+                {/* Chain of Modular Reorderable Blocks */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold uppercase tracking-wider text-neutral-500 flex items-center gap-1.5">
+                      <Layers className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                      <span>Bausteine ({draftBlocks.length}) · frei aneinanderreihbar</span>
+                    </span>
                     <button
                       type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={uploadingImage}
-                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-white text-xs font-semibold cursor-pointer active:scale-95 transition-transform"
+                      onClick={() => setAddBlockModalIndex(draftBlocks.length)}
                       style={{ backgroundColor: accentColor }}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-white text-xs font-semibold cursor-pointer active:scale-95"
                     >
-                      <ImagePlus className="w-3.5 h-3.5" />
-                      <span>{uploadingImage ? 'Lädt hoch...' : 'Foto hochladen'}</span>
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Baustein</span>
                     </button>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) handleImageFile(f);
-                        e.target.value = '';
-                      }}
-                      className="hidden"
-                    />
                   </div>
 
-                  {/* Drag & Drop Target */}
-                  <div
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      e.dataTransfer.dropEffect = 'copy';
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      const f = e.dataTransfer.files?.[0];
-                      if (f) handleImageFile(f);
-                    }}
-                    className="p-4 rounded-xl border border-dashed border-[#E5E3DC] dark:border-[#383A40] bg-[#FBFBFA] dark:bg-[#18191B] text-center text-xs text-neutral-500"
-                  >
-                    Foto hierher ziehen oder oben auswählen (auch aus Zwischenablage einfügbar). Wird lokal im Ordner <span className="font-mono">Wiki/assets/</span> abgelegt.
-                  </div>
+                  {draftBlocks.map((blk, bIdx) => (
+                    <div key={blk.id} className="space-y-2">
+                      <div className="p-3.5 sm:p-4 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#1E2024] shadow-2xs space-y-3">
+                        {/* Block Header Controls */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#E5E3DC]/70 dark:border-[#2B2D31]">
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            <span
+                              style={{ backgroundColor: `${accentColor}1A`, color: accentColor }}
+                              className="text-[11px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 shrink-0"
+                            >
+                              {blk.type === 'text' && <FileText className="w-3 h-3" />}
+                              {blk.type === 'media' && (
+                                blk.mediaKind === 'video' ? <Video className="w-3 h-3" /> : <ImagePlus className="w-3 h-3" />
+                              )}
+                              {blk.type === 'code' && <Code2 className="w-3 h-3" />}
+                              <span>
+                                {blk.type === 'text'
+                                  ? 'Text'
+                                  : blk.type === 'media'
+                                  ? blk.mediaKind === 'video'
+                                    ? 'Video'
+                                    : 'Foto / Video'
+                                  : 'Code'}
+                              </span>
+                            </span>
 
-                  {draft.images.length > 0 && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                      {draft.images.map((img, idx) => (
-                        <div
-                          key={img.id}
-                          className="rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] overflow-hidden bg-[#FBFBFA] dark:bg-[#18191B] flex flex-col"
-                        >
-                          <div className="relative h-36 bg-neutral-100 dark:bg-neutral-900 flex items-center justify-center">
-                            <img
-                              src={img.url}
-                              alt={img.alt}
-                              referrerPolicy="no-referrer"
-                              className="w-full h-full object-contain"
+                            <input
+                              type="text"
+                              value={blk.title || ''}
+                              onChange={(e) => updateBlock(blk.id, { title: e.target.value })}
+                              placeholder={
+                                blk.type === 'text'
+                                  ? 'Optionaler Abschnitt-Titel...'
+                                  : blk.type === 'media'
+                                  ? 'Optionaler Medien-Titel...'
+                                  : 'Titel des Code-Blocks...'
+                              }
+                              className="flex-1 min-w-[120px] text-xs font-semibold px-2 py-1 rounded-lg bg-[#FAF9F5] dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden"
                             />
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
                             <button
                               type="button"
-                              onClick={() =>
-                                setDraft({
-                                  ...draft,
-                                  images: draft.images.filter((_, i) => i !== idx),
-                                })
-                              }
-                              className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/70 text-white hover:bg-red-600 cursor-pointer"
-                              title="Foto entfernen"
+                              disabled={bIdx === 0}
+                              onClick={() => moveBlock(bIdx, -1)}
+                              className="p-1.5 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-500 hover:text-neutral-900 dark:hover:text-white disabled:opacity-30 cursor-pointer"
+                              title="Nach oben"
+                            >
+                              <ArrowUp className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={bIdx === draftBlocks.length - 1}
+                              onClick={() => moveBlock(bIdx, 1)}
+                              className="p-1.5 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-500 hover:text-neutral-900 dark:hover:text-white disabled:opacity-30 cursor-pointer"
+                              title="Nach unten"
+                            >
+                              <ArrowDown className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => removeBlock(blk.id)}
+                              className="p-1.5 rounded-lg text-neutral-400 hover:text-red-500 cursor-pointer"
+                              title="Baustein entfernen"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>
-                          <div className="p-2">
-                            <input
-                              type="text"
-                              value={img.caption || ''}
-                              onChange={(e) => {
-                                const updated = [...draft.images];
-                                updated[idx] = { ...img, caption: e.target.value };
-                                setDraft({ ...draft, images: updated });
+                        </div>
+
+                        {/* BLOCK BODY BY TYPE */}
+                        {blk.type === 'text' && (
+                          <div className="space-y-1.5">
+                            <textarea
+                              rows={6}
+                              value={blk.content || ''}
+                              onChange={(e) => updateBlock(blk.id, { content: e.target.value })}
+                              onPaste={(e) => {
+                                const items = e.clipboardData?.items;
+                                if (!items) return;
+                                for (let i = 0; i < items.length; i++) {
+                                  if (items[i].type.startsWith('image/')) {
+                                    const file = items[i].getAsFile();
+                                    if (file) handleUploadMediaFileForBlock(file, null);
+                                  }
+                                }
                               }}
-                              placeholder="Bildbeschreibung / Schritt-Notiz..."
-                              className="w-full text-xs px-2 py-1.5 rounded bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden"
+                              placeholder="Klassisches Markdown (# Überschrift, Listen, **Fett**) und [[Wikilinks]]..."
+                              className="w-full text-sm p-3 rounded-xl bg-[#FAF9F5] dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden leading-relaxed select-text"
+                            />
+                            <p className="text-[11px] text-neutral-400">
+                              Unterstützt Markdown (Überschriften, Listen, Links) &amp; interne Verknüpfungen wie{' '}
+                              <span className="font-mono text-neutral-600 dark:text-neutral-300">[[Seitenname]]</span>.
+                            </p>
+                          </div>
+                        )}
+
+                        {blk.type === 'media' && (
+                          <div
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = 'copy';
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              const f = e.dataTransfer.files?.[0];
+                              if (f) handleUploadMediaFileForBlock(f, blk.id);
+                            }}
+                            className="space-y-3"
+                          >
+                            {/* Upload / Camera / URL Controls */}
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={uploadingBlockId === blk.id}
+                                onClick={() => {
+                                  activeUploadTargetRef.current = blk.id;
+                                  mediaFileInputRef.current?.click();
+                                }}
+                                style={{ backgroundColor: accentColor }}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-white text-xs font-semibold cursor-pointer active:scale-95 disabled:opacity-50"
+                              >
+                                <Upload className="w-3.5 h-3.5" />
+                                <span>{uploadingBlockId === blk.id ? 'Lädt hoch...' : 'Datei hochladen'}</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                disabled={uploadingBlockId === blk.id}
+                                onClick={() => {
+                                  activeUploadTargetRef.current = blk.id;
+                                  mediaCameraInputRef.current?.click();
+                                }}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] text-xs font-semibold text-neutral-700 dark:text-neutral-200 cursor-pointer active:scale-95"
+                              >
+                                <Camera className="w-3.5 h-3.5" />
+                                <span>Kamera</span>
+                              </button>
+
+                              <div className="flex items-center gap-1 p-0.5 rounded-lg bg-[#F4F3EF] dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[11px] ml-auto">
+                                <button
+                                  type="button"
+                                  onClick={() => updateBlock(blk.id, { mediaKind: 'image' })}
+                                  className={`px-2 py-1 rounded-md cursor-pointer ${
+                                    (blk.mediaKind || 'image') === 'image'
+                                      ? 'bg-white dark:bg-[#1E2024] font-bold shadow-2xs'
+                                      : 'text-neutral-500'
+                                  }`}
+                                >
+                                  Foto
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => updateBlock(blk.id, { mediaKind: 'video' })}
+                                  className={`px-2 py-1 rounded-md cursor-pointer ${
+                                    blk.mediaKind === 'video'
+                                      ? 'bg-white dark:bg-[#1E2024] font-bold shadow-2xs'
+                                      : 'text-neutral-500'
+                                  }`}
+                                >
+                                  Video
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Direct Link Input (Photo URL, Video URL, YouTube) */}
+                            <div className="relative">
+                              <Link2 className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                              <input
+                                type="text"
+                                value={blk.mediaUrl || ''}
+                                onChange={(e) => {
+                                  const nextUrl = e.target.value;
+                                  updateBlock(blk.id, {
+                                    mediaUrl: nextUrl,
+                                    mediaKind: nextUrl.trim() ? inferMediaKind(nextUrl) : blk.mediaKind,
+                                  });
+                                }}
+                                placeholder="Oder URL verlinken (Foto-URL, MP4 oder YouTube-Link)..."
+                                className="w-full text-xs pl-8 pr-3 py-2 rounded-lg bg-[#FAF9F5] dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden"
+                              />
+                            </div>
+
+                            {/* Live Preview */}
+                            <div className="rounded-xl border border-dashed border-[#E5E3DC] dark:border-[#363940] bg-[#FAF9F5] dark:bg-[#18191B] p-2">
+                              {renderMediaContent(blk, true)}
+                            </div>
+
+                            {/* Caption + Optional Collapsible */}
+                            <div className="flex flex-wrap items-center gap-2">
+                              <input
+                                type="text"
+                                value={blk.caption || ''}
+                                onChange={(e) => updateBlock(blk.id, { caption: e.target.value })}
+                                placeholder="Bildunterschrift / Notiz zum Medium..."
+                                className="flex-1 min-w-[160px] text-xs px-2.5 py-1.5 rounded-lg bg-[#FAF9F5] dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden"
+                              />
+                              <label className="flex items-center gap-1.5 text-xs text-neutral-600 dark:text-neutral-300 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(blk.collapsible)}
+                                  onChange={(e) =>
+                                    updateBlock(blk.id, {
+                                      collapsible: e.target.checked,
+                                      defaultCollapsed: e.target.checked ? Boolean(blk.defaultCollapsed) : false,
+                                    })
+                                  }
+                                  className="rounded accent-[var(--wiki-accent)]"
+                                />
+                                <span>Einklappbar</span>
+                              </label>
+                            </div>
+                          </div>
+                        )}
+
+                        {blk.type === 'code' && (
+                          <div className="space-y-2.5">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <select
+                                value={blk.language || 'bash'}
+                                onChange={(e) => updateBlock(blk.id, { language: e.target.value })}
+                                className="text-xs px-2.5 py-1.5 rounded-lg bg-[#FAF9F5] dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden font-mono"
+                              >
+                                {CODE_LANGUAGES.map((l) => (
+                                  <option key={l} value={l}>
+                                    {l}
+                                  </option>
+                                ))}
+                              </select>
+
+                              <div className="flex flex-wrap items-center gap-3 text-xs text-neutral-600 dark:text-neutral-300">
+                                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(blk.collapsible)}
+                                    onChange={(e) =>
+                                      updateBlock(blk.id, {
+                                        collapsible: e.target.checked,
+                                        defaultCollapsed: e.target.checked ? Boolean(blk.defaultCollapsed) : false,
+                                      })
+                                    }
+                                    className="rounded accent-[var(--wiki-accent)]"
+                                  />
+                                  <span>Einklappbar</span>
+                                </label>
+
+                                {blk.collapsible && (
+                                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(blk.defaultCollapsed)}
+                                      onChange={(e) => updateBlock(blk.id, { defaultCollapsed: e.target.checked })}
+                                      className="rounded accent-[var(--wiki-accent)]"
+                                    />
+                                    <span>Standard: zugeklappt</span>
+                                  </label>
+                                )}
+                              </div>
+                            </div>
+
+                            <textarea
+                              rows={6}
+                              value={blk.content || ''}
+                              onChange={(e) => updateBlock(blk.id, { content: e.target.value })}
+                              placeholder="Code, Befehle oder Konfiguration hier einfügen..."
+                              className="w-full text-xs font-mono p-3 rounded-xl bg-[#1D1F23] text-neutral-100 border border-[#2F3136] outline-hidden leading-relaxed select-text"
                             />
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                        )}
+                      </div>
 
-                {/* Dedicated Code-Ablage Builder */}
-                <div className="p-4 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#1E2024] space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <Code2 className="w-4 h-4" style={{ color: accentColor }} />
-                      <h4 className="text-xs font-bold text-neutral-900 dark:text-neutral-100">
-                        Code-Ablage für Copy & Paste ({draft.snippets.length})
-                      </h4>
+                      {/* Subtle Inline Insert Trigger Between Blocks */}
+                      <div className="flex justify-center">
+                        <button
+                          type="button"
+                          onClick={() => setAddBlockModalIndex(bIdx + 1)}
+                          className="text-[11px] px-3 py-1 rounded-full border border-dashed border-[#D8D5CC] dark:border-[#34373D] text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 hover:border-[var(--wiki-accent)] bg-white/60 dark:bg-[#1E2024]/60 flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>Baustein einfügen</span>
+                        </button>
+                      </div>
                     </div>
+                  ))}
+
+                  {draftBlocks.length === 0 && (
                     <button
                       type="button"
-                      onClick={addSnippetToDraft}
-                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] text-xs font-semibold hover:border-neutral-400 cursor-pointer"
+                      onClick={() => setAddBlockModalIndex(0)}
+                      className="w-full p-8 rounded-2xl border-2 border-dashed border-[#E5E3DC] dark:border-[#2F3136] text-center text-xs font-semibold text-neutral-500 hover:border-[var(--wiki-accent)] cursor-pointer"
                     >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Code-Feld hinzufügen</span>
+                      + Ersten Baustein hinzufügen (Text, Foto/Video oder Code)
                     </button>
-                  </div>
-
-                  {draft.snippets.length === 0 ? (
-                    <p className="text-xs text-neutral-500">
-                      Füge ein Code-Feld hinzu, um Befehle, Konfigurationen oder Skripte direkt kopierbar abzulegen.
-                    </p>
-                  ) : (
-                    <div className="space-y-3">
-                      {draft.snippets.map((snip, idx) => (
-                        <div
-                          key={snip.id}
-                          className="p-3 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA] dark:bg-[#18191B] space-y-2"
-                        >
-                          <div className="flex flex-wrap items-center gap-2">
-                            <input
-                              type="text"
-                              value={snip.title}
-                              onChange={(e) => {
-                                const updated = [...draft.snippets];
-                                updated[idx] = { ...snip, title: e.target.value };
-                                setDraft({ ...draft, snippets: updated });
-                              }}
-                              placeholder="Titel des Code-Blocks..."
-                              className="flex-1 min-w-[160px] text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden"
-                            />
-                            <select
-                              value={snip.language}
-                              onChange={(e) => {
-                                const updated = [...draft.snippets];
-                                updated[idx] = { ...snip, language: e.target.value };
-                                setDraft({ ...draft, snippets: updated });
-                              }}
-                              className="text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden font-mono"
-                            >
-                              {CODE_LANGUAGES.map((l) => (
-                                <option key={l} value={l}>
-                                  {l}
-                                </option>
-                              ))}
-                            </select>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setDraft({
-                                  ...draft,
-                                  snippets: draft.snippets.filter((_, i) => i !== idx),
-                                })
-                              }
-                              className="p-1.5 rounded-lg text-neutral-400 hover:text-red-500 cursor-pointer"
-                              title="Code-Feld entfernen"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-
-                          <textarea
-                            rows={5}
-                            value={snip.code}
-                            onChange={(e) => {
-                              const updated = [...draft.snippets];
-                              updated[idx] = { ...snip, code: e.target.value };
-                              setDraft({ ...draft, snippets: updated });
-                            }}
-                            placeholder="Code, Befehle oder YAML hier einfügen..."
-                            className="w-full text-xs font-mono p-2.5 rounded-lg bg-[#1D1F23] text-neutral-100 border border-[#2F3136] outline-hidden leading-relaxed select-text"
-                          />
-                        </div>
-                      ))}
-                    </div>
                   )}
                 </div>
               </div>
             ) : activeArticle ? (
               /* ======================================================= */
-              /* READER MODE: Clean Typography, Photos & Copy-Paste Code */
+              /* READER MODE: Seamless Ordered Modular Wiki Blocks */
               /* ======================================================= */
-              <article className="space-y-6 pb-16">
+              <article className="space-y-5 pb-16">
                 {/* Article Header */}
                 <div className="pb-4 border-b border-[#E5E3DC] dark:border-[#2B2D31] space-y-3">
                   <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
@@ -879,102 +1451,153 @@ export const WikiView: React.FC<WikiViewProps> = ({
                   </div>
                 </div>
 
-                {/* Prose Body */}
-                {activeArticle.body && (
-                  <div className="space-y-3">{renderMarkdownBody(activeArticle.body)}</div>
-                )}
+                {/* Ordered Modular Blocks */}
+                <div className="space-y-5">
+                  {activeBlocks.map((blk) => {
+                    const isCollapsed = blk.collapsible ? Boolean(collapsedMap[blk.id]) : false;
 
-                {/* Uploaded Instruction Photos */}
-                {activeArticle.images.length > 0 && (
-                  <section className="space-y-3 pt-2">
-                    <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
-                      Fotos & Anleitungsbilder
-                    </h3>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      {activeArticle.images.map((img) => (
-                        <div
-                          key={img.id}
-                          onClick={() => setZoomedImage(img)}
-                          className="group rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#1E2024] overflow-hidden cursor-pointer"
-                        >
-                          <div className="relative h-52 bg-neutral-100 dark:bg-neutral-900 flex items-center justify-center">
-                            <img
-                              src={img.url}
-                              alt={img.alt}
-                              referrerPolicy="no-referrer"
-                              className="w-full h-full object-contain"
-                            />
-                            <span className="absolute bottom-2 right-2 p-1.5 rounded-lg bg-black/60 text-white opacity-80 group-hover:opacity-100">
-                              <Maximize2 className="w-3.5 h-3.5" />
-                            </span>
-                          </div>
-                          {(img.caption || img.alt) && (
-                            <p className="p-2.5 text-xs text-neutral-600 dark:text-neutral-300 border-t border-[#E5E3DC] dark:border-[#2F3136]">
-                              {img.caption || img.alt}
-                            </p>
+                    if (blk.type === 'text') {
+                      return (
+                        <section key={blk.id} className="space-y-2">
+                          {blk.title && (
+                            <h2 className="text-base md:text-lg font-bold text-neutral-900 dark:text-neutral-100">
+                              {blk.title}
+                            </h2>
                           )}
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                )}
+                          {renderMarkdownBody(blk.content || '')}
+                        </section>
+                      );
+                    }
 
-                {/* Dedicated Code-Ablage (Copy & Paste Cards) */}
-                {activeArticle.snippets.length > 0 && (
-                  <section className="space-y-3 pt-2">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                        <Code2 className="w-4 h-4" style={{ color: accentColor }} />
-                        <span>Code-Ablage (Copy & Paste)</span>
-                      </h3>
-                    </div>
-
-                    <div className="space-y-3">
-                      {activeArticle.snippets.map((snip) => (
-                        <div
-                          key={snip.id}
-                          className="rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#1D1F23] text-neutral-100 overflow-hidden"
-                        >
-                          <div className="px-3.5 py-2 bg-[#26282E] border-b border-neutral-700/60 flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <span className="text-xs font-semibold text-white truncate">
-                                {snip.title}
-                              </span>
-                              <span className="text-[11px] font-mono text-neutral-400 shrink-0">
-                                {snip.language}
-                              </span>
-                            </div>
-
+                    if (blk.type === 'media') {
+                      const label = blk.title || blk.alt || (blk.mediaKind === 'video' ? 'Video' : 'Abbildung');
+                      if (blk.collapsible) {
+                        return (
+                          <section
+                            key={blk.id}
+                            className="rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#1E2024] overflow-hidden"
+                          >
                             <button
                               type="button"
-                              onClick={() => handleCopyCode(snip.id, snip.code)}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-colors cursor-pointer shrink-0 active:scale-95"
-                              style={{
-                                backgroundColor: copiedId === snip.id ? '#16A34A' : accentColor,
-                              }}
+                              onClick={() =>
+                                setCollapsedMap((prev) => ({ ...prev, [blk.id]: !isCollapsed }))
+                              }
+                              className="w-full px-3.5 py-2.5 flex items-center justify-between gap-2 text-left hover:bg-[#FAF9F5] dark:hover:bg-[#24262B] cursor-pointer"
                             >
-                              {copiedId === snip.id ? (
-                                <>
-                                  <Check className="w-3.5 h-3.5" />
-                                  <span>Kopiert</span>
-                                </>
+                              <div className="flex items-center gap-2 min-w-0">
+                                {blk.mediaKind === 'video' ? (
+                                  <Video className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
+                                ) : (
+                                  <ImagePlus className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
+                                )}
+                                <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 truncate">
+                                  {label}
+                                </span>
+                              </div>
+                              {isCollapsed ? (
+                                <ChevronRight className="w-4 h-4 text-neutral-400 shrink-0" />
                               ) : (
-                                <>
-                                  <Copy className="w-3.5 h-3.5" />
-                                  <span>Kopieren</span>
-                                </>
+                                <ChevronDown className="w-4 h-4 text-neutral-400 shrink-0" />
                               )}
                             </button>
-                          </div>
+                            {!isCollapsed && (
+                              <div className="p-3 pt-0 space-y-2 border-t border-[#E5E3DC]/60 dark:border-[#2B2D31]">
+                                <div className="pt-2">{renderMediaContent(blk)}</div>
+                                {blk.caption && (
+                                  <p className="text-xs text-neutral-600 dark:text-neutral-300">
+                                    {blk.caption}
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                          </section>
+                        );
+                      }
 
-                          <pre className="p-3.5 text-xs font-mono overflow-x-auto leading-relaxed select-text">
-                            <code>{snip.code}</code>
-                          </pre>
+                      return (
+                        <figure
+                          key={blk.id}
+                          className="rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#1E2024] overflow-hidden p-2.5 space-y-2"
+                        >
+                          {blk.title && (
+                            <div className="text-xs font-bold text-neutral-900 dark:text-neutral-100 px-1">
+                              {blk.title}
+                            </div>
+                          )}
+                          {renderMediaContent(blk)}
+                          {(blk.caption || (blk.alt && !blk.title)) && (
+                            <figcaption className="px-1 text-xs text-neutral-600 dark:text-neutral-300">
+                              {blk.caption || blk.alt}
+                            </figcaption>
+                          )}
+                        </figure>
+                      );
+                    }
+
+                    // Code block (with Copy + optional interactive Collapse/Expand)
+                    const codeText = blk.content || '';
+                    return (
+                      <section
+                        key={blk.id}
+                        className="rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#1D1F23] text-neutral-100 overflow-hidden"
+                      >
+                        <div className="px-3.5 py-2 bg-[#26282E] border-b border-neutral-700/60 flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (blk.collapsible) {
+                                setCollapsedMap((prev) => ({ ...prev, [blk.id]: !isCollapsed }));
+                              }
+                            }}
+                            className={`flex items-center gap-2 min-w-0 text-left ${
+                              blk.collapsible ? 'cursor-pointer hover:opacity-85' : 'cursor-default'
+                            }`}
+                          >
+                            {blk.collapsible &&
+                              (isCollapsed ? (
+                                <ChevronRight className="w-4 h-4 text-neutral-400 shrink-0" />
+                              ) : (
+                                <ChevronDown className="w-4 h-4 text-neutral-400 shrink-0" />
+                              ))}
+                            <span className="text-xs font-semibold text-white truncate">
+                              {blk.title || 'Code-Block'}
+                            </span>
+                            <span className="text-[11px] font-mono text-neutral-400 shrink-0">
+                              {blk.language || 'bash'}
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleCopyCode(blk.id, codeText)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-colors cursor-pointer shrink-0 active:scale-95"
+                            style={{
+                              backgroundColor: copiedId === blk.id ? '#16A34A' : accentColor,
+                            }}
+                          >
+                            {copiedId === blk.id ? (
+                              <>
+                                <Check className="w-3.5 h-3.5" />
+                                <span>Kopiert</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3.5 h-3.5" />
+                                <span>Kopieren</span>
+                              </>
+                            )}
+                          </button>
                         </div>
-                      ))}
-                    </div>
-                  </section>
-                )}
+
+                        {!isCollapsed && (
+                          <pre className="p-3.5 text-xs font-mono overflow-x-auto leading-relaxed select-text">
+                            <code>{codeText}</code>
+                          </pre>
+                        )}
+                      </section>
+                    );
+                  })}
+                </div>
               </article>
             ) : (
               /* Empty State */
@@ -990,7 +1613,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
                     Dein Wiki nach offenem Standard
                   </h3>
                   <p className="text-xs text-neutral-500 max-w-md mx-auto">
-                    Erstelle Schritt-für-Schritt-Anleitungen mit hochgeladenen Fotos und direkt kopierbarer Code-Ablage. Alle Einträge werden als offene Markdown-Dateien (.md) gespeichert.
+                    Kombiniere Text-Bausteine (Markdown &amp; [[Wikilinks]]), Fotos/Videos und einklappbaren Code flexibel in beliebiger Reihenfolge.
                   </p>
                 </div>
                 <button
@@ -1007,6 +1630,97 @@ export const WikiView: React.FC<WikiViewProps> = ({
           </div>
         </main>
       </div>
+
+      {/* Add Baustein Chooser Modal: Top-anchored on Mobile, Centered on Desktop */}
+      {addBlockModalIndex !== null && (
+        <div
+          onClick={() => setAddBlockModalIndex(null)}
+          className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-2xs flex items-start lg:items-center justify-center pt-14 lg:pt-4 p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm bg-white dark:bg-[#1E2024] rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] shadow-2xl p-4 space-y-3"
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-[#E5E3DC] dark:border-[#2F3136]">
+              <h4 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                Baustein hinzufügen
+              </h4>
+              <button
+                type="button"
+                onClick={() => setAddBlockModalIndex(null)}
+                className="p-1 rounded-full text-neutral-400 hover:text-neutral-700 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => handleInsertBlock('text', addBlockModalIndex)}
+                className="w-full p-3 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#23252A] hover:border-[var(--wiki-accent)] flex items-center gap-3 text-left cursor-pointer transition-colors"
+              >
+                <div
+                  style={{ backgroundColor: `${accentColor}1A`, color: accentColor }}
+                  className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+                >
+                  <FileText className="w-4.5 h-4.5" />
+                </div>
+                <div>
+                  <span className="text-xs font-bold block text-neutral-900 dark:text-neutral-100">
+                    Text-Baustein
+                  </span>
+                  <span className="text-[11px] text-neutral-500 block">
+                    Klassisches Markdown &amp; [[Wikilinks]]
+                  </span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleInsertBlock('media', addBlockModalIndex)}
+                className="w-full p-3 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#23252A] hover:border-[var(--wiki-accent)] flex items-center gap-3 text-left cursor-pointer transition-colors"
+              >
+                <div
+                  style={{ backgroundColor: `${accentColor}1A`, color: accentColor }}
+                  className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+                >
+                  <ImagePlus className="w-4.5 h-4.5" />
+                </div>
+                <div>
+                  <span className="text-xs font-bold block text-neutral-900 dark:text-neutral-100">
+                    Foto / Video-Baustein
+                  </span>
+                  <span className="text-[11px] text-neutral-500 block">
+                    Hochladen, Kamera oder Link / YouTube
+                  </span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleInsertBlock('code', addBlockModalIndex)}
+                className="w-full p-3 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#23252A] hover:border-[var(--wiki-accent)] flex items-center gap-3 text-left cursor-pointer transition-colors"
+              >
+                <div
+                  style={{ backgroundColor: `${accentColor}1A`, color: accentColor }}
+                  className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+                >
+                  <Code2 className="w-4.5 h-4.5" />
+                </div>
+                <div>
+                  <span className="text-xs font-bold block text-neutral-900 dark:text-neutral-100">
+                    Code-Baustein
+                  </span>
+                  <span className="text-[11px] text-neutral-500 block">
+                    Copy &amp; Paste mit optionalem Einklappen
+                  </span>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Lightbox Modal for Zoomed Wiki Image */}
       {zoomedImage && (

@@ -187,6 +187,8 @@ export interface WikiCodeSnippet {
   title: string;
   language: string;
   code: string;
+  collapsible?: boolean;
+  defaultCollapsed?: boolean;
 }
 
 export interface WikiImage {
@@ -194,6 +196,26 @@ export interface WikiImage {
   url: string;
   alt: string;
   caption?: string;
+}
+
+export type WikiBlockType = 'text' | 'media' | 'code';
+
+export interface WikiBlock {
+  id: string;
+  type: WikiBlockType;
+  title?: string;
+  // Text / Markdown block
+  content?: string;
+  // Media block (Photo or Video, uploaded or linked)
+  mediaUrl?: string;
+  mediaKind?: 'image' | 'video';
+  alt?: string;
+  caption?: string;
+  // Code block
+  language?: string;
+  // Shared optional collapsible presentation (especially Code / Media)
+  collapsible?: boolean;
+  defaultCollapsed?: boolean;
 }
 
 export interface WikiArticle {
@@ -205,6 +227,7 @@ export interface WikiArticle {
   body: string;
   images: WikiImage[];
   snippets: WikiCodeSnippet[];
+  blocks?: WikiBlock[];
   rawMarkdown?: string;
 }
 

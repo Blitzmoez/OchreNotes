@@ -405,6 +405,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     recipeId: string;
   } | null>(null);
   const dropFlashTimerRef = useRef<number | null>(null);
+  const retractRestoreTimerRef = useRef<number | null>(null);
 
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -923,7 +924,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       setRecentDropFlash({ slotKey, targetKey, recipeId });
       dropFlashTimerRef.current = window.setTimeout(() => {
         setRecentDropFlash(null);
-      }, 1300);
+      }, 900);
     },
     [mealSections]
   );
@@ -1056,13 +1057,23 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     [isViewingSharedPlan, cycle, mealSections, defaultCyclePortions, persistCookbook]
   );
 
+  const scheduleCatalogRestoreAfterDrop = useCallback(() => {
+    if (retractRestoreTimerRef.current) {
+      window.clearTimeout(retractRestoreTimerRef.current);
+    }
+    retractRestoreTimerRef.current = window.setTimeout(() => {
+      setIsLightCatalogRetracted(false);
+      retractRestoreTimerRef.current = null;
+    }, 550);
+  }, []);
+
   const handleDropOnDate = (dateIso: string, sectionId?: string) => {
     if (!draggedRecipeId || isViewingSharedPlan) return;
     const sec = sectionId || mealSections[0]?.id || 'mittag';
     handleAssignRecipeToDate(dateIso, draggedRecipeId, sec);
     triggerDropFlash(dateIso, sec, draggedRecipeId);
     setDraggedRecipeId(null);
-    setIsLightCatalogRetracted(false);
+    scheduleCatalogRestoreAfterDrop();
   };
 
   const handleDropOnCycleDay = (dayIndex: number, sectionId?: string) => {
@@ -1071,7 +1082,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     handleAssignRecipeToCycleDay(dayIndex, draggedRecipeId, sec);
     triggerDropFlash(String(dayIndex), sec, draggedRecipeId);
     setDraggedRecipeId(null);
-    setIsLightCatalogRetracted(false);
+    scheduleCatalogRestoreAfterDrop();
   };
 
   const handleUpdateDatePortions = (dateIso: string, nextPortions: number) => {
@@ -1303,6 +1314,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       const origin = pointerDragOriginRef.current;
       if (!origin || e.pointerId !== origin.pointerId) return;
 
+      let didDropOnSlot = false;
       if (origin.active) {
         const els = document.elementsFromPoint(e.clientX, e.clientY);
         let droppedDate: string | null = null;
@@ -1323,17 +1335,30 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
           }
         }
 
+        const resolvedSection = droppedSectionId || mealSections[0]?.id || 'mittag';
         if (droppedDate) {
-          handleAssignRecipeToDate(droppedDate, origin.recipe.id, droppedSectionId);
+          handleAssignRecipeToDate(droppedDate, origin.recipe.id, resolvedSection);
+          triggerDropFlash(droppedDate, resolvedSection, origin.recipe.id);
+          didDropOnSlot = true;
         } else if (droppedCycleDay !== null && !Number.isNaN(droppedCycleDay)) {
-          handleAssignRecipeToCycleDay(droppedCycleDay, origin.recipe.id, droppedSectionId);
+          handleAssignRecipeToCycleDay(droppedCycleDay, origin.recipe.id, resolvedSection);
+          triggerDropFlash(String(droppedCycleDay), resolvedSection, origin.recipe.id);
+          didDropOnSlot = true;
         }
       }
 
       pointerDragOriginRef.current = null;
       setPointerDrag(null);
       setDraggedRecipeId(null);
-      setIsLightCatalogRetracted(false);
+      if (didDropOnSlot && origin.fromLightCatalog) {
+        scheduleCatalogRestoreAfterDrop();
+      } else {
+        if (retractRestoreTimerRef.current) {
+          window.clearTimeout(retractRestoreTimerRef.current);
+          retractRestoreTimerRef.current = null;
+        }
+        setIsLightCatalogRetracted(false);
+      }
     };
 
     window.addEventListener('pointermove', handlePointerMove, { passive: false });
@@ -1344,18 +1369,19 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       window.removeEventListener('pointerup', handlePointerEnd);
       window.removeEventListener('pointercancel', handlePointerEnd);
     };
-  }, [handleAssignRecipeToDate, handleAssignRecipeToCycleDay]);
+  }, [handleAssignRecipeToDate, handleAssignRecipeToCycleDay, mealSections, triggerDropFlash, scheduleCatalogRestoreAfterDrop]);
 
   // Mobile/Tablet Pixel-Launcher 1:1 finger-tracked swipe for left Katalog Drawer
   useEffect(() => {
     if (!hasLibrary || (activeTab !== 'calendar' && activeTab !== 'cycle')) return;
     const DRAWER_W = 300;
     const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length !== 1 || pointerDragOriginRef.current?.active) return;
+      if (e.touches.length !== 1 || pointerDragOriginRef.current?.active || pointerDragOriginRef.current) return;
       const target = e.target as HTMLElement | null;
       if (
         target?.closest('[data-grip-drag]') ||
         target?.closest('[data-no-swipe="true"]') ||
+        target?.closest('header') ||
         target?.closest('input') ||
         target?.closest('select') ||
         target?.closest('textarea')
@@ -1365,11 +1391,8 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       }
       const x = e.touches[0].clientX;
       const y = e.touches[0].clientY;
-      if (!isLightCatalogOpen && x > 44) {
-        catalogSwipeRef.current = null;
-        return;
-      }
-      if (isLightCatalogOpen && x > DRAWER_W + 40) {
+      // Allow opening pull from the left ~60% of mobile/tablet viewport (matches Notes feel & prevents edge misses)
+      if (!isLightCatalogOpen && x > Math.max(200, window.innerWidth * 0.6)) {
         catalogSwipeRef.current = null;
         return;
       }
@@ -1389,6 +1412,11 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     const onTouchMove = (e: TouchEvent) => {
       const s = catalogSwipeRef.current;
       if (!s || e.touches.length !== 1) return;
+      if (pointerDragOriginRef.current?.active) {
+        catalogSwipeRef.current = null;
+        setCatalogDragX(null);
+        return;
+      }
       const x = e.touches[0].clientX;
       const y = e.touches[0].clientY;
       const dx = x - s.startX;
@@ -1396,7 +1424,9 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
 
       if (!s.lockedAxis) {
         if (Math.hypot(dx, dy) < 8) return;
-        if (Math.abs(dx) > Math.abs(dy) * 1.1) {
+        const movingRight = dx > 0;
+        const validDirection = (!isLightCatalogOpen && movingRight) || (isLightCatalogOpen && !movingRight);
+        if (validDirection && Math.abs(dx) > Math.abs(dy) * 1.1) {
           s.lockedAxis = 'horizontal';
           s.isTracking = true;
         } else {
@@ -1427,7 +1457,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       const dt = Math.max(16, performance.now() - s.lastTime);
       const velocity = (endX - s.lastX) / dt;
       const progress = (s.currentX + DRAWER_W) / DRAWER_W;
-      const shouldOpen = velocity > 0.35 || (velocity >= -0.35 && progress > 0.4);
+      const shouldOpen = velocity > 0.3 || (velocity >= -0.3 && progress > 0.38);
       setCatalogDragX(null);
       setIsLightCatalogOpen(shouldOpen);
     };
@@ -1544,6 +1574,10 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 key={recipe.id}
                 draggable={!isViewingSharedPlan}
                 onDragStart={(e) => {
+                  if (retractRestoreTimerRef.current) {
+                    window.clearTimeout(retractRestoreTimerRef.current);
+                    retractRestoreTimerRef.current = null;
+                  }
                   setDraggedRecipeId(recipe.id);
                   e.dataTransfer.setData('text/plain', recipe.id);
                   if (isMobileSwipeDrawer) {
@@ -1552,7 +1586,9 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 }}
                 onDragEnd={() => {
                   setDraggedRecipeId(null);
-                  setIsLightCatalogRetracted(false);
+                  if (!retractRestoreTimerRef.current) {
+                    setIsLightCatalogRetracted(false);
+                  }
                 }}
                 onDragOver={(e) => {
                   if (isOwn && e.dataTransfer.types.includes('Files')) {
@@ -1918,7 +1954,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                   type="button"
                   onClick={() => setIsLightCatalogOpen(true)}
                   style={{ backgroundColor: accentColor }}
-                  className="fixed left-0 top-1/2 -translate-y-1/2 z-30 h-20 w-6 rounded-r-xl text-white shadow-lg flex flex-col items-center justify-center gap-1 cursor-pointer active:scale-95 opacity-95"
+                  className="fixed left-0 top-1/2 -translate-y-1/2 z-30 h-20 w-7 rounded-r-xl text-white shadow-lg flex flex-col items-center justify-center gap-1 cursor-pointer active:scale-95 opacity-95 touch-pan-x"
                   title="Katalog reinziehen"
                   aria-label="Katalog öffnen"
                 >
@@ -2054,7 +2090,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
               </div>
 
               {/* 7-Days Calendar Cards with Configurable Sections & Right-Aligned Mobile Day Labels */}
-              <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-2.5 overflow-y-auto overscroll-y-contain pr-1">
+              <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-2.5 overflow-y-auto overscroll-y-contain touch-pan-y pr-1">
                 {calendarDays.map((day) => {
                   const isDayDropHovered = pointerDrag?.hoverDate === day.date;
                   const weekdayColor = weekdayColors[day.isoWeekday] || accentColor;
@@ -2203,39 +2239,42 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                 <span className="text-[10px] font-bold tracking-wide text-neutral-500 dark:text-neutral-400 truncate">
                                   {sec.label}
                                 </span>
-                                <div className="flex items-center gap-1 shrink-0">
-                                  {isSlotDropped && (
-                                    <span
-                                      style={{ backgroundColor: accentColor }}
-                                      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-extrabold text-white shadow-xs animate-in fade-in zoom-in-95 duration-200"
-                                    >
-                                      <Check className="w-2.5 h-2.5" />
-                                      <span>Abgelegt</span>
-                                    </span>
-                                  )}
-                                  {!isViewingSharedPlan && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setCyclePickerSearch('');
-                                        setCyclePickerCategory('all');
-                                        setPickerTarget({ mode: 'calendar', dateIso: day.date, sectionId: sec.id });
-                                      }}
-                                      className="w-4 h-4 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 flex items-center justify-center cursor-pointer shrink-0"
-                                      title={`Gericht zu ${sec.label} hinzufügen`}
-                                    >
-                                      <Plus className="w-3 h-3" />
-                                    </button>
-                                  )}
-                                </div>
+                                {!isViewingSharedPlan && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setCyclePickerSearch('');
+                                      setCyclePickerCategory('all');
+                                      setPickerTarget({ mode: 'calendar', dateIso: day.date, sectionId: sec.id });
+                                    }}
+                                    className="w-4 h-4 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 flex items-center justify-center cursor-pointer shrink-0"
+                                    title={`Gericht zu ${sec.label} hinzufügen`}
+                                  >
+                                    <Plus className="w-3 h-3" />
+                                  </button>
+                                )}
                               </div>
 
                               {slotIds.length === 0 ? (
-                                <div className="border border-dashed border-[#E5E3DC] dark:border-[#2B2D31] rounded-lg px-2 py-1.5 text-center">
-                                  <span className="text-[10px] text-neutral-400">
-                                    {isViewingSharedPlan ? 'Offen' : 'Ziehen oder +'}
-                                  </span>
-                                </div>
+                                !isViewingSharedPlan ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setCyclePickerSearch('');
+                                      setCyclePickerCategory('all');
+                                      setPickerTarget({ mode: 'calendar', dateIso: day.date, sectionId: sec.id });
+                                    }}
+                                    className="w-full border border-dashed border-[#E5E3DC] dark:border-[#2B2D31] hover:border-[var(--ochre-accent)] hover:bg-amber-500/5 rounded-lg px-2 py-2 text-center cursor-pointer transition-colors"
+                                  >
+                                    <span className="text-[10px] font-medium text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200">
+                                      Ziehen oder +
+                                    </span>
+                                  </button>
+                                ) : (
+                                  <div className="border border-dashed border-[#E5E3DC] dark:border-[#2B2D31] rounded-lg px-2 py-2 text-center">
+                                    <span className="text-[10px] text-neutral-400">Offen</span>
+                                  </div>
+                                )
                               ) : (
                                 slotIds.map((rid) => {
                                   const r = getRecipeById(rid);
@@ -2248,13 +2287,11 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                       onClick={() => openRecipeOverlay(r, day.portions)}
                                       style={
                                         isDroppedCard
-                                          ? { borderColor: accentColor, backgroundColor: `${accentColor}16` }
+                                          ? { borderColor: accentColor, backgroundColor: `${accentColor}14` }
                                           : undefined
                                       }
                                       className={`group p-1.5 rounded-lg bg-white dark:bg-[#26282E] border border-[#E5E3DC] dark:border-[#383A40] text-[11px] font-medium flex items-center justify-between hover:border-neutral-400 transition-all duration-300 cursor-pointer gap-1.5 ${
-                                        isDroppedCard
-                                          ? 'ring-2 scale-[1.03] shadow-md animate-in zoom-in-95 duration-200'
-                                          : ''
+                                        isDroppedCard ? 'ring-1 shadow-md animate-dish-wiggle' : ''
                                       }`}
                                     >
                                       {r.images?.[0] && (
@@ -2269,14 +2306,6 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                           {r.title}
                                         </span>
                                       </div>
-                                      {isDroppedCard && (
-                                        <span
-                                          style={{ backgroundColor: accentColor }}
-                                          className="w-4 h-4 rounded-full text-white flex items-center justify-center shrink-0 animate-bounce"
-                                        >
-                                          <Check className="w-2.5 h-2.5" />
-                                        </span>
-                                      )}
                                       {!isViewingSharedPlan && (
                                         <button
                                           type="button"
@@ -2320,7 +2349,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
           {/* TAB 2: ZYKLUS BEARBEITEN (With Left Katalog + Drag&Drop + Sections + Right Mobile Labels) */}
           {/* ======================================================== */}
           {activeTab === 'cycle' && (
-            <div className="flex-1 p-4 md:p-6 pb-24 lg:pb-6 overflow-y-auto overscroll-y-contain space-y-5">
+            <div className="flex-1 p-4 md:p-6 pb-24 lg:pb-6 overflow-y-auto overscroll-y-contain touch-pan-y space-y-5">
               <div className="max-w-5xl mx-auto space-y-5">
                 <div className="p-4 rounded-2xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                   <div>
@@ -2498,39 +2527,42 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                   <span className="text-[10px] font-bold tracking-wide text-neutral-500 dark:text-neutral-400 truncate">
                                     {sec.label}
                                   </span>
-                                  <div className="flex items-center gap-1 shrink-0">
-                                    {isSlotDropped && (
-                                      <span
-                                        style={{ backgroundColor: accentColor }}
-                                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-extrabold text-white shadow-xs animate-in fade-in zoom-in-95 duration-200"
-                                      >
-                                        <Check className="w-2.5 h-2.5" />
-                                        <span>Abgelegt</span>
-                                      </span>
-                                    )}
-                                    {!isViewingSharedPlan && (
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setCyclePickerSearch('');
-                                          setCyclePickerCategory('all');
-                                          setPickerTarget({ mode: 'cycle', dayIndex: cd.dayIndex, sectionId: sec.id });
-                                        }}
-                                        className="w-4 h-4 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 flex items-center justify-center cursor-pointer shrink-0"
-                                        title={`Gericht zu ${sec.label} hinzufügen`}
-                                      >
-                                        <Plus className="w-3 h-3" />
-                                      </button>
-                                    )}
-                                  </div>
+                                  {!isViewingSharedPlan && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setCyclePickerSearch('');
+                                        setCyclePickerCategory('all');
+                                        setPickerTarget({ mode: 'cycle', dayIndex: cd.dayIndex, sectionId: sec.id });
+                                      }}
+                                      className="w-4 h-4 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 flex items-center justify-center cursor-pointer shrink-0"
+                                      title={`Gericht zu ${sec.label} hinzufügen`}
+                                    >
+                                      <Plus className="w-3 h-3" />
+                                    </button>
+                                  )}
                                 </div>
 
                                 {secIds.length === 0 ? (
-                                  <div className="border border-dashed border-[#E5E3DC] dark:border-[#2B2D31] rounded-lg px-2 py-1.5 text-center">
-                                    <span className="text-[10px] text-neutral-400">
-                                      {isViewingSharedPlan ? 'Offen' : 'Gericht hierher ziehen'}
-                                    </span>
-                                  </div>
+                                  !isViewingSharedPlan ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setCyclePickerSearch('');
+                                        setCyclePickerCategory('all');
+                                        setPickerTarget({ mode: 'cycle', dayIndex: cd.dayIndex, sectionId: sec.id });
+                                      }}
+                                      className="w-full border border-dashed border-[#E5E3DC] dark:border-[#2B2D31] hover:border-[var(--ochre-accent)] hover:bg-amber-500/5 rounded-lg px-2 py-2 text-center cursor-pointer transition-colors"
+                                    >
+                                      <span className="text-[10px] font-medium text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200">
+                                        Ziehen oder +
+                                      </span>
+                                    </button>
+                                  ) : (
+                                    <div className="border border-dashed border-[#E5E3DC] dark:border-[#2B2D31] rounded-lg px-2 py-2 text-center">
+                                      <span className="text-[10px] text-neutral-400">Offen</span>
+                                    </div>
+                                  )
                                 ) : (
                                   secIds.map((rid) => {
                                     const r = getRecipeById(rid);
@@ -2544,13 +2576,11 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                         onClick={() => openRecipeOverlay(r, dayPortions)}
                                         style={
                                           isDroppedCard
-                                            ? { borderColor: accentColor, backgroundColor: `${accentColor}16` }
+                                            ? { borderColor: accentColor, backgroundColor: `${accentColor}14` }
                                             : undefined
                                         }
                                         className={`p-1.5 rounded-lg bg-white dark:bg-[#282A2F] border border-[#E5E3DC]/80 dark:border-[#363940] text-[11px] font-medium flex items-center justify-between gap-1.5 cursor-pointer hover:border-neutral-400 transition-all duration-300 ${
-                                          isDroppedCard
-                                            ? 'ring-2 scale-[1.03] shadow-md animate-in zoom-in-95 duration-200'
-                                            : ''
+                                          isDroppedCard ? 'ring-1 shadow-md animate-dish-wiggle' : ''
                                         }`}
                                       >
                                         {r.images?.[0] && (
@@ -2566,14 +2596,6 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                             {dayPortions} Port.{isScaled ? ` (Basis: ${r.portions})` : ''}
                                           </span>
                                         </div>
-                                        {isDroppedCard && (
-                                          <span
-                                            style={{ backgroundColor: accentColor }}
-                                            className="w-4 h-4 rounded-full text-white flex items-center justify-center shrink-0 animate-bounce"
-                                          >
-                                            <Check className="w-2.5 h-2.5" />
-                                          </span>
-                                        )}
                                         {!isViewingSharedPlan && (
                                           <button
                                             type="button"
