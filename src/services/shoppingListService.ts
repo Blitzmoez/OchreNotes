@@ -68,6 +68,8 @@ const UNIT_ALIASES: Record<string, { norm: string; display: string }> = {
   dosen: { norm: 'dose', display: 'Dosen' },
   packung: { norm: 'packung', display: 'Packung' },
   packungen: { norm: 'packung', display: 'Packungen' },
+  päckchen: { norm: 'päckchen', display: 'Päckchen' },
+  paeckchen: { norm: 'päckchen', display: 'Päckchen' },
   pck: { norm: 'packung', display: 'Packung' },
   pkg: { norm: 'packung', display: 'Packung' },
   becher: { norm: 'becher', display: 'Becher' },
@@ -231,11 +233,6 @@ export function generateWeeklyShoppingList(params: {
     for (const rid of day.recipeIds) {
       const recipe = getRecipeById(rid);
       if (!recipe) continue;
-
-      if (recipe.excludeFromShoppingList) {
-        excludedTitlesSet.add(recipe.title);
-        continue;
-      }
 
       includedRecipeCount += 1;
 

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="osGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#D98F2E" />
+      <stop offset="100%" stop-color="#A66114" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#osGrad)" />
+  <rect x="3" y="3" width="58" height="58" rx="13" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="2" />
+  <text x="32" y="42" text-anchor="middle" font-family="'Plus Jakarta Sans', system-ui, -apple-system, sans-serif" font-size="27" font-weight="800" letter-spacing="-1" fill="#FFFFFF">OS</text>
+</svg>

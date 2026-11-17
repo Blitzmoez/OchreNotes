@@ -76,6 +76,19 @@ const FALLBACK_FINANCE_TX: FinanceTransaction[] = [
   { id: 'tx_7', date: '2026-11-01', creditor: 'Wochenmarkt Obst', categoryId: 'cat_groceries', amount: -15.0, description: 'Frische Äpfel & Gemüse', type: 'cash', isCash: true },
 ];
 
+function collectDayIds(
+  recipeIds?: string[],
+  slots?: Record<string, string[]>
+): string[] {
+  const set = new Set<string>(recipeIds || []);
+  if (slots) {
+    Object.values(slots).forEach((arr) => {
+      if (Array.isArray(arr)) arr.forEach((id) => set.add(id));
+    });
+  }
+  return Array.from(set);
+}
+
 function computeCurrentWeekDays(
   cycle: MealCycle | null,
   overrides: Record<string, MealCalendarOverride>,
@@ -108,12 +121,12 @@ function computeCurrentWeekDays(
       const diffTime = Math.floor((d.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
       const cycleIndex = ((diffTime % cycle.cycleLengthDays) + cycle.cycleLengthDays) % cycle.cycleLengthDays;
       const cycleDay = cycle.days.find((cd) => cd.dayIndex === cycleIndex);
-      cycleRecipeIds = cycleDay?.recipeIds || [];
+      cycleRecipeIds = collectDayIds(cycleDay?.recipeIds, cycleDay?.slots);
       cyclePortions = cycleDay?.portions ?? cycle.defaultPortions ?? defaultPortions;
     }
 
     const ov = overrides[iso];
-    const activeRecipeIds = ov ? ov.recipeIds : cycleRecipeIds;
+    const activeRecipeIds = ov ? collectDayIds(ov.recipeIds, ov.slots) : cycleRecipeIds;
     const portions = ov?.portions ?? cyclePortions;
 
     days.push({
@@ -156,6 +169,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [ingredientMeta, setIngredientMeta] = useState<Record<string, IngredientMeta>>({});
   const [dismissedDuplicates, setDismissedDuplicates] = useState<string[]>([]);
   const [serverShoppingEnabled, setServerShoppingEnabled] = useState<boolean>(enableCookbookShoppingList);
+  const [hasMealLibrary, setHasMealLibrary] = useState<boolean>(true);
+  const [pendingInviteCount, setPendingInviteCount] = useState<number>(0);
   const [checkedShoppingKeys, setCheckedShoppingKeys] = useState<Record<string, boolean>>({});
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
 
@@ -189,6 +204,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       if (healthRes) setSystemHealth(healthRes);
 
       if (cookbookRes) {
+        setHasMealLibrary(cookbookRes.hasLibrary !== false);
+        setPendingInviteCount((cookbookRes.invitations || []).length);
         setRecipes(cookbookRes.recipes || []);
         const combinedMap = new Map<string, Recipe>();
         (cookbookRes.recipes || []).forEach((r) => combinedMap.set(r.id, r));
@@ -437,12 +454,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       Offener Einkaufs-Forecast
                     </h3>
                     <span className="text-[11px] text-neutral-500 tabular-nums">
-                      Kochbuch · {calendarDays[0]?.dayMonth} – {calendarDays[6]?.dayMonth}
+                      Essensplan · {calendarDays[0]?.dayMonth} – {calendarDays[6]?.dayMonth}
                     </span>
                   </div>
                 </div>
 
-                {isShoppingActive && (
+                {hasMealLibrary && isShoppingActive && (
                   <div className="text-right tabular-nums">
                     <span className="text-2xl font-extrabold leading-none block" style={{ color: modColor }}>
                       {openShoppingItems.length}
@@ -454,9 +471,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
               </div>
 
-              {!isShoppingActive ? (
+              {!hasMealLibrary ? (
+                <div className="py-5 px-3 text-center rounded-2xl bg-[#F4F3EF]/70 dark:bg-[#25272C] text-xs text-neutral-500 space-y-2">
+                  <p className="font-medium">
+                    {pendingInviteCount > 0
+                      ? `${pendingInviteCount} Einladung(en) zu einem gemeinsamen Essensplan warten.`
+                      : 'Noch keine Essensplan-Bibliothek eingerichtet.'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => onNavigateToModule('recipes', { cookbookTab: 'calendar' })}
+                    style={{ backgroundColor: modColor }}
+                    className="px-3 py-1.5 rounded-xl text-white text-[11px] font-bold cursor-pointer"
+                  >
+                    Essensplan einrichten
+                  </button>
+                </div>
+              ) : !isShoppingActive ? (
                 <div className="py-5 px-3 text-center rounded-2xl bg-[#F4F3EF]/70 dark:bg-[#25272C] text-xs text-neutral-500 space-y-1">
-                  <p className="font-medium">Einkaufsliste ist in den Kochbuch-Einstellungen deaktiviert.</p>
+                  <p className="font-medium">Einkaufsliste ist in den Essensplan-Einstellungen deaktiviert.</p>
                 </div>
               ) : openShoppingItems.length === 0 ? (
                 <div className="py-6 text-center rounded-2xl bg-[#F4F3EF]/70 dark:bg-[#25272C] text-xs text-neutral-500">
@@ -538,23 +571,42 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </div>
                   <div>
                     <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 leading-tight">
-                      Speiseplan Heute &amp; Morgen
+                      Essensplan Heute &amp; Morgen
                     </h3>
-                    <span className="text-[11px] text-neutral-500">Kochbuch &amp; Zyklus</span>
+                    <span className="text-[11px] text-neutral-500">Kalender &amp; Zyklus</span>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => onNavigateToModule('recipes', { cookbookTab: 'presentation' })}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-[#F4F3EF] dark:bg-[#25272C] text-[11px] font-semibold hover:opacity-85 cursor-pointer"
-                  style={{ color: modColor }}
-                  title="Wochenshow starten"
-                >
-                  <Sparkles className="w-3 h-3" />
-                  <span>Show</span>
-                </button>
+                {hasMealLibrary && (
+                  <button
+                    type="button"
+                    onClick={() => onNavigateToModule('recipes', { cookbookTab: 'presentation' })}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-[#F4F3EF] dark:bg-[#25272C] text-[11px] font-semibold hover:opacity-85 cursor-pointer"
+                    style={{ color: modColor }}
+                    title="Wochenshow starten"
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    <span>Show</span>
+                  </button>
+                )}
               </div>
 
+              {!hasMealLibrary ? (
+                <div className="py-6 px-3 text-center rounded-2xl bg-[#F4F3EF]/70 dark:bg-[#25272C] text-xs text-neutral-500 space-y-2">
+                  <p className="font-medium">
+                    {pendingInviteCount > 0
+                      ? `${pendingInviteCount} Einladung(en) warten im Essensplan.`
+                      : 'Erstelle eine private oder geteilte Essensplan-Bibliothek.'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => onNavigateToModule('recipes', { cookbookTab: 'calendar' })}
+                    style={{ backgroundColor: modColor }}
+                    className="px-3 py-1.5 rounded-xl text-white text-[11px] font-bold cursor-pointer"
+                  >
+                    Jetzt öffnen
+                  </button>
+                </div>
+              ) : (
               <div className="space-y-2">
                 {todayAndTomorrowDays.map((day) => {
                   const dayRecipes = day.recipeIds
@@ -604,11 +656,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   );
                 })}
               </div>
+              )}
             </div>
 
             <div className="pt-3 mt-3 border-t border-[#E5E3DC]/70 dark:border-[#2B2D31] flex items-center justify-between text-xs">
               <span className="text-[11px] text-neutral-400 tabular-nums">
-                Zyklus: {cycle?.cycleLengthDays || 7} Tage
+                {hasMealLibrary ? `Zyklus: ${cycle?.cycleLengthDays || 7} Tage` : 'Noch leer'}
               </span>
               <button
                 type="button"
@@ -885,7 +938,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </div>
                   <div>
                     <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 leading-tight">
-                      Kochbuch Katalog &amp; Zutaten
+                      Essensplan Katalog &amp; Zutaten
                     </h3>
                     <span className="text-[11px] text-neutral-500">Tellergerichte &amp; Hygiene</span>
                   </div>

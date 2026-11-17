@@ -440,10 +440,14 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
               onClick={(e) => {
                 e.stopPropagation();
                 if (isReadOnly) return;
+                const sel = window.getSelection();
+                if (sel && !sel.isCollapsed && sel.toString().length > 0) {
+                  return;
+                }
                 const offset = getClickCharOffset(e, cleanText, rawPrefixLen);
                 onFocusLine(idx, offset);
               }}
-              className={`w-full cursor-text transition-colors rounded-xs hover:bg-black/[0.02] dark:hover:bg-white/[0.02] touch-manipulation ${typographyClass}`}
+              className={`w-full select-text cursor-text transition-colors rounded-xs hover:bg-black/[0.02] dark:hover:bg-white/[0.02] touch-manipulation ${typographyClass}`}
             >
               {cleanText.trim() === '' ? (
                 <span className="inline-block h-5 text-neutral-300 dark:text-neutral-700 select-none">&nbsp;</span>
@@ -1171,6 +1175,10 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
   // Focus editor immediately when clicking/tapping anywhere in empty canvas area
   const handleCanvasEmptyClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (isReadOnly) return;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().length > 0) {
+      return;
+    }
     if ((e.target as HTMLElement).closest('[data-line-row]')) return;
     const currentLines = draftLinesRef.current;
     const lastIdx = Math.max(0, currentLines.length - 1);
@@ -1584,11 +1592,11 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
       {/* Main Fluid Document Canvas (Obsidian Live Preview Style) */}
       <div
         onClick={handleCanvasEmptyClick}
-        className="flex-1 relative overflow-y-auto px-4 md:px-12 py-6 cursor-text"
+        className="flex-1 relative overflow-y-auto px-4 md:px-12 py-6 cursor-text select-text"
       >
         <div
           onClick={handleCanvasEmptyClick}
-          className="max-w-3xl mx-auto space-y-1 min-h-[calc(100%-1rem)] pb-24"
+          className="max-w-3xl mx-auto space-y-1 min-h-[calc(100%-1rem)] pb-24 select-text"
         >
           {draftLines.map((rawLine, idx) => (
             <MarkdownLineRow

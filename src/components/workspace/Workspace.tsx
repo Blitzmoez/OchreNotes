@@ -98,9 +98,14 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const tabsScrollRef = useRef<HTMLDivElement>(null);
 
-  // Multi-tab support for mobile (can have >2 temporary active tabs)
+  // Multi-tab support for mobile (switches active tab on Vault/Lite Vault click; opens new tab via + button)
   const [mobileTabs, setMobileTabs] = useState<NoteTab[]>([]);
   const [activeMobileTabPath, setActiveMobileTabPath] = useState<string | null>(activeNotePath);
+  const nextOpenIsNewTabRef = useRef<boolean>(false);
+  const activeMobileTabPathRef = useRef<string | null>(activeNotePath);
+  useEffect(() => {
+    activeMobileTabPathRef.current = activeMobileTabPath;
+  }, [activeMobileTabPath]);
 
   // Cache of tab contents for fast switching in temporary memory
   const [tabContents, setTabContents] = useState<Record<string, { content: string; title: string; lastSaved?: number }>>({});
@@ -109,24 +114,40 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   useEffect(() => {
     setMobileTabs([]);
     setActiveMobileTabPath(null);
+    activeMobileTabPathRef.current = null;
     setTabContents({});
     setSecondaryNotePath(null);
   }, [username, noteProfile]);
 
-  // Synchronize active note into mobileTabs
+  // Synchronize active note into mobileTabs (replace active tab on switch unless + triggered new tab)
   useEffect(() => {
     if (activeNotePath && activeNoteTitle) {
+      const openAsNew = nextOpenIsNewTabRef.current;
+      nextOpenIsNewTabRef.current = false;
+      const currentActive = activeMobileTabPathRef.current;
+
       setMobileTabs((prev) => {
         if (prev.some((t) => t.path === activeNotePath)) return prev;
-        return [...prev, { path: activeNotePath, title: activeNoteTitle }];
+        const entry: NoteTab = { path: activeNotePath, title: activeNoteTitle, isShared, sharedFrom };
+        if (prev.length === 0 || openAsNew) {
+          return [...prev, entry];
+        }
+        const replaceIdx = currentActive ? prev.findIndex((t) => t.path === currentActive) : 0;
+        if (replaceIdx >= 0) {
+          const next = [...prev];
+          next[replaceIdx] = entry;
+          return next;
+        }
+        return [entry, ...prev.slice(1)];
       });
       setActiveMobileTabPath(activeNotePath);
+      activeMobileTabPathRef.current = activeNotePath;
       setTabContents((prev) => ({
         ...prev,
         [activeNotePath]: { content, title: activeNoteTitle, lastSaved },
       }));
     }
-  }, [activeNotePath, activeNoteTitle]);
+  }, [activeNotePath, activeNoteTitle, isShared, sharedFrom]);
 
   // Translate vertical mouse wheel into horizontal scroll & support mouse drag-to-swipe on tabs
   useEffect(() => {
@@ -187,12 +208,18 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
   // Lite Vault modal state (used across editor, tasks, graph and desktop empty split)
   const [isLiteVaultOpen, setIsLiteVaultOpen] = useState(false);
+  const [liteVaultMode, setLiteVaultMode] = useState<'switch' | 'newTab'>('switch');
   const [liteVaultSearch, setLiteVaultSearch] = useState('');
   const [liteVaultCollapsedFolders, setLiteVaultCollapsedFolders] = useState<Record<string, boolean>>({});
   const [isLiteVaultNewFolderOpen, setIsLiteVaultNewFolderOpen] = useState(false);
   const [liteVaultNewFolderParent, setLiteVaultNewFolderParent] = useState<string>('/');
   const [liteVaultNewFolderName, setLiteVaultNewFolderName] = useState('');
   const [isCreatingLiteVaultFolder, setIsCreatingLiteVaultFolder] = useState(false);
+
+  // 1:1 finger-tracked swipe-to-dismiss state for Lite Vault drawer/card
+  const [liteVaultDragY, setLiteVaultDragY] = useState<number | null>(null);
+  const liteVaultTouchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const liteVaultListScrollRef = useRef<HTMLDivElement>(null);
 
   const handleCreateFolderFromLiteVault = async () => {
     if (!onCreateFolder || !liteVaultNewFolderName.trim() || isCreatingLiteVaultFolder) return;
@@ -216,8 +243,10 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
   useEffect(() => {
     if (openLiteVaultSignal && openLiteVaultSignal > 0) {
+      setLiteVaultMode('switch');
       setIsLiteVaultNewFolderOpen(false);
       setLiteVaultNewFolderName('');
+      setLiteVaultDragY(null);
       setIsLiteVaultOpen(true);
     }
   }, [openLiteVaultSignal]);
@@ -225,26 +254,23 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   // Toolbar visibility state (shared / moved to header bar)
   const [showToolbar, setShowToolbar] = useState(true);
 
-  // Load note into secondary split (Desktop) or add tab (Mobile), switching back to editor if currently on tasks/graph
+  // Load note into secondary split (Desktop) or switch/add tab (Mobile)
   const loadSecondaryNote = async (path: string, noteIsShared = false, noteSharedFrom = '') => {
     try {
-      const data = await api.readNote(username, path, noteIsShared, noteSharedFrom, noteProfile);
       if (isMobile) {
-        setMobileTabs((prev) => {
-          if (prev.some((t) => t.path === path)) return prev;
-          return [...prev, { path, title: data.title, isShared: noteIsShared, sharedFrom: noteSharedFrom }];
-        });
-        setActiveMobileTabPath(path);
-        setTabContents((prev) => ({
-          ...prev,
-          [path]: { content: data.content, title: data.title, lastSaved: Date.now() },
-        }));
+        if (liteVaultMode === 'newTab') {
+          nextOpenIsNewTabRef.current = true;
+        } else {
+          nextOpenIsNewTabRef.current = false;
+        }
         setIsLiteVaultOpen(false);
+        setLiteVaultDragY(null);
+        onSelectPrimaryNote(path, noteIsShared, noteSharedFrom);
         if (viewMode !== 'editor') {
-          onSelectPrimaryNote(path, noteIsShared, noteSharedFrom);
           onSwitchToEditor?.();
         }
       } else {
+        const data = await api.readNote(username, path, noteIsShared, noteSharedFrom, noteProfile);
         if (viewMode !== 'editor') {
           onSelectPrimaryNote(path, noteIsShared, noteSharedFrom);
           onSwitchToEditor?.();
@@ -403,23 +429,87 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
   const renderLiteVaultModal = () => {
     if (!isLiteVaultOpen) return null;
+    const isActivelyDragging = liteVaultDragY !== null;
+    const dragOffset = liteVaultDragY ?? 0;
+    const backdropOpacity = Math.max(0.1, 0.5 * (1 - Math.min(1, Math.abs(dragOffset) / 220)));
+
     return (
       <div
-        onClick={() => setIsLiteVaultOpen(false)}
-        className="fixed inset-0 bg-black/50 z-[110] flex items-start lg:items-center justify-center px-2.5 pt-16 pb-3 sm:px-4 lg:pt-4 backdrop-blur-xs animate-in fade-in duration-150"
+        data-no-swipe="true"
+        onClick={() => {
+          setLiteVaultDragY(null);
+          setIsLiteVaultOpen(false);
+        }}
+        style={{
+          backgroundColor: `rgba(0, 0, 0, ${backdropOpacity})`,
+          transition: isActivelyDragging ? 'none' : 'background-color 180ms ease-out',
+        }}
+        className="fixed inset-0 z-[110] flex items-start lg:items-center justify-center px-2.5 pt-16 pb-3 sm:px-4 lg:pt-4 backdrop-blur-xs"
       >
         <div
           onClick={(e) => e.stopPropagation()}
-          className="bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] w-full max-w-lg max-h-[62dvh] sm:max-h-[76dvh] lg:h-[75dvh] flex flex-col overflow-hidden animate-in slide-in-from-top-3 duration-200"
+          onTouchStart={(e) => {
+            const target = e.target as HTMLElement | null;
+            if (target?.closest('input')) {
+              liteVaultTouchStartRef.current = null;
+              return;
+            }
+            const listEl = liteVaultListScrollRef.current;
+            const inList = listEl && target ? listEl.contains(target) : false;
+            if (inList && listEl && listEl.scrollTop > 4) {
+              liteVaultTouchStartRef.current = null;
+              return;
+            }
+            liteVaultTouchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+          }}
+          onTouchMove={(e) => {
+            if (!liteVaultTouchStartRef.current) return;
+            const dy = e.touches[0].clientY - liteVaultTouchStartRef.current.y;
+            const dx = e.touches[0].clientX - liteVaultTouchStartRef.current.x;
+            if (Math.abs(dy) < 6 && liteVaultDragY === null) return;
+            const listEl = liteVaultListScrollRef.current;
+            if (dy > 0 && listEl && listEl.scrollTop > 4 && liteVaultDragY === null) {
+              liteVaultTouchStartRef.current = null;
+              return;
+            }
+            if (Math.abs(dy) > Math.abs(dx) * 0.9 || liteVaultDragY !== null) {
+              const clamped = Math.max(-260, Math.min(240, dy));
+              setLiteVaultDragY(clamped);
+            }
+          }}
+          onTouchEnd={() => {
+            if (liteVaultDragY !== null && Math.abs(liteVaultDragY) > 75) {
+              setLiteVaultDragY(null);
+              setIsLiteVaultOpen(false);
+            } else {
+              setLiteVaultDragY(null);
+            }
+            liteVaultTouchStartRef.current = null;
+          }}
+          onTouchCancel={() => {
+            setLiteVaultDragY(null);
+            liteVaultTouchStartRef.current = null;
+          }}
+          style={{
+            transform: `translateY(${dragOffset}px)`,
+            transition: isActivelyDragging ? 'none' : 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)',
+          }}
+          className="bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] w-full max-w-lg max-h-[62dvh] sm:max-h-[76dvh] lg:h-[75dvh] flex flex-col overflow-hidden"
         >
-          <div className="p-3 sm:p-3.5 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 shrink-0">
+          <div className="p-3 sm:p-3.5 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 shrink-0 touch-none">
             <div className="min-w-0 flex-1">
               <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
                 <Folder className="w-4 h-4 text-[var(--ochre-accent)] shrink-0" />
-                <span className="truncate">Lite Vault: Notiz & Ordner</span>
+                <span className="truncate">
+                  {liteVaultMode === 'newTab' ? 'Lite Vault: Neuen Tab öffnen' : 'Lite Vault: Notiz & Ordner'}
+                </span>
               </h3>
               <span className="text-[11px] text-neutral-400 block truncate">
-                {isMobile ? 'Notiz wählen, Ordner anlegen oder neu erstellen' : 'Notiz oder Ordner wählen bzw. neu anlegen'}
+                {liteVaultMode === 'newTab'
+                  ? 'Notiz wählen, um sie als neuen Tab hinzuzufügen'
+                  : isMobile
+                  ? 'Notiz wechseln, Ordner anlegen oder wischen zum Schließen'
+                  : 'Notiz oder Ordner wählen bzw. neu anlegen'}
               </span>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
@@ -446,6 +536,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                 <button
                   type="button"
                   onClick={() => {
+                    if (liteVaultMode === 'newTab') {
+                      nextOpenIsNewTabRef.current = true;
+                    }
                     onCreateNote();
                     setIsLiteVaultOpen(false);
                   }}
@@ -526,7 +619,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-3">
+          <div ref={liteVaultListScrollRef} className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-3">
             {Object.keys(groupedLiteVaultNotes).map((folderKey) => {
               const folderNotes = groupedLiteVaultNotes[folderKey];
               const isRoot = folderKey === '/';
@@ -662,11 +755,11 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     const currentTabLastSaved = activeTab ? (tabContents[activeTab.path]?.lastSaved ?? lastSaved) : lastSaved;
 
     return (
-      <main className="flex-1 h-full overflow-hidden flex flex-col relative select-none">
+      <main className="flex-1 h-full overflow-hidden flex flex-col relative">
         {/* Mobile Slideable Tabs Bar (data-no-swipe ensures Vault gesture doesn't hijack tab scrolling) */}
         <div 
           data-no-swipe="true"
-          className="h-11 px-2.5 bg-[#F4F3EF] dark:bg-[#1F2125] border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-1.5 shrink-0"
+          className="h-11 px-2.5 bg-[#F4F3EF] dark:bg-[#1F2125] border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-1.5 shrink-0 select-none"
         >
           {/* Scrollable / Slideable Tabs Container with mouse wheel support */}
           <div 
@@ -680,7 +773,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                   key={tab.path}
                   onClick={() => {
                     setActiveMobileTabPath(tab.path);
-                    if (tab.path === activeNotePath) {
+                    activeMobileTabPathRef.current = tab.path;
+                    if (tab.path !== activeNotePath) {
                       onSelectPrimaryNote(tab.path, tab.isShared, tab.sharedFrom);
                     }
                   }}
@@ -717,8 +811,24 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             })}
           </div>
 
-          {/* Pinned Toolbar Toggle Button (Add + removed — creation/selection is in Navigation & Lite Vault) */}
+          {/* Pinned + (New Tab via Lite Vault) & Toolbar Toggle Buttons */}
           <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setLiteVaultMode('newTab');
+                setIsLiteVaultNewFolderOpen(false);
+                setLiteVaultNewFolderName('');
+                setLiteVaultDragY(null);
+                setIsLiteVaultOpen(true);
+              }}
+              className="w-8 h-8 rounded-full flex items-center justify-center bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] hover:border-[var(--ochre-accent)] shadow-xs transition-all shrink-0 cursor-pointer touch-manipulation active:scale-95"
+              title="Neuen Tab mit Lite Vault öffnen"
+              aria-label="Neuen Tab öffnen"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+
             <button
               type="button"
               onClick={() => setShowToolbar(!showToolbar)}
@@ -797,7 +907,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         e.preventDefault();
         handleDropOnSplit(e);
       }}
-      className={`flex-1 h-full overflow-hidden flex relative select-none ${isDragging ? 'cursor-col-resize' : ''}`}
+      className={`flex-1 h-full overflow-hidden flex relative ${isDragging ? 'cursor-col-resize select-none' : ''}`}
     >
       {/* Primary Note Pane */}
       <div
@@ -807,7 +917,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         }`}
       >
         {/* Pane Sub-Header */}
-        <div className="h-8 px-3 bg-[#F4F3EF] dark:bg-[#1F2125] border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between text-xs font-medium text-neutral-700 dark:text-neutral-300 shrink-0">
+        <div className="h-8 px-3 bg-[#F4F3EF] dark:bg-[#1F2125] border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between text-xs font-medium text-neutral-700 dark:text-neutral-300 shrink-0 select-none">
           <div className="flex items-center gap-1.5 min-w-0">
             <FileText className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
             <select

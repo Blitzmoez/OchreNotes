@@ -36,6 +36,7 @@ interface SidebarProps {
   onDeleteFolder?: (folderPath: string) => Promise<boolean | void> | void;
   onMoveNote?: (oldPath: string, newPath: string) => Promise<void>;
   isOpen: boolean;
+  dragOffsetPx?: number | null;
   onCloseMobile: () => void;
   activeProfileName?: string;
 }
@@ -54,6 +55,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteFolder,
   onMoveNote,
   isOpen,
+  dragOffsetPx = null,
   onCloseMobile,
   activeProfileName,
 }) => {
@@ -268,22 +270,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return groups;
   }, [sharedNotes]);
 
+  const isDraggingDrawer = dragOffsetPx !== null;
+
   return (
     <>
       {/* Mobile Backdrop */}
-      {isOpen && (
+      {(isOpen || isDraggingDrawer) && (
         <div 
           onClick={onCloseMobile}
+          style={
+            isDraggingDrawer
+              ? { opacity: Math.max(0, Math.min(1, (288 + (dragOffsetPx ?? -288)) / 288)) }
+              : undefined
+          }
           className="fixed inset-0 bg-black/40 z-30 lg:hidden backdrop-blur-xs"
         />
       )}
 
-      <aside className={`
-        fixed lg:static top-0 bottom-0 left-0 z-40
-        w-72 bg-[#F4F3EF] dark:bg-[#1D1F23] border-r border-[#E5E3DC] dark:border-[#2F3136]
-        flex flex-col overflow-x-hidden transition-transform duration-200 ease-in-out select-none
-        ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
-      `}>
+      <aside
+        style={
+          isDraggingDrawer
+            ? { transform: `translateX(${dragOffsetPx}px)` }
+            : undefined
+        }
+        className={`
+          fixed lg:static top-0 bottom-0 left-0 z-40
+          w-72 bg-[#F4F3EF] dark:bg-[#1D1F23] border-r border-[#E5E3DC] dark:border-[#2F3136]
+          flex flex-col overflow-x-hidden select-none
+          ${isDraggingDrawer ? 'transition-none' : 'transition-transform duration-200 ease-out'}
+          ${isDraggingDrawer ? '' : isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+        `}
+      >
         {/* Header Actions */}
         <div className="p-3 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 relative shrink-0">
           <div className="flex items-center gap-1.5 min-w-0 flex-1">

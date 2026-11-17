@@ -1,0 +1,24 @@
+{
+  "defaultCyclePortions": 2,
+  "enableShoppingList": true,
+  "enableCycle": true,
+  "mealSections": [
+    {
+      "id": "mittag",
+      "label": "Mittag"
+    },
+    {
+      "id": "abend",
+      "label": "Abend"
+    }
+  ],
+  "weekdayColors": {
+    "0": "#B45309",
+    "1": "#C87D20",
+    "2": "#B87333",
+    "3": "#A67C21",
+    "4": "#C26D2D",
+    "5": "#6E7F4F",
+    "6": "#8E6126"
+  }
+}

@@ -147,9 +147,19 @@ export interface NoteProfileConfig {
   colors: ModuleColors;
 }
 
+export interface OfflineQueueItem {
+  id: string;
+  action: 'saveNote' | 'saveWiki' | 'saveCookbook' | 'saveFinance';
+  payload: any;
+  timestamp: number;
+  attempts?: number;
+  lastError?: string;
+}
+
 export interface SuiteProfileSettings {
   enableSecondProfile: boolean;
   activeProfileId: NoteProfileId;
+  mobileBarPosition?: 'top' | 'bottom';
   profile1: NoteProfileConfig;
   profile2: NoteProfileConfig;
 }
@@ -198,18 +208,49 @@ export interface WikiArticle {
   rawMarkdown?: string;
 }
 
-// Recipes & Meal Planning Types
+// Essensplan (Meals & Meal Planning) Types
 export type CookbookTab = 'calendar' | 'cycle' | 'recipes' | 'shopping' | 'presentation';
+
+export interface MealSectionConfig {
+  id: string;
+  label: string;
+}
 
 export interface CookbookSettings {
   defaultCyclePortions: number;
   enableShoppingList?: boolean;
+  enableCycle?: boolean;
+  mealSections?: MealSectionConfig[];
+  weekdayColors?: Record<string, string>; // key: '0'..'6' (JS Date.getDay(), '1'=Mo..'0'=So)
+  units?: string[];
+}
+
+export interface MealPlanLibrary {
+  id: string;
+  name: string;
+  ownerUsername: string;
+  ownerDisplayName: string;
+  visibility: 'private' | 'shared';
+  invitedUsers: string[];
+  members: string[];
+  createdAt: number;
+}
+
+export interface MealPlanInvitation {
+  libraryId: string;
+  name: string;
+  ownerUsername: string;
+  ownerDisplayName: string;
+  membersCount: number;
+  createdAt: number;
 }
 
 export interface IngredientMeta {
   key: string;
   displayName: string;
   excludeFromShoppingList?: boolean;
+  defaultUnit?: string;
+  isCustom?: boolean;
 }
 
 export interface RecipeIngredient {
@@ -222,6 +263,7 @@ export interface Recipe {
   id: string;
   title: string;
   category: string;
+  mealTypes?: string[]; // Multiple choice e.g. ['Mittag', 'Abend']
   prepTimeMinutes: number;
   portions: number;
   description: string;
@@ -238,7 +280,8 @@ export interface Recipe {
 export interface MealCycleDay {
   dayIndex: number; // 0 to cycleLength - 1
   label: string; // e.g. "Tag 1"
-  recipeIds: string[]; // Assigned recipe ids for this cycle day
+  recipeIds: string[]; // Flat legacy/compatibility union of planned recipes
+  slots?: Record<string, string[]>; // Section-based mapping: sectionId -> recipeIds
   portions?: number; // Target portions for this cycle day
 }
 
@@ -253,7 +296,8 @@ export interface MealCycle {
 
 export interface MealCalendarOverride {
   date: string; // YYYY-MM-DD
-  recipeIds: string[]; // Specific recipes for this single date
+  recipeIds: string[]; // Flat union of recipes for this date
+  slots?: Record<string, string[]>; // Section-based mapping: sectionId -> recipeIds
   portions?: number;
   note?: string;
   isOneTimeChange: boolean;

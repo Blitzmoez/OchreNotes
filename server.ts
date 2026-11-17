@@ -24,7 +24,7 @@ interface SystemLogEntry {
 }
 
 const systemLogs: SystemLogEntry[] = [];
-const MAX_LOGS = 300;
+const MAX_LOGS = 400;
 
 function log(level: 'info' | 'warn' | 'error', message: string, source = 'SERVER') {
   const entry: SystemLogEntry = {
@@ -684,14 +684,22 @@ async function createServer() {
 
     app.use(express.json({ limit: '20mb' }));
 
-  // Request logger middleware
+  // Request & error logger middleware
   app.use((req, res, next) => {
     if (req.path.startsWith('/api/')) {
       const start = Date.now();
       res.on('finish', () => {
         const ms = Date.now() - start;
-        if (res.statusCode >= 400) {
+        if (res.statusCode >= 500) {
+          log('error', `${req.method} ${req.path} -> ${res.statusCode} (${ms}ms)`, 'HTTP');
+        } else if (res.statusCode >= 400) {
           log('warn', `${req.method} ${req.path} -> ${res.statusCode} (${ms}ms)`, 'HTTP');
+        } else if (
+          req.method !== 'GET' &&
+          !req.path.startsWith('/api/system/') &&
+          ms > 150
+        ) {
+          log('info', `${req.method} ${req.path} -> ${res.statusCode} (${ms}ms)`, 'HTTP');
         }
       });
     }
@@ -2050,13 +2058,34 @@ async function createServer() {
   });
 
   // =========================================================================
-  // PER-USER OPEN-STANDARD COOKBOOK API
-  // Stored under User/<username>/Cookbook/:
-  //   - Rezepte/*.md   (Open-Standard Markdown + YAML Frontmatter)
-  //   - Media/<recipe>/ (Per-recipe image assets)
-  //   - cycle.json, categories.json, overrides.json, sharing.json, settings.json
+  // ESSENSPLAN (OPEN-STANDARD MEAL LIBRARIES & RECIPES API)
   // =========================================================================
   const DEFAULT_COOKBOOK_CATEGORIES = ['Frühstück', 'Mittagessen', 'Abendessen', 'Snack', 'Dessert', 'Vegetarisch', 'Schnelle Küche'];
+  const DEFAULT_MEAL_SECTIONS = [
+    { id: 'mittag', label: 'Mittag' },
+    { id: 'abend', label: 'Abend' },
+  ];
+  const DEFAULT_WEEKDAY_COLORS: Record<string, string> = {
+    '1': '#C87D20',
+    '2': '#B87333',
+    '3': '#A67C21',
+    '4': '#C26D2D',
+    '5': '#6E7F4F',
+    '6': '#8E6126',
+    '0': '#B45309',
+  };
+
+  interface MealPlanLibraryRecord {
+    id: string;
+    name: string;
+    ownerUsername: string;
+    ownerDisplayName: string;
+    visibility: 'private' | 'shared';
+    invitedUsers: string[];
+    members: string[];
+    storageKey: string; // Either 'user:<username>' or 'lib:<libraryId>'
+    createdAt: number;
+  }
 
   function sanitizeRecipeMediaDir(rawName: string): string {
     return (
@@ -2088,19 +2117,21 @@ async function createServer() {
     const safeCategory = String(recipe.category || 'Mittagessen').replace(/"/g, '\\"');
     const tagsArr = Array.isArray(recipe.tags) ? recipe.tags : [];
     const tagsYaml = `[${tagsArr.map((t: string) => `"${String(t).replace(/"/g, '')}"`).join(', ')}]`;
+    const mealTypesArr = Array.isArray(recipe.mealTypes) ? recipe.mealTypes : [];
+    const mealTypesYaml = `[${mealTypesArr.map((t: string) => `"${String(t).replace(/"/g, '')}"`).join(', ')}]`;
     const mediaDir = getRecipeMediaDirName(recipe);
 
     let fm = `---\n`;
     fm += `id: "${String(recipe.id || `r_${Date.now()}`).replace(/"/g, '')}"\n`;
     fm += `title: "${safeTitle}"\n`;
     fm += `category: "${safeCategory}"\n`;
+    if (mealTypesArr.length > 0) {
+      fm += `mealTypes: ${mealTypesYaml}\n`;
+    }
     fm += `prepTimeMinutes: ${Number(recipe.prepTimeMinutes) || 20}\n`;
     fm += `portions: ${Math.max(1, Number(recipe.portions) || 2)}\n`;
     fm += `tags: ${tagsYaml}\n`;
     fm += `mediaDir: "${mediaDir}"\n`;
-    if (recipe.excludeFromShoppingList) {
-      fm += `excludeFromShoppingList: true\n`;
-    }
     if (recipe.sharedFrom) {
       fm += `sharedFrom: "${String(recipe.sharedFrom).replace(/"/g, '\\"')}"\n`;
     }
@@ -2147,13 +2178,13 @@ async function createServer() {
     let id = fallbackId;
     let title = fallbackId;
     let category = 'Mittagessen';
+    let mealTypes: string[] = [];
     let prepTimeMinutes = 20;
     let portions = 2;
     let tags: string[] = [];
     let mediaDir = '';
     let sharedFrom: string | undefined;
     let color: string | undefined;
-    let excludeFromShoppingList = false;
     let content = raw;
 
     const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
@@ -2170,7 +2201,6 @@ async function createServer() {
       mediaDir = getStr('mediaDir') || '';
       sharedFrom = getStr('sharedFrom');
       color = getStr('color');
-      excludeFromShoppingList = /^excludeFromShoppingList:\s*true\b/m.test(fm);
 
       const pTime = fm.match(/^prepTimeMinutes:\s*(\d+)/m);
       if (pTime) prepTimeMinutes = parseInt(pTime[1], 10) || 20;
@@ -2179,6 +2209,13 @@ async function createServer() {
       const tMatch = fm.match(/^tags:\s*\[(.*)\]/m);
       if (tMatch) {
         tags = tMatch[1]
+          .split(',')
+          .map((t) => t.trim().replace(/^["']|["']$/g, ''))
+          .filter(Boolean);
+      }
+      const mtMatch = fm.match(/^mealTypes:\s*\[(.*)\]/m);
+      if (mtMatch) {
+        mealTypes = mtMatch[1]
           .split(',')
           .map((t) => t.trim().replace(/^["']|["']$/g, ''))
           .filter(Boolean);
@@ -2247,6 +2284,7 @@ async function createServer() {
       id,
       title,
       category,
+      mealTypes,
       prepTimeMinutes,
       portions,
       description: descLines.join('\n').trim(),
@@ -2256,14 +2294,110 @@ async function createServer() {
       mediaDir: mediaDir || sanitizeRecipeMediaDir(`${title}_${id}`),
       images,
     };
-    if (excludeFromShoppingList) recipe.excludeFromShoppingList = true;
     if (sharedFrom) recipe.sharedFrom = sharedFrom;
     if (color) recipe.color = color;
     return recipe;
   }
 
-  async function syncCookbookMarkdownFiles(username: string, recipes: any[]) {
-    const dirs = ensureUserProfileStructure(username);
+  function getCookbookDirsFromStorageKey(storageKey: string): { cookbook: string; cookbookRecipes: string; cookbookMedia: string; routeKey: string } {
+    if (storageKey.startsWith('lib:')) {
+      const libId = path.basename(storageKey.slice(4));
+      const base = path.join(VAULT_PATH, 'Essensplan', libId);
+      const recipesDir = path.join(base, 'Rezepte');
+      const mediaDir = path.join(base, 'Media');
+      for (const d of [base, recipesDir, mediaDir]) {
+        if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true, mode: 0o775 });
+      }
+      return { cookbook: base, cookbookRecipes: recipesDir, cookbookMedia: mediaDir, routeKey: libId };
+    }
+    const uname = path.basename(storageKey.startsWith('user:') ? storageKey.slice(5) : storageKey || 'michael');
+    const dirs = ensureUserProfileStructure(uname);
+    return {
+      cookbook: dirs.cookbook,
+      cookbookRecipes: dirs.cookbookRecipes,
+      cookbookMedia: dirs.cookbookMedia,
+      routeKey: uname,
+    };
+  }
+
+  async function getMealLibraries(): Promise<MealPlanLibraryRecord[]> {
+    const file = getConfigFile('meal_libraries.json');
+    if (fs.existsSync(file)) {
+      try {
+        const parsed = JSON.parse(await fsp.readFile(file, 'utf-8'));
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+
+    // One-time seamless migration ONLY for users who already have .md recipes on disk (e.g. Michael)
+    const users = await getUsers();
+    const seeded: MealPlanLibraryRecord[] = [];
+    for (const u of users) {
+      const userCookbookRecipes = path.join(getUserBaseDir(u.username), 'Cookbook', 'Rezepte');
+      if (fs.existsSync(userCookbookRecipes)) {
+        const mdFiles = fs.readdirSync(userCookbookRecipes).filter((f) => f.endsWith('.md'));
+        if (mdFiles.length > 0) {
+          seeded.push({
+            id: `lib_${u.username}`,
+            name: `${u.displayName}s Essensplan`,
+            ownerUsername: u.username,
+            ownerDisplayName: u.displayName,
+            visibility: 'private',
+            invitedUsers: [],
+            members: [u.username],
+            storageKey: `user:${u.username}`,
+            createdAt: Date.now(),
+          });
+        }
+      }
+    }
+    await fsp.writeFile(file, JSON.stringify(seeded, null, 2), 'utf-8');
+    return seeded;
+  }
+
+  async function saveMealLibraries(libs: MealPlanLibraryRecord[]) {
+    const file = getConfigFile('meal_libraries.json');
+    await fsp.writeFile(file, JSON.stringify(libs, null, 2), 'utf-8');
+  }
+
+  async function resolveUserLibraryContext(username: string): Promise<{
+    library: MealPlanLibraryRecord | null;
+    invitations: Array<{ libraryId: string; name: string; ownerUsername: string; ownerDisplayName: string; membersCount: number; createdAt: number }>;
+    allLibraries: MealPlanLibraryRecord[];
+  }> {
+    const libs = await getMealLibraries();
+    const activeLib = libs.find((l) => l.members.includes(username)) || null;
+    const invitations = libs
+      .filter((l) => l.visibility === 'shared' && l.invitedUsers.includes(username) && !l.members.includes(username))
+      .map((l) => ({
+        libraryId: l.id,
+        name: l.name,
+        ownerUsername: l.ownerUsername,
+        ownerDisplayName: l.ownerDisplayName,
+        membersCount: l.members.length,
+        createdAt: l.createdAt,
+      }));
+    return { library: activeLib, invitations, allLibraries: libs };
+  }
+
+  async function resolveCookbookDirsForKey(keyOrUsername: string): Promise<{ cookbook: string; cookbookRecipes: string; cookbookMedia: string; routeKey: string }> {
+    const clean = path.basename(String(keyOrUsername || 'michael'));
+    const libs = await getMealLibraries();
+    const byId = libs.find((l) => l.id === clean);
+    if (byId) {
+      return getCookbookDirsFromStorageKey(byId.storageKey);
+    }
+    const byMember = libs.find((l) => l.members.includes(clean));
+    if (byMember) {
+      return getCookbookDirsFromStorageKey(byMember.storageKey);
+    }
+    return getCookbookDirsFromStorageKey(`user:${clean}`);
+  }
+
+  async function syncCookbookMarkdownFilesForDirs(
+    dirs: { cookbook: string; cookbookRecipes: string; cookbookMedia: string; routeKey: string },
+    recipes: any[]
+  ) {
     const keepFiles = new Set<string>();
 
     for (const r of recipes) {
@@ -2275,7 +2409,6 @@ async function createServer() {
       await fsp.writeFile(path.join(dirs.cookbookRecipes, fileName), serializeRecipeMarkdown(enriched), 'utf-8');
     }
 
-    // Remove .md files no longer present in recipes list
     if (fs.existsSync(dirs.cookbookRecipes)) {
       const existing = await fsp.readdir(dirs.cookbookRecipes);
       for (const f of existing) {
@@ -2286,6 +2419,11 @@ async function createServer() {
     }
 
     await fsp.writeFile(path.join(dirs.cookbook, 'recipes.json'), JSON.stringify(recipes, null, 2), 'utf-8');
+  }
+
+  async function syncCookbookMarkdownFiles(username: string, recipes: any[]) {
+    const dirs = await resolveCookbookDirsForKey(username);
+    await syncCookbookMarkdownFilesForDirs(dirs, recipes);
   }
 
   function getDefaultRecipesForUser(username: string) {
@@ -2413,19 +2551,18 @@ async function createServer() {
     };
   }
 
-  async function readRecipeMediaUrls(username: string, mediaDirName: string): Promise<string[]> {
-    const dirs = ensureUserProfileStructure(username);
+  async function readRecipeMediaUrls(storageRouteKey: string, mediaDirName: string): Promise<string[]> {
+    const dirs = await resolveCookbookDirsForKey(storageRouteKey);
     const safeDir = sanitizeRecipeMediaDir(mediaDirName);
     const fullDir = path.join(dirs.cookbookMedia, safeDir);
     if (!fs.existsSync(fullDir)) return [];
     const entries = await fsp.readdir(fullDir, { withFileTypes: true });
     return entries
       .filter((e) => e.isFile() && IMAGE_EXT_REGEX.test(e.name))
-      .map((e) => `/api/cookbook/media/file/${encodeURIComponent(username)}/${encodeURIComponent(safeDir)}/${encodeURIComponent(e.name)}`);
+      .map((e) => `/api/cookbook/media/file/${encodeURIComponent(dirs.routeKey)}/${encodeURIComponent(safeDir)}/${encodeURIComponent(e.name)}`);
   }
 
-  async function readUserCookbookData(username: string) {
-    const dirs = ensureUserProfileStructure(username);
+  async function readCookbookDataFromDirs(dirs: { cookbook: string; cookbookRecipes: string; cookbookMedia: string; routeKey: string }, cycleIdHint: string) {
     const recipesFile = path.join(dirs.cookbook, 'recipes.json');
     const categoriesFile = path.join(dirs.cookbook, 'categories.json');
     const cycleFile = path.join(dirs.cookbook, 'cycle.json');
@@ -2434,10 +2571,34 @@ async function createServer() {
     const settingsFile = path.join(dirs.cookbook, 'settings.json');
     const ingredientsFile = path.join(dirs.cookbook, 'ingredients.json');
 
-    let settings = { defaultCyclePortions: 2, enableShoppingList: true };
+    const DEFAULT_MEAL_UNITS = ['Gramm', 'KG', 'Liter', 'ml', 'Päckchen', 'Stück', 'EL', 'TL', 'Bund', 'Prise', 'Dose', 'Becher'];
+    let settings: any = {
+      defaultCyclePortions: 2,
+      enableShoppingList: true,
+      enableCycle: true,
+      mealSections: [...DEFAULT_MEAL_SECTIONS],
+      weekdayColors: { ...DEFAULT_WEEKDAY_COLORS },
+      units: [...DEFAULT_MEAL_UNITS],
+    };
     if (fs.existsSync(settingsFile)) {
       try {
-        settings = { ...settings, ...JSON.parse(await fsp.readFile(settingsFile, 'utf-8')) };
+        const parsedSettings = JSON.parse(await fsp.readFile(settingsFile, 'utf-8'));
+        settings = {
+          ...settings,
+          ...parsedSettings,
+          mealSections:
+            Array.isArray(parsedSettings?.mealSections) && parsedSettings.mealSections.length > 0
+              ? parsedSettings.mealSections
+              : settings.mealSections,
+          weekdayColors: {
+            ...DEFAULT_WEEKDAY_COLORS,
+            ...(parsedSettings?.weekdayColors || {}),
+          },
+          units:
+            Array.isArray(parsedSettings?.units) && parsedSettings.units.length > 0
+              ? parsedSettings.units
+              : settings.units,
+        };
       } catch {}
     } else {
       await fsp.writeFile(settingsFile, JSON.stringify(settings, null, 2), 'utf-8');
@@ -2470,17 +2631,13 @@ async function createServer() {
     } else if (fs.existsSync(recipesFile)) {
       recipes = JSON.parse(await fsp.readFile(recipesFile, 'utf-8'));
       if (recipes.length > 0) {
-        await syncCookbookMarkdownFiles(username, recipes);
+        await syncCookbookMarkdownFilesForDirs(dirs, recipes);
       }
-    } else {
-      recipes = getDefaultRecipesForUser(username);
-      await syncCookbookMarkdownFiles(username, recipes);
     }
 
-    // Merge live local media folder images so on-disk images are always attached
     for (let i = 0; i < recipes.length; i++) {
       const mDir = getRecipeMediaDirName(recipes[i]);
-      const diskImgs = await readRecipeMediaUrls(username, mDir);
+      const diskImgs = await readRecipeMediaUrls(dirs.routeKey, mDir);
       const existingImgs = Array.isArray(recipes[i].images) ? recipes[i].images : [];
       const merged = Array.from(new Set([...diskImgs, ...existingImgs]));
       recipes[i] = { ...recipes[i], mediaDir: mDir, images: merged };
@@ -2497,7 +2654,7 @@ async function createServer() {
     if (fs.existsSync(cycleFile)) {
       cycle = JSON.parse(await fsp.readFile(cycleFile, 'utf-8'));
     } else {
-      cycle = getDefaultCycleForUser(username, settings.defaultCyclePortions || 2);
+      cycle = getDefaultCycleForUser(cycleIdHint, settings.defaultCyclePortions || 2);
       await fsp.writeFile(cycleFile, JSON.stringify(cycle, null, 2), 'utf-8');
     }
 
@@ -2532,25 +2689,70 @@ async function createServer() {
     };
   }
 
+  function buildEmptyCookbookPayload(username: string) {
+    return {
+      recipes: [],
+      categories: [...DEFAULT_COOKBOOK_CATEGORIES],
+      cycle: getDefaultCycleForUser(username, 2),
+      overrides: {},
+      sharing: {
+        shareCatalog: false,
+        catalogSharedWith: ['*'],
+        shareCycleAndCalendar: false,
+        cycleSharedWith: ['*'],
+      },
+      settings: {
+        defaultCyclePortions: 2,
+        enableShoppingList: true,
+        enableCycle: true,
+        mealSections: [...DEFAULT_MEAL_SECTIONS],
+        weekdayColors: { ...DEFAULT_WEEKDAY_COLORS },
+      },
+      ingredientMeta: {},
+      dismissedDuplicates: [],
+    };
+  }
+
   app.get('/api/cookbook', async (req, res) => {
     const username = (req.query.username as string) || 'michael';
     try {
-      const ownData = await readUserCookbookData(username);
+      const { library, invitations, allLibraries } = await resolveUserLibraryContext(username);
       const users = await getUsers();
+
+      if (!library) {
+        return res.json({
+          hasLibrary: false,
+          library: null,
+          invitations,
+          ...buildEmptyCookbookPayload(username),
+          sharedCatalogs: [],
+          sharedPlans: [],
+        });
+      }
+
+      const dirs = getCookbookDirsFromStorageKey(library.storageKey);
+      const ownData = await readCookbookDataFromDirs(dirs, library.ownerUsername || username);
+
       const sharedCatalogs: any[] = [];
       const sharedPlans: any[] = [];
 
-      for (const u of users) {
-        if (u.username === username) continue;
-        const other = await readUserCookbookData(u.username);
+      // Legacy user-level sharing compatibility (for users who have distinct libraries)
+      const checkedKeys = new Set<string>([library.id]);
+      for (const lib of allLibraries) {
+        if (checkedKeys.has(lib.id)) continue;
+        checkedKeys.add(lib.id);
+        const ownerUser = users.find((u) => u.username === lib.ownerUsername);
+        const otherDirs = getCookbookDirsFromStorageKey(lib.storageKey);
+        const other = await readCookbookDataFromDirs(otherDirs, lib.ownerUsername);
+
         const catalogAllowed =
           other.sharing.shareCatalog &&
           (other.sharing.catalogSharedWith.includes('*') || other.sharing.catalogSharedWith.includes(username));
         if (catalogAllowed) {
           sharedCatalogs.push({
-            ownerUsername: u.username,
-            ownerDisplayName: u.displayName,
-            recipes: other.recipes.map((r: any) => ({ ...r, sharedFrom: u.displayName })),
+            ownerUsername: lib.ownerUsername,
+            ownerDisplayName: ownerUser?.displayName || lib.ownerDisplayName || lib.ownerUsername,
+            recipes: other.recipes.map((r: any) => ({ ...r, sharedFrom: ownerUser?.displayName || lib.ownerDisplayName })),
             categories: other.categories,
           });
         }
@@ -2560,8 +2762,8 @@ async function createServer() {
           (other.sharing.cycleSharedWith.includes('*') || other.sharing.cycleSharedWith.includes(username));
         if (planAllowed) {
           sharedPlans.push({
-            ownerUsername: u.username,
-            ownerDisplayName: u.displayName,
+            ownerUsername: lib.ownerUsername,
+            ownerDisplayName: ownerUser?.displayName || lib.ownerDisplayName || lib.ownerUsername,
             cycle: other.cycle,
             overrides: other.overrides,
             recipes: other.recipes,
@@ -2570,12 +2772,197 @@ async function createServer() {
       }
 
       res.json({
+        hasLibrary: true,
+        library: {
+          id: library.id,
+          name: library.name,
+          ownerUsername: library.ownerUsername,
+          ownerDisplayName: library.ownerDisplayName,
+          visibility: library.visibility,
+          invitedUsers: library.invitedUsers,
+          members: library.members,
+          createdAt: library.createdAt,
+        },
+        invitations,
         ...ownData,
         sharedCatalogs,
         sharedPlans,
       });
     } catch (err: any) {
-      log('error', `Fehler beim Laden des Kochbuchs: ${err.message}`, 'COOKBOOK');
+      log('error', `Fehler beim Laden des Essensplans: ${err.message}`, 'COOKBOOK');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Create or update an Essensplan Library
+  app.post('/api/cookbook/library', async (req, res) => {
+    const {
+      username = 'michael',
+      libraryId,
+      name = 'Mein Essensplan',
+      visibility = 'private',
+      invitedUsers = [],
+    } = req.body;
+
+    try {
+      const users = await getUsers();
+      const actor = users.find((u) => u.username === username);
+      const libs = await getMealLibraries();
+      const cleanVisibility: 'private' | 'shared' = visibility === 'shared' ? 'shared' : 'private';
+      const cleanName = String(name || 'Mein Essensplan').trim() || 'Mein Essensplan';
+      const cleanInvited = cleanVisibility === 'shared' && Array.isArray(invitedUsers)
+        ? Array.from(new Set(invitedUsers.map((u: any) => String(u).trim()).filter((u) => u && u !== username)))
+        : [];
+
+      if (libraryId) {
+        const idx = libs.findIndex((l) => l.id === libraryId);
+        if (idx === -1) {
+          return res.status(404).json({ error: 'Essensplan-Library nicht gefunden' });
+        }
+        const existing = libs[idx];
+        const filteredInvites = cleanInvited.filter((u) => !existing.members.includes(u));
+        const nextMembers =
+          cleanVisibility === 'private'
+            ? [existing.ownerUsername]
+            : existing.members;
+        libs[idx] = {
+          ...existing,
+          name: cleanName,
+          visibility: cleanVisibility,
+          invitedUsers: filteredInvites,
+          members: nextMembers,
+        };
+        await saveMealLibraries(libs);
+        log('info', `Essensplan-Library '${cleanName}' (${cleanVisibility}) aktualisiert von '${username}'`, 'COOKBOOK');
+        return res.json({ success: true, library: libs[idx] });
+      }
+
+      // Check if user is already member of a library — update instead or forbid duplicate
+      const alreadyMember = libs.find((l) => l.members.includes(username));
+      if (alreadyMember) {
+        alreadyMember.name = cleanName;
+        alreadyMember.visibility = cleanVisibility;
+        alreadyMember.invitedUsers = cleanInvited.filter((u) => !alreadyMember.members.includes(u));
+        await saveMealLibraries(libs);
+        return res.json({ success: true, library: alreadyMember });
+      }
+
+      const newId = `lib_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const newLib: MealPlanLibraryRecord = {
+        id: newId,
+        name: cleanName,
+        ownerUsername: username,
+        ownerDisplayName: actor?.displayName || username,
+        visibility: cleanVisibility,
+        invitedUsers: cleanInvited,
+        members: [username],
+        storageKey: `lib:${newId}`,
+        createdAt: Date.now(),
+      };
+      // Ensure directory exists & start completely empty
+      const dirs = getCookbookDirsFromStorageKey(newLib.storageKey);
+      await fsp.writeFile(path.join(dirs.cookbook, 'recipes.json'), '[]', 'utf-8');
+      await fsp.writeFile(path.join(dirs.cookbook, 'categories.json'), JSON.stringify(DEFAULT_COOKBOOK_CATEGORIES, null, 2), 'utf-8');
+      await fsp.writeFile(path.join(dirs.cookbook, 'cycle.json'), JSON.stringify(getDefaultCycleForUser(username, 2), null, 2), 'utf-8');
+      await fsp.writeFile(path.join(dirs.cookbook, 'overrides.json'), '{}', 'utf-8');
+      await fsp.writeFile(
+        path.join(dirs.cookbook, 'settings.json'),
+        JSON.stringify(
+          {
+            defaultCyclePortions: 2,
+            enableShoppingList: true,
+            enableCycle: true,
+            mealSections: DEFAULT_MEAL_SECTIONS,
+            weekdayColors: DEFAULT_WEEKDAY_COLORS,
+            units: ['Gramm', 'KG', 'Liter', 'ml', 'Päckchen', 'Stück', 'EL', 'TL', 'Bund', 'Prise', 'Dose', 'Becher'],
+          },
+          null,
+          2
+        ),
+        'utf-8'
+      );
+
+      libs.push(newLib);
+      await saveMealLibraries(libs);
+      log('info', `Neue Essensplan-Library '${cleanName}' (${cleanVisibility}) erstellt für '${username}'`, 'COOKBOOK');
+      res.json({ success: true, library: newLib });
+    } catch (err: any) {
+      log('error', `Fehler bei Essensplan-Library: ${err.message}`, 'COOKBOOK');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/cookbook/library/join', async (req, res) => {
+    const { username, libraryId } = req.body;
+    if (!username || !libraryId) {
+      return res.status(400).json({ error: 'username oder libraryId fehlt' });
+    }
+    try {
+      const libs = await getMealLibraries();
+      const idx = libs.findIndex((l) => l.id === libraryId);
+      if (idx === -1) return res.status(404).json({ error: 'Library nicht gefunden' });
+
+      const target = libs[idx];
+      if (target.visibility !== 'shared' || (!target.invitedUsers.includes(username) && !target.members.includes(username))) {
+        return res.status(403).json({ error: 'Keine Einladung für diese Library vorhanden' });
+      }
+
+      // Remove user from any other library membership first so each user has a clean active library
+      for (const lib of libs) {
+        if (lib.id !== libraryId && lib.members.includes(username) && lib.ownerUsername !== username) {
+          lib.members = lib.members.filter((m) => m !== username);
+        }
+      }
+
+      if (!target.members.includes(username)) {
+        target.members.push(username);
+      }
+      target.invitedUsers = target.invitedUsers.filter((u) => u !== username);
+      await saveMealLibraries(libs);
+      log('info', `'${username}' ist Essensplan-Library '${target.name}' beigetreten`, 'COOKBOOK');
+      res.json({ success: true, library: target });
+    } catch (err: any) {
+      log('error', `Fehler beim Beitreten zur Library: ${err.message}`, 'COOKBOOK');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/cookbook/library/decline', async (req, res) => {
+    const { username, libraryId } = req.body;
+    if (!username || !libraryId) {
+      return res.status(400).json({ error: 'username oder libraryId fehlt' });
+    }
+    try {
+      const libs = await getMealLibraries();
+      const idx = libs.findIndex((l) => l.id === libraryId);
+      if (idx === -1) return res.status(404).json({ error: 'Library nicht gefunden' });
+
+      libs[idx].invitedUsers = libs[idx].invitedUsers.filter((u) => u !== username);
+      await saveMealLibraries(libs);
+      log('info', `'${username}' hat Einladung zu '${libs[idx].name}' abgelehnt`, 'COOKBOOK');
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/cookbook/library/leave', async (req, res) => {
+    const { username, libraryId } = req.body;
+    if (!username || !libraryId) {
+      return res.status(400).json({ error: 'username oder libraryId fehlt' });
+    }
+    try {
+      const libs = await getMealLibraries();
+      const idx = libs.findIndex((l) => l.id === libraryId);
+      if (idx === -1) return res.status(404).json({ error: 'Library nicht gefunden' });
+      const target = libs[idx];
+      if (target.ownerUsername === username) {
+        return res.status(400).json({ error: 'Eigentümer können ihre eigene Library nicht verlassen' });
+      }
+      target.members = target.members.filter((m) => m !== username);
+      await saveMealLibraries(libs);
+      res.json({ success: true });
+    } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
@@ -2593,9 +2980,14 @@ async function createServer() {
       dismissedDuplicates,
     } = req.body;
     try {
-      const dirs = ensureUserProfileStructure(username);
+      const { library } = await resolveUserLibraryContext(username);
+      if (!library) {
+        return res.status(400).json({ error: 'Bitte zuerst eine Essensplan-Library erstellen oder einer Einladung beitreten' });
+      }
+      const dirs = getCookbookDirsFromStorageKey(library.storageKey);
+
       if (recipes !== undefined) {
-        await syncCookbookMarkdownFiles(username, recipes);
+        await syncCookbookMarkdownFilesForDirs(dirs, recipes);
       }
       if (categories !== undefined) {
         await fsp.writeFile(path.join(dirs.cookbook, 'categories.json'), JSON.stringify(categories, null, 2), 'utf-8');
@@ -2611,7 +3003,14 @@ async function createServer() {
       }
       if (settings !== undefined) {
         const settingsFile = path.join(dirs.cookbook, 'settings.json');
-        let currentSettings: Record<string, any> = { defaultCyclePortions: 2, enableShoppingList: true };
+        let currentSettings: Record<string, any> = {
+          defaultCyclePortions: 2,
+          enableShoppingList: true,
+          enableCycle: true,
+          mealSections: [...DEFAULT_MEAL_SECTIONS],
+          weekdayColors: { ...DEFAULT_WEEKDAY_COLORS },
+          units: ['Gramm', 'KG', 'Liter', 'ml', 'Päckchen', 'Stück', 'EL', 'TL', 'Bund', 'Prise', 'Dose', 'Becher'],
+        };
         if (fs.existsSync(settingsFile)) {
           try {
             currentSettings = { ...currentSettings, ...JSON.parse(await fsp.readFile(settingsFile, 'utf-8')) };
@@ -2644,7 +3043,7 @@ async function createServer() {
       }
       res.json({ success: true });
     } catch (err: any) {
-      log('error', `Fehler beim Speichern des Kochbuchs: ${err.message}`, 'COOKBOOK');
+      log('error', `Fehler beim Speichern des Essensplans: ${err.message}`, 'COOKBOOK');
       res.status(500).json({ error: err.message });
     }
   });
@@ -2657,15 +3056,14 @@ async function createServer() {
     try {
       const senderUsers = await getUsers();
       const sender = senderUsers.find((u) => u.username === fromUsername);
-      const destData = await readUserCookbookData(toUsername);
+      const srcDirs = await resolveCookbookDirsForKey(fromUsername);
+      const destDirs = await resolveCookbookDirsForKey(toUsername);
+      const destData = await readCookbookDataFromDirs(destDirs, toUsername);
       const newId = `r_shared_${Date.now()}`;
       const newMediaDir = sanitizeRecipeMediaDir(`${recipe.title || 'rezept'}_${newId}`);
       const copiedImages: string[] = [];
 
-      // Copy local media images if sender has them
       if (Array.isArray(recipe.images) && recipe.images.length > 0) {
-        const srcDirs = ensureUserProfileStructure(fromUsername);
-        const destDirs = ensureUserProfileStructure(toUsername);
         const srcMediaDir = path.join(srcDirs.cookbookMedia, getRecipeMediaDirName(recipe));
         const destMediaDir = path.join(destDirs.cookbookMedia, newMediaDir);
 
@@ -2676,7 +3074,7 @@ async function createServer() {
             if (entry.isFile() && IMAGE_EXT_REGEX.test(entry.name)) {
               await fsp.copyFile(path.join(srcMediaDir, entry.name), path.join(destMediaDir, entry.name));
               copiedImages.push(
-                `/api/cookbook/media/file/${encodeURIComponent(toUsername)}/${encodeURIComponent(newMediaDir)}/${encodeURIComponent(entry.name)}`
+                `/api/cookbook/media/file/${encodeURIComponent(destDirs.routeKey)}/${encodeURIComponent(newMediaDir)}/${encodeURIComponent(entry.name)}`
               );
             }
           }
@@ -2691,12 +3089,11 @@ async function createServer() {
         sharedFrom: sender?.displayName || fromUsername,
       };
       const updatedRecipes = [...destData.recipes, copiedRecipe];
-      await syncCookbookMarkdownFiles(toUsername, updatedRecipes);
+      await syncCookbookMarkdownFilesForDirs(destDirs, updatedRecipes);
 
       if (recipe.category && !destData.categories.includes(recipe.category)) {
-        const dirs = ensureUserProfileStructure(toUsername);
         const updatedCats = [...destData.categories, recipe.category];
-        await fsp.writeFile(path.join(dirs.cookbook, 'categories.json'), JSON.stringify(updatedCats, null, 2), 'utf-8');
+        await fsp.writeFile(path.join(destDirs.cookbook, 'categories.json'), JSON.stringify(updatedCats, null, 2), 'utf-8');
       }
 
       log('info', `Rezept '${recipe.title}' von '${fromUsername}' an '${toUsername}' geteilt`, 'COOKBOOK');
@@ -2707,14 +3104,14 @@ async function createServer() {
     }
   });
 
-  // Per-Recipe Media Endpoints (User/<username>/Cookbook/Media/<recipeDir>/)
+  // Per-Recipe Media Endpoints (resolves active library or user cookbook)
   app.get('/api/cookbook/media/list', async (req, res) => {
     const username = path.basename(String(req.query.username || 'michael'));
     const recipeDir = String(req.query.recipeDir || '');
     if (!recipeDir) return res.json([]);
 
     try {
-      const dirs = ensureUserProfileStructure(username);
+      const dirs = await resolveCookbookDirsForKey(username);
       const safeDir = sanitizeRecipeMediaDir(recipeDir);
       const mediaDir = path.join(dirs.cookbookMedia, safeDir);
       if (!fs.existsSync(mediaDir)) return res.json([]);
@@ -2727,7 +3124,7 @@ async function createServer() {
         const stat = await fsp.stat(full);
         items.push({
           filename: entry.name,
-          url: `/api/cookbook/media/file/${encodeURIComponent(username)}/${encodeURIComponent(safeDir)}/${encodeURIComponent(entry.name)}`,
+          url: `/api/cookbook/media/file/${encodeURIComponent(dirs.routeKey)}/${encodeURIComponent(safeDir)}/${encodeURIComponent(entry.name)}`,
           size: stat.size,
           mtime: stat.mtimeMs,
         });
@@ -2776,7 +3173,7 @@ async function createServer() {
       const savedName = `${Date.now()}_${baseName}.${ext}`;
 
       const safeUser = path.basename(String(username || 'michael'));
-      const dirs = ensureUserProfileStructure(safeUser);
+      const dirs = await resolveCookbookDirsForKey(safeUser);
       const safeDir = sanitizeRecipeMediaDir(recipeDir);
       const mediaDir = path.join(dirs.cookbookMedia, safeDir);
       if (!fs.existsSync(mediaDir)) {
@@ -2788,12 +3185,11 @@ async function createServer() {
       await fsp.writeFile(fullPath, buffer);
       const stat = await fsp.stat(fullPath);
 
-      const url = `/api/cookbook/media/file/${encodeURIComponent(safeUser)}/${encodeURIComponent(safeDir)}/${encodeURIComponent(savedName)}`;
+      const url = `/api/cookbook/media/file/${encodeURIComponent(dirs.routeKey)}/${encodeURIComponent(safeDir)}/${encodeURIComponent(savedName)}`;
 
-      // Keep recipe Markdown + JSON synced when recipeId is supplied
       if (recipeId) {
         try {
-          const data = await readUserCookbookData(safeUser);
+          const data = await readCookbookDataFromDirs(dirs, safeUser);
           const nextRecipes = data.recipes.map((r: any) =>
             r.id === recipeId
               ? {
@@ -2803,11 +3199,11 @@ async function createServer() {
                 }
               : r
           );
-          await syncCookbookMarkdownFiles(safeUser, nextRecipes);
+          await syncCookbookMarkdownFilesForDirs(dirs, nextRecipes);
         } catch {}
       }
 
-      log('info', `Rezept-Bild gespeichert in Cookbook/Media/${safeDir}/${savedName} (${buffer.length} Bytes)`, 'COOKBOOK');
+      log('info', `Rezept-Bild gespeichert in Essensplan/Media/${safeDir}/${savedName} (${buffer.length} Bytes)`, 'COOKBOOK');
       res.json({
         success: true,
         item: {
@@ -2827,7 +3223,7 @@ async function createServer() {
     const { username, recipeDir, filename } = req.params;
     try {
       const owner = path.basename(username);
-      const dirs = ensureUserProfileStructure(owner);
+      const dirs = await resolveCookbookDirsForKey(owner);
       const safeDir = sanitizeRecipeMediaDir(recipeDir);
       const safeFile = path.basename(filename);
       const fullPath = path.resolve(path.join(dirs.cookbookMedia, safeDir, safeFile));
@@ -2848,7 +3244,7 @@ async function createServer() {
     }
     try {
       const safeUser = path.basename(String(username));
-      const dirs = ensureUserProfileStructure(safeUser);
+      const dirs = await resolveCookbookDirsForKey(safeUser);
       const safeDir = sanitizeRecipeMediaDir(recipeDir);
       const safeFile = path.basename(filename);
       const mediaDir = path.join(dirs.cookbookMedia, safeDir);
@@ -2866,8 +3262,8 @@ async function createServer() {
 
       if (recipeId) {
         try {
-          const targetUrl = `/api/cookbook/media/file/${encodeURIComponent(safeUser)}/${encodeURIComponent(safeDir)}/${encodeURIComponent(safeFile)}`;
-          const data = await readUserCookbookData(safeUser);
+          const targetUrl = `/api/cookbook/media/file/${encodeURIComponent(dirs.routeKey)}/${encodeURIComponent(safeDir)}/${encodeURIComponent(safeFile)}`;
+          const data = await readCookbookDataFromDirs(dirs, safeUser);
           const nextRecipes = data.recipes.map((r: any) =>
             r.id === recipeId
               ? {
@@ -2876,7 +3272,7 @@ async function createServer() {
                 }
               : r
           );
-          await syncCookbookMarkdownFiles(safeUser, nextRecipes);
+          await syncCookbookMarkdownFilesForDirs(dirs, nextRecipes);
         } catch {}
       }
 
@@ -2992,7 +3388,7 @@ async function createServer() {
 
   // Diagnostic Logs API
   app.get('/api/system/logs', (req, res) => {
-    res.json(systemLogs.slice(-100).reverse());
+    res.json(systemLogs.slice(-200).reverse());
   });
 
   // Serve public directory (manifest.json, sw.js, icons)

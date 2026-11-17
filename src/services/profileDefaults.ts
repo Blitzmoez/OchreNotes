@@ -1,4 +1,4 @@
-import { SuiteProfileSettings, EnabledModules, DashboardSettings, DashboardWidgetId } from '../types';
+import { SuiteProfileSettings, EnabledModules, DashboardSettings, DashboardWidgetId, MealSectionConfig } from '../types';
 
 export const OCHRE_COLOR_PRESETS = [
   { name: 'Klassik Ocker', hex: '#C87D20' },
@@ -9,6 +9,44 @@ export const OCHRE_COLOR_PRESETS = [
   { name: 'Senf Gold', hex: '#A67C21' },
   { name: 'Umbra Dunkel', hex: '#6D4C2F' },
   { name: 'Salbei Olive', hex: '#6E7F4F' },
+];
+
+export const DEFAULT_MEAL_SECTIONS: MealSectionConfig[] = [
+  { id: 'mittag', label: 'Mittag' },
+  { id: 'abend', label: 'Abend' },
+];
+
+export const DEFAULT_WEEKDAY_COLORS: Record<string, string> = {
+  '1': '#C87D20', // Mo
+  '2': '#B87333', // Di
+  '3': '#A67C21', // Mi
+  '4': '#C26D2D', // Do
+  '5': '#6E7F4F', // Fr
+  '6': '#8E6126', // Sa
+  '0': '#B45309', // So
+};
+
+export const MEAL_TYPE_OPTIONS: string[] = [
+  'Frühstück',
+  'Mittag',
+  'Abend',
+  'Snack',
+  'Dessert',
+];
+
+export const DEFAULT_MEAL_UNITS: string[] = [
+  'Gramm',
+  'KG',
+  'Liter',
+  'ml',
+  'Päckchen',
+  'Stück',
+  'EL',
+  'TL',
+  'Bund',
+  'Prise',
+  'Dose',
+  'Becher',
 ];
 
 export const DEFAULT_ENABLED_MODULES: EnabledModules = {
@@ -22,6 +60,7 @@ export const DEFAULT_ENABLED_MODULES: EnabledModules = {
 export const DEFAULT_PROFILE_SETTINGS: SuiteProfileSettings = {
   enableSecondProfile: true,
   activeProfileId: 'profile1',
+  mobileBarPosition: 'top',
   profile1: {
     id: 'profile1',
     name: 'Privat',
@@ -65,13 +104,13 @@ export const DASHBOARD_WIDGET_CATALOG: DashboardWidgetDefinition[] = [
   {
     id: 'cookbook_shopping_open',
     module: 'recipes',
-    title: 'Offener Einkaufs-Forecast (Kochbuch)',
+    title: 'Offener Einkaufs-Forecast (Essensplan)',
     description: 'Noch nicht abgehakte Verbrauchsgüter dieser Woche mit 1-Klick-Abhaken.',
   },
   {
     id: 'cookbook_today_meals',
     module: 'recipes',
-    title: 'Speiseplan Heute & Morgen',
+    title: 'Essensplan Heute & Morgen',
     description: 'Geplante Gerichte inkl. Portionen, Zubereitungszeit und Direktlink.',
   },
   {
@@ -95,7 +134,7 @@ export const DASHBOARD_WIDGET_CATALOG: DashboardWidgetDefinition[] = [
   {
     id: 'cookbook_catalog_stats',
     module: 'recipes',
-    title: 'Kochbuch Katalog & Zutaten-Stats',
+    title: 'Essensplan Katalog & Zutaten-Stats',
     description: 'Tellergerichte, gesammelte Zutaten, ausgeschlossene Posten & Duplikate.',
   },
   {

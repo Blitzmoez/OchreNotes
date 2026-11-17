@@ -22,6 +22,7 @@ const mergeProfileSettings = (raw?: Partial<SuiteProfileSettings> | null): Suite
   return {
     enableSecondProfile: raw.enableSecondProfile ?? DEFAULT_PROFILE_SETTINGS.enableSecondProfile,
     activeProfileId: raw.activeProfileId === 'profile2' ? 'profile2' : 'profile1',
+    mobileBarPosition: raw.mobileBarPosition === 'bottom' ? 'bottom' : 'top',
     profile1: {
       id: 'profile1',
       name: raw.profile1?.name ?? DEFAULT_PROFILE_SETTINGS.profile1.name,
@@ -93,6 +94,7 @@ export default function App() {
     }
   });
   const [enableCookbookShoppingList, setEnableCookbookShoppingList] = useState<boolean>(true);
+  const [enableCookbookCycle, setEnableCookbookCycle] = useState<boolean>(true);
   const [settingsModalTarget, setSettingsModalTarget] = useState<{
     tab?: 'general' | 'modules' | 'moduleSettings' | 'users' | 'backup';
     module?: SuiteModuleId;
@@ -151,9 +153,18 @@ export default function App() {
   // PWA Install Prompt State
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<any>(null);
 
-  // Mobile swipe gestures state + live ref for fluid typing without parent keystroke lag
+  // Mobile swipe gestures state (Pixel-launcher 1:1 finger tracking) + live refs
+  const [sidebarDragOffsetPx, setSidebarDragOffsetPx] = useState<number | null>(null);
+  const sidebarOpenRef = useRef<boolean>(false);
+  useEffect(() => {
+    sidebarOpenRef.current = isMobileSidebarOpen;
+  }, [isMobileSidebarOpen]);
   const touchStartXRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
+  const touchAxisLockedRef = useRef<'none' | 'x' | 'y'>('none');
+  const touchDragOffsetRef = useRef<number | null>(null);
+  const restoredForUserRef = useRef<string | null>(null);
+  const pendingRestoreNoteRef = useRef<{ path: string; isShared?: boolean; sharedFrom?: string } | null>(null);
   const activeNoteContentRef = useRef<string>('');
   const saveTimeoutRef = useRef<number | null>(null);
   const pendingSaveRef = useRef<{
@@ -202,7 +213,7 @@ export default function App() {
     }
   }, [isDarkMode]);
 
-  // Online status listeners
+  // Online status & live offline queue subscription
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
@@ -212,9 +223,11 @@ export default function App() {
       setIsOnline(false);
       setPendingSyncCount(api.getPendingSyncCount());
     };
+    const unsubscribeSync = api.subscribePendingSync(setPendingSyncCount);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
     return () => {
+      unsubscribeSync();
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
@@ -349,6 +362,76 @@ export default function App() {
     });
   };
 
+  // Restore last active route/module/tab/note for current user so reload keeps current screen
+  useEffect(() => {
+    if (!currentUser) return;
+    let hasDeepLink = false;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('view') === 'tasks') {
+        hasDeepLink = true;
+      }
+    } catch {}
+
+    if (!hasDeepLink) {
+      try {
+        const raw = localStorage.getItem(`ochre_last_route_${currentUser.username}`);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed.module && (parsed.module === 'notes' || enabledModules[parsed.module as SuiteModuleId])) {
+            setActiveSuiteModule(parsed.module);
+          }
+          if (parsed.viewMode === 'editor' || parsed.viewMode === 'tasks' || parsed.viewMode === 'graph') {
+            setViewMode(parsed.viewMode);
+          }
+          if (
+            parsed.cookbookTab === 'calendar' ||
+            parsed.cookbookTab === 'cycle' ||
+            parsed.cookbookTab === 'recipes' ||
+            parsed.cookbookTab === 'shopping' ||
+            parsed.cookbookTab === 'presentation'
+          ) {
+            setCookbookTab(parsed.cookbookTab);
+          }
+          if (parsed.notePath) {
+            pendingRestoreNoteRef.current = {
+              path: parsed.notePath,
+              isShared: !!parsed.isShared,
+              sharedFrom: parsed.sharedFrom,
+            };
+          }
+        }
+      } catch {}
+    }
+    restoredForUserRef.current = currentUser.username;
+  }, [currentUser?.username]);
+
+  // Persist current route/module/tab/note per user so mobile & desktop reloads resume cleanly
+  useEffect(() => {
+    if (!currentUser || restoredForUserRef.current !== currentUser.username) return;
+    try {
+      localStorage.setItem(
+        `ochre_last_route_${currentUser.username}`,
+        JSON.stringify({
+          module: activeSuiteModule,
+          viewMode,
+          cookbookTab,
+          notePath: activeNotePath,
+          isShared: activeIsShared,
+          sharedFrom: activeSharedFrom,
+        })
+      );
+    } catch {}
+  }, [
+    currentUser?.username,
+    activeSuiteModule,
+    viewMode,
+    cookbookTab,
+    activeNotePath,
+    activeIsShared,
+    activeSharedFrom,
+  ]);
+
   // Load saved profile settings & cookbook feature flags whenever currentUser changes
   useEffect(() => {
     if (!currentUser) return;
@@ -374,8 +457,15 @@ export default function App() {
 
     api.fetchCookbook(currentUser.username).then((cb) => {
       if (cancelled) return;
-      const enabled = cb?.settings?.enableShoppingList !== false;
-      setEnableCookbookShoppingList(enabled);
+      const shoppingEnabled = cb?.settings?.enableShoppingList !== false;
+      const cycleEnabled = cb?.settings?.enableCycle !== false;
+      setEnableCookbookShoppingList(shoppingEnabled);
+      setEnableCookbookCycle(cycleEnabled);
+      if (!shoppingEnabled && cookbookTab === 'shopping') {
+        setCookbookTab('calendar');
+      } else if (!cycleEnabled && cookbookTab === 'cycle') {
+        setCookbookTab('calendar');
+      }
     }).catch(() => {});
 
     return () => {
@@ -396,12 +486,24 @@ export default function App() {
       setSharedNotes(shared);
       setFolders(userFolders);
 
-      // Open first note if none opened
-      if (!activeNotePath && userNotes.length > 0) {
-        openNote(userNotes[0].path, false);
-      } else if (userNotes.length === 0 && !activeNotePath) {
-        setActiveNoteTitle(`${activeProfile.name} (leer)`);
-        setActiveNoteContent('');
+      if (!activeNotePath) {
+        const pending = pendingRestoreNoteRef.current;
+        if (pending) {
+          pendingRestoreNoteRef.current = null;
+          const exists = pending.isShared
+            ? shared.some((n) => n.path === pending.path)
+            : userNotes.some((n) => n.path === pending.path);
+          if (exists) {
+            await openNote(pending.path, !!pending.isShared, pending.sharedFrom || '', true);
+            return;
+          }
+        }
+        if (userNotes.length > 0) {
+          openNote(userNotes[0].path, false, '', true);
+        } else {
+          setActiveNoteTitle(`${activeProfile.name} (leer)`);
+          setActiveNoteContent('');
+        }
       }
     } catch (e) {
       console.error('Error loading vault data', e);
@@ -435,7 +537,12 @@ export default function App() {
   }, [currentUser, activeProfileId, profileSettings.enableSecondProfile]);
 
   // Open note handler
-  const openNote = async (notePath: string, isShared = false, sharedFrom = '') => {
+  const openNote = async (
+    notePath: string,
+    isShared = false,
+    sharedFrom = '',
+    preserveViewMode = false
+  ) => {
     if (!currentUser) return;
     flushPendingSave();
     try {
@@ -453,7 +560,9 @@ export default function App() {
         setActivePermission('write');
       }
       setIsMobileSidebarOpen(false);
-      setViewMode('editor');
+      if (!preserveViewMode) {
+        setViewMode('editor');
+      }
     } catch (e) {
       console.error('Error opening note', e);
     }
@@ -693,18 +802,24 @@ export default function App() {
     return { lines: lines.length, words, chars };
   }, [activeNoteContent]);
 
-  // Window-level touch gesture listeners for mobile vault swipe anywhere
+  // Pixel-launcher 1:1 finger-tracked swipe gesture listeners for Notes mobile Vault drawer
   useEffect(() => {
+    const DRAWER_WIDTH = 288;
     const onTouchStart = (e: TouchEvent) => {
+      if (window.innerWidth >= 1024 || activeSuiteModule !== 'notes') {
+        touchStartXRef.current = null;
+        touchStartYRef.current = null;
+        return;
+      }
       const target = e.target as HTMLElement | null;
-      // Do not trigger Vault swipe gesture when interacting with tabs bar, toolbar, header or inputs
       if (
         target?.closest('[data-no-swipe]') ||
         target?.closest('header') ||
         target?.closest('button') ||
         target?.closest('input') ||
         target?.closest('select') ||
-        target?.closest('textarea')
+        target?.closest('textarea') ||
+        target?.closest('[draggable="true"]')
       ) {
         touchStartXRef.current = null;
         touchStartYRef.current = null;
@@ -712,42 +827,77 @@ export default function App() {
       }
       touchStartXRef.current = e.touches[0].clientX;
       touchStartYRef.current = e.touches[0].clientY;
+      touchAxisLockedRef.current = 'none';
+      touchDragOffsetRef.current = null;
     };
 
-    const onTouchEnd = (e: TouchEvent) => {
+    const onTouchMove = (e: TouchEvent) => {
       if (touchStartXRef.current === null || touchStartYRef.current === null) return;
-      const deltaX = e.changedTouches[0].clientX - touchStartXRef.current;
-      const deltaY = e.changedTouches[0].clientY - touchStartYRef.current;
+      const dx = e.touches[0].clientX - touchStartXRef.current;
+      const dy = e.touches[0].clientY - touchStartYRef.current;
 
-      // Horizontal swipe recognition (swiping anywhere on mobile screen)
-      if (Math.abs(deltaX) > Math.abs(deltaY) * 1.3) {
-        // Swipe right (left to right) -> open vault anywhere
-        if (deltaX > 45 && !isMobileSidebarOpen) {
-          setIsMobileSidebarOpen(true);
+      if (touchAxisLockedRef.current === 'none') {
+        if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+        if (Math.abs(dx) > Math.abs(dy) * 1.25) {
+          if ((!sidebarOpenRef.current && dx > 0) || (sidebarOpenRef.current && dx < 0)) {
+            touchAxisLockedRef.current = 'x';
+          } else {
+            touchAxisLockedRef.current = 'y';
+            return;
+          }
+        } else {
+          touchAxisLockedRef.current = 'y';
+          return;
         }
-        // Swipe left (right to left) when vault is open -> close vault
-        else if (deltaX < -45 && isMobileSidebarOpen) {
-          setIsMobileSidebarOpen(false);
+      }
+
+      if (touchAxisLockedRef.current === 'x') {
+        const baseOffset = sidebarOpenRef.current ? 0 : -DRAWER_WIDTH;
+        const clamped = Math.max(-DRAWER_WIDTH, Math.min(0, baseOffset + dx));
+        touchDragOffsetRef.current = clamped;
+        setSidebarDragOffsetPx(clamped);
+      }
+    };
+
+    const finishTouch = () => {
+      if (touchAxisLockedRef.current === 'x' && touchDragOffsetRef.current !== null) {
+        const offset = touchDragOffsetRef.current;
+        if (!sidebarOpenRef.current) {
+          setIsMobileSidebarOpen(offset > -DRAWER_WIDTH + 90);
+        } else {
+          setIsMobileSidebarOpen(offset >= -90);
         }
       }
       touchStartXRef.current = null;
       touchStartYRef.current = null;
+      touchAxisLockedRef.current = 'none';
+      touchDragOffsetRef.current = null;
+      setSidebarDragOffsetPx(null);
     };
 
     window.addEventListener('touchstart', onTouchStart, { passive: true });
-    window.addEventListener('touchend', onTouchEnd, { passive: true });
+    window.addEventListener('touchmove', onTouchMove, { passive: true });
+    window.addEventListener('touchend', finishTouch, { passive: true });
+    window.addEventListener('touchcancel', finishTouch, { passive: true });
     return () => {
       window.removeEventListener('touchstart', onTouchStart);
-      window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', finishTouch);
+      window.removeEventListener('touchcancel', finishTouch);
     };
-  }, [isMobileSidebarOpen]);
+  }, [activeSuiteModule]);
+
+  const floatingNavBottomClass =
+    (profileSettings.mobileBarPosition || 'top') === 'bottom'
+      ? 'bottom-[4.75rem] lg:bottom-5'
+      : 'bottom-5';
 
   return (
     <div
       style={{ '--ochre-accent': activeAccentColor } as React.CSSProperties}
-      className={`flex flex-col h-screen w-screen overflow-hidden ${isDarkMode ? 'dark' : ''} bg-[#FBFBFA] dark:bg-[#18191B] text-neutral-900 dark:text-neutral-100 font-sans`}
+      className={`flex flex-col h-[100dvh] w-screen overflow-hidden ${isDarkMode ? 'dark' : ''} bg-[#FBFBFA] dark:bg-[#18191B] text-neutral-900 dark:text-neutral-100 font-sans`}
     >
-      {/* Top Bar Header with Modular Ochre Suite Logo, Desktop Mode Switcher & Profile Menu (with Profile 1/2 at #1) */}
+      {/* Top/Bottom Header with Modular Ochre Suite Drawer, Desktop Mode Switcher & Profile Menu */}
       <Header
         currentUser={currentUser}
         activeView={viewMode}
@@ -795,6 +945,8 @@ export default function App() {
         activeCookbookTab={cookbookTab}
         onChangeCookbookTab={setCookbookTab}
         enableCookbookShoppingList={enableCookbookShoppingList}
+        enableCookbookCycle={enableCookbookCycle}
+        mobileBarPosition={profileSettings.mobileBarPosition || 'top'}
       />
 
       {/* Main Container: Renders active Suite Module (Dashboard, Notes, Wiki, Recipes, Finance) */}
@@ -875,7 +1027,14 @@ export default function App() {
             activeTab={cookbookTab}
             onChangeTab={setCookbookTab}
             enableShoppingList={enableCookbookShoppingList}
+            mobileBarPosition={profileSettings.mobileBarPosition || 'top'}
             onShoppingListSettingLoaded={(enabled) => setEnableCookbookShoppingList(enabled)}
+            onCycleSettingLoaded={(enabled) => {
+              setEnableCookbookCycle(enabled);
+              if (!enabled && cookbookTab === 'cycle') {
+                setCookbookTab('calendar');
+              }
+            }}
             onSnapshotChange={(snap) => {
               cookbookSnapshotRef.current = snap;
             }}
@@ -898,10 +1057,19 @@ export default function App() {
           {/* Mobile Left Screen Edge Swipe Indicator & Vault Toggle Button */}
           <button
             onClick={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
-            style={{ backgroundColor: activeProfile.colors.notes }}
-            className={`lg:hidden fixed top-1/2 -translate-y-1/2 z-40 h-14 flex items-center justify-center transition-all duration-300 active:scale-95 cursor-pointer shadow-lg text-white ${
-              isMobileSidebarOpen 
-                ? 'left-[280px] w-7 rounded-r-xl' 
+            style={{
+              backgroundColor: activeProfile.colors.notes,
+              ...(sidebarDragOffsetPx !== null
+                ? { left: `${Math.max(0, 280 + sidebarDragOffsetPx)}px`, transition: 'none' }
+                : {}),
+            }}
+            className={`lg:hidden fixed top-1/2 -translate-y-1/2 z-40 h-14 flex items-center justify-center ${
+              sidebarDragOffsetPx !== null ? 'transition-none' : 'transition-all duration-200'
+            } active:scale-95 cursor-pointer shadow-lg text-white ${
+              sidebarDragOffsetPx !== null
+                ? 'w-6 rounded-r-xl'
+                : isMobileSidebarOpen
+                ? 'left-[280px] w-7 rounded-r-xl'
                 : 'left-0 w-5 rounded-r-xl opacity-90 hover:opacity-100 hover:w-6.5'
             }`}
             title={isMobileSidebarOpen ? 'Vault schließen' : 'Vault Explorer (nach rechts wischen oder tippen)'}
@@ -932,6 +1100,7 @@ export default function App() {
             onDeleteFolder={handleDeleteFolder}
             onMoveNote={handleMoveNote}
             isOpen={isMobileSidebarOpen}
+            dragOffsetPx={sidebarDragOffsetPx}
             onCloseMobile={() => setIsMobileSidebarOpen(false)}
             activeProfileName={profileSettings.enableSecondProfile ? activeProfile.name : undefined}
           />
@@ -983,97 +1152,104 @@ export default function App() {
           {isMobileNavExpanded ? (
             <div
               style={{ borderColor: activeProfile.colors.notes }}
-              className="fixed bottom-5 right-3 sm:right-4 z-50 h-14 px-2 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center gap-1 text-neutral-800 dark:text-neutral-200 animate-in fade-in zoom-in-95 duration-200 max-w-[calc(100vw-24px)]"
+              className={`fixed ${floatingNavBottomClass} left-3 right-3 sm:left-auto sm:right-4 sm:min-w-[360px] sm:max-w-[calc(100vw-2rem)] z-50 h-14 px-2 sm:px-3 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center justify-between gap-1 sm:gap-1.5 text-neutral-800 dark:text-neutral-200 animate-in fade-in zoom-in-95 duration-200`}
             >
-              <button
-                type="button"
-                onClick={() => {
-                  setViewMode('editor');
-                  setIsMobileNavExpanded(false);
-                }}
-                style={viewMode === 'editor' ? { backgroundColor: activeProfile.colors.notes } : undefined}
-                className={`w-9.5 h-9.5 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 ${
-                  viewMode === 'editor'
-                    ? 'text-white shadow-xs'
-                    : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
-                }`}
-                title="Notizen-Editor"
-                aria-label="Notizen"
-              >
-                <BookOpen className="w-4.5 h-4.5" />
-              </button>
+              <div className="flex items-center gap-1 sm:gap-1.5 flex-1 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setViewMode('editor');
+                    setIsMobileNavExpanded(false);
+                  }}
+                  style={viewMode === 'editor' ? { backgroundColor: activeProfile.colors.notes } : undefined}
+                  className={`flex-1 sm:flex-initial h-9.5 px-2.5 sm:px-3 rounded-full flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 min-w-0 ${
+                    viewMode === 'editor'
+                      ? 'text-white shadow-xs'
+                      : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
+                  }`}
+                  title="Notizen-Editor"
+                  aria-label="Notizen"
+                >
+                  <BookOpen className="w-4.5 h-4.5 shrink-0" />
+                  <span className="hidden sm:inline text-xs font-semibold truncate">Notizen</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setViewMode('tasks');
-                  setIsMobileNavExpanded(false);
-                }}
-                style={viewMode === 'tasks' ? { backgroundColor: activeProfile.colors.notes } : undefined}
-                className={`w-9.5 h-9.5 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 ${
-                  viewMode === 'tasks'
-                    ? 'text-white shadow-xs'
-                    : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
-                }`}
-                title="Aufgaben & Listen"
-                aria-label="Aufgaben"
-              >
-                <CheckSquare className="w-4.5 h-4.5" />
-              </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setViewMode('tasks');
+                    setIsMobileNavExpanded(false);
+                  }}
+                  style={viewMode === 'tasks' ? { backgroundColor: activeProfile.colors.notes } : undefined}
+                  className={`flex-1 sm:flex-initial h-9.5 px-2.5 sm:px-3 rounded-full flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 min-w-0 ${
+                    viewMode === 'tasks'
+                      ? 'text-white shadow-xs'
+                      : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
+                  }`}
+                  title="Aufgaben & Listen"
+                  aria-label="Aufgaben"
+                >
+                  <CheckSquare className="w-4.5 h-4.5 shrink-0" />
+                  <span className="hidden sm:inline text-xs font-semibold truncate">Aufgaben</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setViewMode('graph');
-                  setIsMobileNavExpanded(false);
-                }}
-                style={viewMode === 'graph' ? { backgroundColor: activeProfile.colors.notes } : undefined}
-                className={`w-9.5 h-9.5 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 ${
-                  viewMode === 'graph'
-                    ? 'text-white shadow-xs'
-                    : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
-                }`}
-                title="Wissensgraph"
-                aria-label="Graph"
-              >
-                <Network className="w-4.5 h-4.5" />
-              </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setViewMode('graph');
+                    setIsMobileNavExpanded(false);
+                  }}
+                  style={viewMode === 'graph' ? { backgroundColor: activeProfile.colors.notes } : undefined}
+                  className={`flex-1 sm:flex-initial h-9.5 px-2.5 sm:px-3 rounded-full flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 min-w-0 ${
+                    viewMode === 'graph'
+                      ? 'text-white shadow-xs'
+                      : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
+                  }`}
+                  title="Wissensgraph"
+                  aria-label="Graph"
+                >
+                  <Network className="w-4.5 h-4.5 shrink-0" />
+                  <span className="hidden sm:inline text-xs font-semibold truncate">Graph</span>
+                </button>
+              </div>
 
               <div className="w-px h-5 bg-[#E5E3DC] dark:bg-[#2F3136] mx-0.5 shrink-0"></div>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setIsMobileNavExpanded(false);
-                  setIsSlideOutCreatingFolder(false);
-                  setSlideOutNewFolderName('');
-                  setIsNewNoteSlideOutOpen(true);
-                }}
-                style={{ backgroundColor: activeProfile.colors.notes }}
-                className="flex items-center gap-1 h-9.5 px-3 rounded-full text-xs font-semibold text-white transition-all cursor-pointer active:scale-95 shrink-0 shadow-xs hover:opacity-95"
-                title="Neue Notiz, Ordner oder Quick Write"
-                aria-label="Neu"
-              >
-                <Plus className="w-4 h-4 shrink-0" />
-                <span className="whitespace-nowrap">Neu</span>
-              </button>
+              <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileNavExpanded(false);
+                    setIsSlideOutCreatingFolder(false);
+                    setSlideOutNewFolderName('');
+                    setIsNewNoteSlideOutOpen(true);
+                  }}
+                  style={{ backgroundColor: activeProfile.colors.notes }}
+                  className="flex items-center gap-1 h-9.5 px-3 sm:px-3.5 rounded-full text-xs font-semibold text-white transition-all cursor-pointer active:scale-95 shrink-0 shadow-xs hover:opacity-95"
+                  title="Neue Notiz, Ordner oder Quick Write"
+                  aria-label="Neu"
+                >
+                  <Plus className="w-4 h-4 shrink-0" />
+                  <span className="whitespace-nowrap">Neu</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setIsMobileNavExpanded(false)}
-                className="w-9.5 h-9.5 rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 flex items-center justify-center cursor-pointer shadow-2xs active:scale-95 shrink-0"
-                aria-label="Navigation schließen"
-                title="Navigation schließen"
-              >
-                <X className="w-4.5 h-4.5" />
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setIsMobileNavExpanded(false)}
+                  className="w-9.5 h-9.5 rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 flex items-center justify-center cursor-pointer shadow-2xs active:scale-95 shrink-0"
+                  aria-label="Navigation schließen"
+                  title="Navigation schließen"
+                >
+                  <X className="w-4.5 h-4.5" />
+                </button>
+              </div>
             </div>
           ) : (
             <button
               type="button"
               onClick={() => setIsMobileNavExpanded(true)}
               style={{ borderColor: activeProfile.colors.notes, color: activeProfile.colors.notes }}
-              className="fixed bottom-5 right-4 z-40 w-13 h-13 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center justify-center transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
+              className={`fixed ${floatingNavBottomClass} right-4 z-40 w-13 h-13 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center justify-center transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer`}
               title="Navigation öffnen (Notizen, Aufgaben, Graph, Neu)"
               aria-label="Navigation öffnen"
             >
@@ -1421,9 +1597,13 @@ export default function App() {
           onUpdateDashboardSettings={handleUpdateDashboardSettings}
           onCookbookUpdated={() => setCookbookRefreshKey((k) => k + 1)}
           onCookbookSettingsChange={(s) => {
-            const enabled = s.enableShoppingList !== false;
-            setEnableCookbookShoppingList(enabled);
-            if (!enabled && cookbookTab === 'shopping') {
+            const shoppingEnabled = s.enableShoppingList !== false;
+            const cycleEnabled = s.enableCycle !== false;
+            setEnableCookbookShoppingList(shoppingEnabled);
+            setEnableCookbookCycle(cycleEnabled);
+            if (!shoppingEnabled && cookbookTab === 'shopping') {
+              setCookbookTab('calendar');
+            } else if (!cycleEnabled && cookbookTab === 'cycle') {
               setCookbookTab('calendar');
             }
           }}

@@ -1,35 +1,198 @@
-import { NoteMetadata, NoteContent, NoteMediaItem, TaskItem, User, ShareRecord, SystemHealth, SystemLog, GraphData, NoteProfileId, SuiteProfileSettings, EnabledModules, WikiArticle, Recipe, MealCycle, MealCalendarOverride, CookbookSharingSettings, CookbookSettings, SharedCookbookCatalog, SharedMealPlan, DashboardSettings, IngredientMeta } from '../types';
+import {
+  NoteMetadata,
+  NoteContent,
+  NoteMediaItem,
+  TaskItem,
+  User,
+  ShareRecord,
+  SystemHealth,
+  SystemLog,
+  GraphData,
+  NoteProfileId,
+  SuiteProfileSettings,
+  EnabledModules,
+  WikiArticle,
+  Recipe,
+  MealCycle,
+  MealCalendarOverride,
+  CookbookSharingSettings,
+  CookbookSettings,
+  SharedCookbookCatalog,
+  SharedMealPlan,
+  DashboardSettings,
+  IngredientMeta,
+  MealPlanLibrary,
+  MealPlanInvitation,
+  OfflineQueueItem,
+} from '../types';
+
+const OFFLINE_QUEUE_KEY = 'ochrenotes_offline_queue';
+const CLIENT_LOGS_KEY = 'ochrenotes_client_logs';
+const MAX_CLIENT_LOGS = 150;
 
 class ApiService {
   private isOnline: boolean = typeof navigator !== 'undefined' ? navigator.onLine : true;
-  private offlineSyncQueue: Array<{ action: string; payload: any }> = [];
+  private offlineSyncQueue: OfflineQueueItem[] = [];
+  private queueListeners: Set<(count: number) => void> = new Set();
+  private clientLogs: SystemLog[] = [];
+  private isFlushing = false;
 
   constructor() {
     if (typeof window !== 'undefined') {
+      this.loadLogs();
+      this.loadQueue();
+
       window.addEventListener('online', () => {
         this.isOnline = true;
+        this.addClientLog('info', 'Netzwerkverbindung wiederhergestellt – starte Warteschlangen-Sync', 'SYNC');
         this.flushOfflineQueue();
       });
       window.addEventListener('offline', () => {
         this.isOnline = false;
+        this.addClientLog('warn', 'Netzwerk offline – Änderungen werden lokal zwischengespeichert', 'SYNC');
       });
-      this.loadQueue();
+      window.addEventListener('focus', () => {
+        if (navigator.onLine && this.offlineSyncQueue.length > 0) {
+          this.flushOfflineQueue();
+        }
+      });
+
+      // Automatically flush stale queued items on startup when online
+      if (navigator.onLine && this.offlineSyncQueue.length > 0) {
+        setTimeout(() => {
+          this.flushOfflineQueue();
+        }, 600);
+      }
     }
+  }
+
+  private loadLogs() {
+    try {
+      const saved = localStorage.getItem(CLIENT_LOGS_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) this.clientLogs = parsed.slice(-MAX_CLIENT_LOGS);
+      }
+    } catch {
+      this.clientLogs = [];
+    }
+  }
+
+  private saveLogs() {
+    try {
+      localStorage.setItem(CLIENT_LOGS_KEY, JSON.stringify(this.clientLogs.slice(-MAX_CLIENT_LOGS)));
+    } catch {}
+  }
+
+  public addClientLog(level: 'info' | 'warn' | 'error', message: string, source = 'CLIENT') {
+    const entry: SystemLog = {
+      id: `cl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      level,
+      message,
+      source: `CLIENT:${source}`,
+    };
+    this.clientLogs.push(entry);
+    if (this.clientLogs.length > MAX_CLIENT_LOGS) {
+      this.clientLogs = this.clientLogs.slice(-MAX_CLIENT_LOGS);
+    }
+    this.saveLogs();
+  }
+
+  public getClientLogs(): SystemLog[] {
+    return [...this.clientLogs].reverse();
+  }
+
+  public clearClientLogs() {
+    this.clientLogs = [];
+    this.saveLogs();
+  }
+
+  private getQueueDedupeKey(action: string, payload: any): string {
+    if (action === 'saveNote') {
+      return `saveNote:${payload?.username || ''}:${payload?.profile || 'profile1'}:${payload?.path || ''}`;
+    }
+    if (action === 'toggleTask') {
+      return `toggleTask:${payload?.username || ''}:${payload?.profile || 'profile1'}:${payload?.notePath || ''}:${payload?.lineIndex ?? ''}`;
+    }
+    return `${action}:${JSON.stringify(payload || {})}`;
   }
 
   private loadQueue() {
     try {
-      const saved = localStorage.getItem('ochrenotes_offline_queue');
-      if (saved) this.offlineSyncQueue = JSON.parse(saved);
-    } catch (e) {
+      const saved = localStorage.getItem(OFFLINE_QUEUE_KEY);
+      if (saved) {
+        const raw = JSON.parse(saved);
+        if (Array.isArray(raw)) {
+          // Migrate legacy queue items & deduplicate by target key keeping newest
+          const deduped = new Map<string, OfflineQueueItem>();
+          raw.forEach((item: any, idx: number) => {
+            if (!item || !item.action || !item.payload) return;
+            const normalized: OfflineQueueItem = {
+              id: item.id || `q_${Date.now()}_${idx}`,
+              action: item.action,
+              payload: item.payload,
+              timestamp: item.timestamp || Date.now(),
+              attempts: item.attempts || 0,
+              lastError: item.lastError,
+            };
+            const key = this.getQueueDedupeKey(normalized.action, normalized.payload);
+            deduped.set(key, normalized);
+          });
+          this.offlineSyncQueue = Array.from(deduped.values());
+          this.saveQueue();
+        }
+      }
+    } catch {
       this.offlineSyncQueue = [];
     }
   }
 
+  private notifyQueueListeners() {
+    const count = this.offlineSyncQueue.length;
+    this.queueListeners.forEach((cb) => {
+      try {
+        cb(count);
+      } catch {}
+    });
+  }
+
   private saveQueue() {
     try {
-      localStorage.setItem('ochrenotes_offline_queue', JSON.stringify(this.offlineSyncQueue));
-    } catch (e) {}
+      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(this.offlineSyncQueue));
+    } catch {}
+    this.notifyQueueListeners();
+  }
+
+  private enqueueOffline(action: OfflineQueueItem['action'], payload: any, lastError?: string) {
+    const key = this.getQueueDedupeKey(action, payload);
+    const nextItem: OfflineQueueItem = {
+      id: `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      action,
+      payload,
+      timestamp: Date.now(),
+      attempts: 0,
+      lastError,
+    };
+    const filtered = this.offlineSyncQueue.filter(
+      (existing) => this.getQueueDedupeKey(existing.action, existing.payload) !== key
+    );
+    filtered.push(nextItem);
+    this.offlineSyncQueue = filtered;
+    this.saveQueue();
+    this.addClientLog(
+      'warn',
+      `Element in Offline-Warteschlange eingereiht (${action}: ${payload?.path || payload?.notePath || 'Payload'})${lastError ? ` – Grund: ${lastError}` : ''}`,
+      'QUEUE'
+    );
+  }
+
+  public subscribePendingSync(listener: (count: number) => void): () => void {
+    this.queueListeners.add(listener);
+    listener(this.offlineSyncQueue.length);
+    return () => {
+      this.queueListeners.delete(listener);
+    };
   }
 
   public getOnlineStatus() {
@@ -40,24 +203,106 @@ class ApiService {
     return this.offlineSyncQueue.length;
   }
 
-  private async flushOfflineQueue() {
-    if (this.offlineSyncQueue.length === 0) return;
-    const queue = [...this.offlineSyncQueue];
+  public getOfflineQueue(): OfflineQueueItem[] {
+    return [...this.offlineSyncQueue];
+  }
+
+  public clearOfflineQueue() {
+    const count = this.offlineSyncQueue.length;
     this.offlineSyncQueue = [];
     this.saveQueue();
+    this.addClientLog('info', `Offline-Warteschlange manuell geleert (${count} Einträge verworfen)`, 'QUEUE');
+  }
 
-    for (const item of queue) {
-      try {
-        if (item.action === 'saveNote') {
-          await this.saveNote(item.payload.username, item.payload.path, item.payload.content, item.payload.isShared, item.payload.sharedFrom, item.payload.profile || 'profile1');
-        } else if (item.action === 'toggleTask') {
-          await this.toggleTask(item.payload.username, item.payload.notePath, item.payload.lineIndex, item.payload.completed, item.payload.isShared, item.payload.sharedFrom, item.payload.profile || 'profile1');
+  public async flushQueueNow(): Promise<{ processed: number; remaining: number; dropped: number }> {
+    return this.flushOfflineQueue();
+  }
+
+  private async flushOfflineQueue(): Promise<{ processed: number; remaining: number; dropped: number }> {
+    if (this.isFlushing || this.offlineSyncQueue.length === 0) {
+      return { processed: 0, remaining: this.offlineSyncQueue.length, dropped: 0 };
+    }
+    this.isFlushing = true;
+    const queue = [...this.offlineSyncQueue];
+    const remaining: OfflineQueueItem[] = [];
+    let processed = 0;
+    let dropped = 0;
+
+    try {
+      for (const item of queue) {
+        try {
+          if (item.action === 'saveNote') {
+            const p = item.payload;
+            const res = await fetch('/api/vault/notes', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                username: p.username,
+                profile: p.profile || 'profile1',
+                path: p.path,
+                content: p.content,
+                isShared: p.isShared,
+                sharedFrom: p.sharedFrom,
+              }),
+            });
+            if (!res.ok) {
+              if (res.status >= 400 && res.status < 500) {
+                dropped++;
+                this.addClientLog('error', `Permanenter Fehler (${res.status}) beim Sync von '${p.path}' – verworfen`, 'QUEUE');
+                continue;
+              }
+              throw new Error(`HTTP ${res.status}`);
+            }
+            processed++;
+          } else if ((item.action as string) === 'toggleTask') {
+            const p = item.payload;
+            const res = await fetch('/api/tasks/toggle', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                username: p.username,
+                profile: p.profile || 'profile1',
+                notePath: p.notePath,
+                lineIndex: p.lineIndex,
+                completed: p.completed,
+                isShared: p.isShared,
+                sharedFrom: p.sharedFrom,
+              }),
+            });
+            if (!res.ok) {
+              if (res.status >= 400 && res.status < 500) {
+                dropped++;
+                this.addClientLog('error', `Permanenter Task-Sync-Fehler (${res.status}) – verworfen`, 'QUEUE');
+                continue;
+              }
+              throw new Error(`HTTP ${res.status}`);
+            }
+            processed++;
+          } else {
+            // Drop unrecognized legacy queue actions cleanly
+            dropped++;
+          }
+        } catch (err: any) {
+          remaining.push({
+            ...item,
+            attempts: (item.attempts || 0) + 1,
+            lastError: err?.message || 'Netzwerkfehler',
+          });
         }
-      } catch (e) {
-        // Re-queue on failure
-        this.offlineSyncQueue.push(item);
-        this.saveQueue();
       }
+
+      this.offlineSyncQueue = remaining;
+      this.saveQueue();
+      if (processed > 0 || dropped > 0) {
+        this.addClientLog(
+          'info',
+          `Offline-Sync abgeschlossen: ${processed} synchronisiert, ${dropped} verworfen, ${remaining.length} offen`,
+          'SYNC'
+        );
+      }
+      return { processed, remaining: remaining.length, dropped };
+    } finally {
+      this.isFlushing = false;
     }
   }
 
@@ -68,7 +313,8 @@ class ApiService {
       const users = await res.json();
       localStorage.setItem('ochrenotes_cached_users', JSON.stringify(users));
       return users;
-    } catch (err) {
+    } catch (err: any) {
+      this.addClientLog('warn', `fetchUsers Fallback auf Cache: ${err?.message || err}`, 'AUTH');
       const cached = localStorage.getItem('ochrenotes_cached_users');
       if (cached) return JSON.parse(cached);
       throw err;
@@ -83,9 +329,11 @@ class ApiService {
     });
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
+      this.addClientLog('warn', `Login fehlgeschlagen für '${username}': ${errData.error || res.status}`, 'AUTH');
       throw new Error(errData.error || 'Anmeldung fehlgeschlagen');
     }
     const data = await res.json();
+    this.addClientLog('info', `Angemeldet als '${data.user.displayName}'`, 'AUTH');
     return data.user;
   }
 
@@ -173,7 +421,7 @@ class ApiService {
       const res = await fetch('/api/system/config');
       if (!res.ok) return { appTitle: 'OchreNotes' };
       return await res.json();
-    } catch (e) {
+    } catch {
       return { appTitle: 'OchreNotes' };
     }
   }
@@ -222,7 +470,8 @@ class ApiService {
       const notes = await res.json();
       localStorage.setItem(`ochrenotes_notes_${username}_${profile}`, JSON.stringify(notes));
       return notes;
-    } catch (err) {
+    } catch (err: any) {
+      this.addClientLog('warn', `fetchNotes Offline-Cache genutzt: ${err?.message || err}`, 'NOTES');
       const cached = localStorage.getItem(`ochrenotes_notes_${username}_${profile}`);
       if (cached) return JSON.parse(cached);
       return [];
@@ -236,7 +485,7 @@ class ApiService {
       const shared = await res.json();
       localStorage.setItem(`ochrenotes_shared_${username}`, JSON.stringify(shared));
       return shared;
-    } catch (err) {
+    } catch {
       const cached = localStorage.getItem(`ochrenotes_shared_${username}`);
       if (cached) return JSON.parse(cached);
       return [];
@@ -273,11 +522,7 @@ class ApiService {
     localStorage.setItem(cacheKey, JSON.stringify(cachedData));
 
     if (!navigator.onLine) {
-      this.offlineSyncQueue.push({
-        action: 'saveNote',
-        payload: { username, path, content, isShared, sharedFrom, profile },
-      });
-      this.saveQueue();
+      this.enqueueOffline('saveNote', { username, path, content, isShared, sharedFrom, profile }, 'Offline');
       return { success: true, mtime: Date.now() };
     }
 
@@ -287,14 +532,20 @@ class ApiService {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, profile, path, content, isShared, sharedFrom }),
       });
-      if (!res.ok) throw new Error('Fehler beim Speichern');
+      if (!res.ok) {
+        if (res.status >= 400 && res.status < 500) {
+          this.addClientLog('error', `saveNote abgelehnt (${res.status}) für '${path}'`, 'NOTES');
+          throw new Error(`HTTP ${res.status}`);
+        }
+        throw new Error(`HTTP ${res.status}`);
+      }
       return await res.json();
-    } catch (err) {
-      this.offlineSyncQueue.push({
-        action: 'saveNote',
-        payload: { username, path, content, isShared, sharedFrom, profile },
-      });
-      this.saveQueue();
+    } catch (err: any) {
+      // Only enqueue transient / server-unavailable failures, not client 4xx errors
+      const msg = err?.message || 'Netzwerkfehler';
+      if (!msg.startsWith('HTTP 4')) {
+        this.enqueueOffline('saveNote', { username, path, content, isShared, sharedFrom, profile }, msg);
+      }
       return { success: true, mtime: Date.now() };
     }
   }
@@ -406,7 +657,7 @@ class ApiService {
       const tasks = await res.json();
       localStorage.setItem(`ochrenotes_tasks_${username}_${profile}`, JSON.stringify(tasks));
       return tasks;
-    } catch (err) {
+    } catch {
       const cached = localStorage.getItem(`ochrenotes_tasks_${username}_${profile}`);
       if (cached) return JSON.parse(cached);
       return [];
@@ -423,11 +674,7 @@ class ApiService {
     profile: NoteProfileId = 'profile1'
   ): Promise<boolean> {
     if (!navigator.onLine) {
-      this.offlineSyncQueue.push({
-        action: 'toggleTask',
-        payload: { username, notePath, lineIndex, completed, isShared, sharedFrom, profile },
-      });
-      this.saveQueue();
+      this.enqueueOffline('toggleTask' as any, { username, notePath, lineIndex, completed, isShared, sharedFrom, profile }, 'Offline');
       return true;
     }
 
@@ -438,12 +685,8 @@ class ApiService {
         body: JSON.stringify({ username, profile, notePath, lineIndex, completed, isShared, sharedFrom }),
       });
       return res.ok;
-    } catch (err) {
-      this.offlineSyncQueue.push({
-        action: 'toggleTask',
-        payload: { username, notePath, lineIndex, completed, isShared, sharedFrom, profile },
-      });
-      this.saveQueue();
+    } catch (err: any) {
+      this.enqueueOffline('toggleTask' as any, { username, notePath, lineIndex, completed, isShared, sharedFrom, profile }, err?.message || 'Netzwerkfehler');
       return true;
     }
   }
@@ -453,7 +696,7 @@ class ApiService {
       const res = await fetch(`/api/graph?username=${encodeURIComponent(username)}&profile=${encodeURIComponent(profile)}`);
       if (!res.ok) throw new Error('Fehler beim Abrufen des Graphen');
       return await res.json();
-    } catch (err) {
+    } catch {
       return { nodes: [], links: [] };
     }
   }
@@ -510,6 +753,9 @@ class ApiService {
   }
 
   async fetchCookbook(username: string): Promise<{
+    hasLibrary: boolean;
+    library: MealPlanLibrary | null;
+    invitations: MealPlanInvitation[];
     recipes: Recipe[];
     categories: string[];
     cycle: MealCycle;
@@ -522,8 +768,58 @@ class ApiService {
     sharedPlans: SharedMealPlan[];
   }> {
     const res = await fetch(`/api/cookbook?username=${encodeURIComponent(username)}`);
-    if (!res.ok) throw new Error('Fehler beim Laden des Kochbuchs');
+    if (!res.ok) throw new Error('Fehler beim Laden des Essensplans');
     return await res.json();
+  }
+
+  async createOrUpdateMealLibrary(payload: {
+    username: string;
+    libraryId?: string;
+    name: string;
+    visibility: 'private' | 'shared';
+    invitedUsers?: string[];
+  }): Promise<{ success: boolean; library: MealPlanLibrary }> {
+    const res = await fetch('/api/cookbook/library', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Library konnte nicht gespeichert werden');
+    }
+    return await res.json();
+  }
+
+  async joinMealLibrary(username: string, libraryId: string): Promise<{ success: boolean; library: MealPlanLibrary }> {
+    const res = await fetch('/api/cookbook/library/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, libraryId }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Konnte Library nicht beitreten');
+    }
+    return await res.json();
+  }
+
+  async declineMealLibrary(username: string, libraryId: string): Promise<boolean> {
+    const res = await fetch('/api/cookbook/library/decline', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, libraryId }),
+    });
+    return res.ok;
+  }
+
+  async leaveMealLibrary(username: string, libraryId: string): Promise<boolean> {
+    const res = await fetch('/api/cookbook/library/leave', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, libraryId }),
+    });
+    return res.ok;
   }
 
   async saveCookbook(
@@ -606,7 +902,7 @@ class ApiService {
       const res = await fetch(`/api/vault/shares-for-note?owner=${encodeURIComponent(owner)}&path=${encodeURIComponent(path)}`);
       if (!res.ok) return [];
       return await res.json();
-    } catch (err) {
+    } catch {
       return [];
     }
   }
@@ -635,8 +931,14 @@ class ApiService {
   }
 
   async fetchSystemLogs(): Promise<SystemLog[]> {
-    const res = await fetch('/api/system/logs');
-    return await res.json();
+    try {
+      const res = await fetch('/api/system/logs');
+      if (!res.ok) return [];
+      return await res.json();
+    } catch (err: any) {
+      this.addClientLog('error', `Fehler beim Abrufen der Server-Logs: ${err?.message || err}`, 'DIAG');
+      return [];
+    }
   }
 
   async exportBackup(username: string, profile: NoteProfileId = 'profile1'): Promise<Blob> {

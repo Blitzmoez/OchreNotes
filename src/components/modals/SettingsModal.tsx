@@ -33,6 +33,11 @@ import {
   Shield,
   LayoutDashboard,
   ShoppingCart,
+  Repeat,
+  CalendarDays,
+  Smartphone,
+  Mail,
+  Globe,
 } from 'lucide-react';
 import {
   User,
@@ -45,6 +50,9 @@ import {
   TaskNotificationSettings,
   DashboardSettings,
   DashboardWidgetId,
+  MealPlanLibrary,
+  MealPlanInvitation,
+  MealSectionConfig,
 } from '../../types';
 import { api } from '../../services/api';
 import { useTranslation, Language } from '../../services/i18n';
@@ -54,6 +62,9 @@ import {
   DASHBOARD_WIDGET_CATALOG,
   DEFAULT_DASHBOARD_SETTINGS,
   MAX_DASHBOARD_WIDGETS,
+  DEFAULT_MEAL_SECTIONS,
+  DEFAULT_WEEKDAY_COLORS,
+  DEFAULT_MEAL_UNITS,
 } from '../../services/profileDefaults';
 import {
   getNotificationPermission,
@@ -188,7 +199,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Docker copy state
   const [copiedDocker, setCopiedDocker] = useState(false);
 
-  // Cookbook module settings (default portions, sharing & food categories)
+  // Essensplan module settings (library, cycle, sections, weekday colors, portions, sharing & food categories)
   const [cookbookCategories, setCookbookCategories] = useState<string[]>([]);
   const [cookbookSharing, setCookbookSharing] = useState<CookbookSharingSettings>({
     shareCatalog: false,
@@ -198,6 +209,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   });
   const [cookbookDefaultPortions, setCookbookDefaultPortions] = useState<number>(2);
   const [cookbookEnableShoppingList, setCookbookEnableShoppingList] = useState<boolean>(true);
+  const [cookbookEnableCycle, setCookbookEnableCycle] = useState<boolean>(true);
+  const [cookbookMealSections, setCookbookMealSections] = useState<MealSectionConfig[]>(DEFAULT_MEAL_SECTIONS);
+  const [cookbookWeekdayColors, setCookbookWeekdayColors] = useState<Record<string, string>>(DEFAULT_WEEKDAY_COLORS);
+  const [cookbookUnits, setCookbookUnits] = useState<string[]>(DEFAULT_MEAL_UNITS);
+  const [newUnitInput, setNewUnitInput] = useState('');
+  const [mealLibrary, setMealLibrary] = useState<MealPlanLibrary | null>(null);
+  const [mealInvitations, setMealInvitations] = useState<MealPlanInvitation[]>([]);
+  const [libNameInput, setLibNameInput] = useState<string>('');
+  const [libVisibilityInput, setLibVisibilityInput] = useState<'private' | 'shared'>('private');
+  const [libInvitedInput, setLibInvitedInput] = useState<string[]>([]);
+  const [librarySaving, setLibrarySaving] = useState<boolean>(false);
+  const [libraryStatus, setLibraryStatus] = useState<string | null>(null);
+  const [newSectionInput, setNewSectionInput] = useState('');
   const [newCatInput, setNewCatInput] = useState('');
   const [cookbookLoaded, setCookbookLoaded] = useState(false);
 
@@ -229,6 +253,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }
       setNotifPerm(getNotificationPermission());
       setNotifSettings(loadNotificationSettings(currentUser.username));
+      setLibraryStatus(null);
     }
   }, [isOpen, initialModuleContext, initialSettingsTab, currentUser.username]);
 
@@ -242,6 +267,45 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     activeBtn?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
   }, [selectedModuleSettingsTab, activeSettingsTab, isOpen]);
 
+  const reloadCookbookSettings = () => {
+    return api
+      .fetchCookbook(currentUser.username)
+      .then((data) => {
+        setCookbookCategories(data.categories || []);
+        if (data.sharing) setCookbookSharing(data.sharing);
+        setCookbookDefaultPortions(data.settings?.defaultCyclePortions || 2);
+        setCookbookEnableShoppingList(data.settings?.enableShoppingList !== false);
+        setCookbookEnableCycle(data.settings?.enableCycle !== false);
+        setCookbookMealSections(
+          data.settings?.mealSections && data.settings.mealSections.length > 0
+            ? data.settings.mealSections
+            : DEFAULT_MEAL_SECTIONS
+        );
+        setCookbookWeekdayColors({
+          ...DEFAULT_WEEKDAY_COLORS,
+          ...(data.settings?.weekdayColors || {}),
+        });
+        setCookbookUnits(
+          data.settings?.units && data.settings.units.length > 0
+            ? data.settings.units
+            : DEFAULT_MEAL_UNITS
+        );
+        setMealLibrary(data.library || null);
+        setMealInvitations(data.invitations || []);
+        if (data.library) {
+          setLibNameInput(data.library.name);
+          setLibVisibilityInput(data.library.visibility);
+          setLibInvitedInput(data.library.invitedUsers || []);
+        } else {
+          setLibNameInput(`Essensplan von ${currentUser.displayName}`);
+          setLibVisibilityInput('private');
+          setLibInvitedInput([]);
+        }
+        setCookbookLoaded(true);
+      })
+      .catch(() => {});
+  };
+
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
@@ -253,13 +317,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         if (data.sharing) setCookbookSharing(data.sharing);
         setCookbookDefaultPortions(data.settings?.defaultCyclePortions || 2);
         setCookbookEnableShoppingList(data.settings?.enableShoppingList !== false);
+        setCookbookEnableCycle(data.settings?.enableCycle !== false);
+        setCookbookMealSections(
+          data.settings?.mealSections && data.settings.mealSections.length > 0
+            ? data.settings.mealSections
+            : DEFAULT_MEAL_SECTIONS
+        );
+        setCookbookWeekdayColors({
+          ...DEFAULT_WEEKDAY_COLORS,
+          ...(data.settings?.weekdayColors || {}),
+        });
+        setCookbookUnits(
+          data.settings?.units && data.settings.units.length > 0
+            ? data.settings.units
+            : DEFAULT_MEAL_UNITS
+        );
+        setMealLibrary(data.library || null);
+        setMealInvitations(data.invitations || []);
+        if (data.library) {
+          setLibNameInput(data.library.name);
+          setLibVisibilityInput(data.library.visibility);
+          setLibInvitedInput(data.library.invitedUsers || []);
+        } else {
+          setLibNameInput(`Essensplan von ${currentUser.displayName}`);
+          setLibVisibilityInput('private');
+          setLibInvitedInput([]);
+        }
         setCookbookLoaded(true);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [isOpen, currentUser.username]);
+  }, [isOpen, currentUser.username, currentUser.displayName]);
 
   if (!isOpen) return null;
 
@@ -406,10 +496,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       if (partial.settings.enableShoppingList !== undefined) {
         setCookbookEnableShoppingList(partial.settings.enableShoppingList);
       }
+      if (partial.settings.enableCycle !== undefined) {
+        setCookbookEnableCycle(partial.settings.enableCycle);
+      }
+      if (partial.settings.mealSections !== undefined) {
+        setCookbookMealSections(partial.settings.mealSections);
+      }
+      if (partial.settings.weekdayColors !== undefined) {
+        setCookbookWeekdayColors(partial.settings.weekdayColors);
+      }
+      if (partial.settings.units !== undefined) {
+        setCookbookUnits(partial.settings.units);
+      }
       if (onCookbookSettingsChange) {
         onCookbookSettingsChange({
           defaultCyclePortions: partial.settings.defaultCyclePortions ?? cookbookDefaultPortions,
           enableShoppingList: partial.settings.enableShoppingList ?? cookbookEnableShoppingList,
+          enableCycle: partial.settings.enableCycle ?? cookbookEnableCycle,
+          mealSections: partial.settings.mealSections ?? cookbookMealSections,
+          weekdayColors: partial.settings.weekdayColors ?? cookbookWeekdayColors,
+          units: partial.settings.units ?? cookbookUnits,
         });
       }
     }
@@ -827,6 +933,55 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <option value="en">English (International)</option>
                 </select>
               </div>
+
+              <div className="p-3 bg-[#F4F3EF] dark:bg-[#18191B] rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 font-semibold text-neutral-900 dark:text-white">
+                    <Smartphone className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
+                    <span>Mobile Hauptleiste Position</span>
+                  </div>
+                  <span className="text-[10px] text-neutral-400 font-semibold">
+                    {(profileSettings.mobileBarPosition || 'top') === 'bottom' ? 'Unten' : 'Oben'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-neutral-500">
+                  Lege fest, ob die obere Navigationsleiste auf Smartphone &amp; Tablet oben oder bequem erreichbar am unteren Bildschirmrand sitzt.
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {(
+                    [
+                      { id: 'top' as const, label: 'Oben (Standard)' },
+                      { id: 'bottom' as const, label: 'Unten (Daumen-Zone)' },
+                    ]
+                  ).map((opt) => {
+                    const isActive = (profileSettings.mobileBarPosition || 'top') === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() =>
+                          onUpdateProfileSettings({
+                            ...profileSettings,
+                            mobileBarPosition: opt.id,
+                          })
+                        }
+                        style={
+                          isActive
+                            ? { backgroundColor: 'var(--ochre-accent)', borderColor: 'var(--ochre-accent)' }
+                            : undefined
+                        }
+                        className={`py-2 px-3 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
+                          isActive
+                            ? 'text-white shadow-xs'
+                            : 'bg-white dark:bg-[#202225] border-[#E5E3DC] dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 hover:border-neutral-400'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           )}
 
@@ -935,7 +1090,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </button>
                 </div>
 
-                {/* Kochbuch */}
+                {/* Essensplan */}
                 <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
                     <div
@@ -946,10 +1101,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                     <div>
                       <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
-                        Kochbuch &amp; Essenszyklus
+                        Essensplan &amp; Gerichte
                       </span>
                       <span className="text-[11px] text-neutral-500">
-                        Eigener Tellergerichtskatalog, Zyklus, Kalender &amp; Freigaben
+                        Eigener Tellergerichtskatalog, Kalender, Zyklus &amp; gemeinsame Bibliotheken
                       </span>
                     </div>
                   </div>
@@ -1022,7 +1177,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, color: activeColors.dashboard },
                     { id: 'notes', label: 'Notes', icon: BookOpen, color: activeColors.notes },
                     { id: 'wiki', label: 'Wiki', icon: BookMarked, color: activeColors.wiki },
-                    { id: 'recipes', label: 'Kochbuch', icon: Utensils, color: activeColors.recipes },
+                    { id: 'recipes', label: 'Essensplan', icon: Utensils, color: activeColors.recipes },
                     { id: 'finance', label: 'Finanzen', icon: DollarSign, color: activeColors.finance },
                   ] as const
                 ).map((item) => {
@@ -1475,27 +1630,559 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               )}
 
-              {/* --- MODULE: KOCHBUCH --- */}
+              {/* --- MODULE: ESSENSPLAN --- */}
               {selectedModuleSettingsTab === 'recipes' && (
                 <div className="space-y-4">
                   <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] space-y-1">
                     <div className="flex items-center gap-2 font-bold text-neutral-900 dark:text-neutral-100">
                       <Utensils className="w-4 h-4" style={{ color: activeColors.recipes }} />
-                      <span>Open-Standard Kochbuch &amp; Medien</span>
+                      <span>Open-Standard Essensplan &amp; Medien</span>
                     </div>
                     <p className="text-[11px] text-neutral-500 leading-relaxed">
-                      Rezepte werden im offenen Markdown-Standard in <span className="font-mono">User/{currentUser.username}/Cookbook/Rezepte/</span> und Gerichtsfotos je Rezept in <span className="font-mono">Cookbook/Media/</span> gespeichert.
+                      Tellergerichte werden im offenen Markdown-Standard in <span className="font-mono">Cookbook/Rezepte/</span> und Gerichtsfotos je Rezept in <span className="font-mono">Cookbook/Media/</span> gespeichert.
                     </p>
+                  </div>
+
+                  {/* Pending Library Invitations */}
+                  {mealInvitations.length > 0 && (
+                    <div className="p-3.5 rounded-2xl border-2 border-[var(--ochre-accent)]/40 bg-amber-50/40 dark:bg-amber-950/20 space-y-2.5">
+                      <div className="flex items-center gap-2 font-bold text-neutral-900 dark:text-neutral-100">
+                        <Mail className="w-4 h-4" style={{ color: activeColors.recipes }} />
+                        <span>Einladungen zu Essensplan-Bibliotheken ({mealInvitations.length})</span>
+                      </div>
+                      <div className="space-y-2">
+                        {mealInvitations.map((inv) => (
+                          <div
+                            key={inv.libraryId}
+                            className="p-2.5 rounded-xl bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 flex-wrap"
+                          >
+                            <div className="min-w-0">
+                              <span className="font-bold text-xs block truncate">{inv.name}</span>
+                              <span className="text-[11px] text-neutral-500">
+                                Eingeladen von {inv.ownerDisplayName} (@{inv.ownerUsername})
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                disabled={librarySaving}
+                                onClick={async () => {
+                                  setLibrarySaving(true);
+                                  try {
+                                    await api.declineMealLibrary(currentUser.username, inv.libraryId);
+                                    await reloadCookbookSettings();
+                                    onCookbookUpdated?.();
+                                  } finally {
+                                    setLibrarySaving(false);
+                                  }
+                                }}
+                                className="px-2.5 py-1 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] text-[11px] font-semibold hover:text-red-500 cursor-pointer"
+                              >
+                                Ablehnen
+                              </button>
+                              <button
+                                type="button"
+                                disabled={librarySaving}
+                                onClick={async () => {
+                                  setLibrarySaving(true);
+                                  try {
+                                    await api.joinMealLibrary(currentUser.username, inv.libraryId);
+                                    await reloadCookbookSettings();
+                                    onCookbookUpdated?.();
+                                    setLibraryStatus(`Bibliothek „${inv.name}“ beigetreten.`);
+                                  } finally {
+                                    setLibrarySaving(false);
+                                  }
+                                }}
+                                style={{ backgroundColor: activeColors.recipes }}
+                                className="px-3 py-1 rounded-lg text-white text-[11px] font-bold cursor-pointer"
+                              >
+                                Beitreten
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Essensplan Library Management (Create / Private vs Shared / Invite) */}
+                  <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#18191B] space-y-3">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2 font-bold text-neutral-900 dark:text-neutral-100">
+                        {mealLibrary?.visibility === 'shared' ? (
+                          <Globe className="w-4 h-4" style={{ color: activeColors.recipes }} />
+                        ) : (
+                          <Lock className="w-4 h-4" style={{ color: activeColors.recipes }} />
+                        )}
+                        <span>
+                          {mealLibrary ? 'Aktive Essensplan-Bibliothek' : 'Essensplan-Bibliothek erstellen'}
+                        </span>
+                      </div>
+                      {mealLibrary && (
+                        <span
+                          style={{ backgroundColor: `${activeColors.recipes}1A`, color: activeColors.recipes }}
+                          className="text-[10px] font-bold px-2 py-0.5 rounded-full"
+                        >
+                          {mealLibrary.visibility === 'shared' ? 'Freigegeben (Gemeinsam)' : 'Privat'}
+                        </span>
+                      )}
+                    </div>
+
+                    {!mealLibrary ? (
+                      <div className="space-y-2.5">
+                        <p className="text-[11px] text-neutral-500">
+                          Für @{currentUser.username} ist noch keine Essensplan-Bibliothek angelegt. Erstelle eine private Bibliothek oder gib sie direkt für andere Benutzer frei.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-neutral-500 flex items-center justify-between gap-2 flex-wrap">
+                        <span>
+                          Eigentümer: <strong className="text-neutral-800 dark:text-neutral-200">{mealLibrary.ownerDisplayName}</strong> ·{' '}
+                          Mitglieder: <strong className="text-neutral-800 dark:text-neutral-200">{mealLibrary.members.join(', ')}</strong>
+                        </span>
+                        {mealLibrary.ownerUsername !== currentUser.username && (
+                          <button
+                            type="button"
+                            disabled={librarySaving}
+                            onClick={async () => {
+                              setLibrarySaving(true);
+                              try {
+                                await api.leaveMealLibrary(currentUser.username, mealLibrary.id);
+                                await reloadCookbookSettings();
+                                onCookbookUpdated?.();
+                                setLibraryStatus('Bibliothek verlassen.');
+                              } finally {
+                                setLibrarySaving(false);
+                              }
+                            }}
+                            className="text-[11px] font-semibold text-red-500 hover:underline cursor-pointer"
+                          >
+                            Bibliothek verlassen
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {(!mealLibrary || mealLibrary.ownerUsername === currentUser.username) && (
+                      <div className="space-y-2.5 pt-1 border-t border-[#E5E3DC] dark:border-[#2F3136]">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[11px] font-semibold text-neutral-500 block mb-1">
+                              Name der Bibliothek
+                            </label>
+                            <input
+                              type="text"
+                              value={libNameInput}
+                              onChange={(e) => setLibNameInput(e.target.value)}
+                              placeholder="z. B. Familien-Essensplan"
+                              className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[11px] font-semibold text-neutral-500 block mb-1">
+                              Sichtbarkeit
+                            </label>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              {(
+                                [
+                                  { id: 'private' as const, label: 'Privat' },
+                                  { id: 'shared' as const, label: 'Freigegeben' },
+                                ]
+                              ).map((opt) => (
+                                <button
+                                  key={opt.id}
+                                  type="button"
+                                  onClick={() => setLibVisibilityInput(opt.id)}
+                                  style={
+                                    libVisibilityInput === opt.id
+                                      ? { backgroundColor: activeColors.recipes, borderColor: activeColors.recipes }
+                                      : undefined
+                                  }
+                                  className={`py-1.5 px-2 rounded-lg border text-xs font-semibold cursor-pointer ${
+                                    libVisibilityInput === opt.id
+                                      ? 'text-white'
+                                      : 'bg-white dark:bg-[#202225] border-[#E5E3DC] dark:border-neutral-700 text-neutral-600 dark:text-neutral-300'
+                                  }`}
+                                >
+                                  {opt.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {libVisibilityInput === 'shared' && otherUsers.length > 0 && (
+                          <div className="space-y-1">
+                            <span className="text-[11px] font-semibold text-neutral-500 block">
+                              Benutzer einladen:
+                            </span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {otherUsers.map((u) => {
+                                const alreadyMember = mealLibrary?.members.includes(u.username);
+                                const isInvited = libInvitedInput.includes(u.username);
+                                return (
+                                  <button
+                                    key={u.id}
+                                    type="button"
+                                    disabled={!!alreadyMember}
+                                    onClick={() =>
+                                      setLibInvitedInput((prev) =>
+                                        prev.includes(u.username)
+                                          ? prev.filter((x) => x !== u.username)
+                                          : [...prev, u.username]
+                                      )
+                                    }
+                                    style={
+                                      isInvited || alreadyMember
+                                        ? { backgroundColor: activeColors.recipes, borderColor: activeColors.recipes }
+                                        : undefined
+                                    }
+                                    className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold cursor-pointer ${
+                                      isInvited || alreadyMember
+                                        ? 'text-white'
+                                        : 'bg-white dark:bg-[#202225] border-[#E5E3DC] dark:border-neutral-700'
+                                    }`}
+                                  >
+                                    {u.displayName} {alreadyMember ? '(Mitglied)' : isInvited ? '✓' : ''}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between gap-2 pt-1">
+                          {libraryStatus ? (
+                            <span className="text-[11px] font-semibold" style={{ color: activeColors.recipes }}>
+                              {libraryStatus}
+                            </span>
+                          ) : (
+                            <span />
+                          )}
+                          <button
+                            type="button"
+                            disabled={librarySaving || !libNameInput.trim()}
+                            onClick={async () => {
+                              setLibrarySaving(true);
+                              setLibraryStatus(null);
+                              try {
+                                await api.createOrUpdateMealLibrary({
+                                  username: currentUser.username,
+                                  libraryId: mealLibrary?.id,
+                                  name: libNameInput.trim(),
+                                  visibility: libVisibilityInput,
+                                  invitedUsers: libVisibilityInput === 'shared' ? libInvitedInput : [],
+                                });
+                                await reloadCookbookSettings();
+                                onCookbookUpdated?.();
+                                setLibraryStatus(mealLibrary ? 'Bibliothek aktualisiert.' : 'Bibliothek erstellt!');
+                              } catch (err: any) {
+                                setLibraryStatus(`Fehler: ${err.message}`);
+                              } finally {
+                                setLibrarySaving(false);
+                              }
+                            }}
+                            style={{ backgroundColor: activeColors.recipes }}
+                            className="px-3.5 py-1.5 rounded-lg text-white text-xs font-bold hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                          >
+                            {mealLibrary ? 'Bibliothek speichern' : 'Bibliothek erstellen'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Enable / Disable Essenszyklus */}
+                  <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#18191B] flex items-center justify-between gap-3">
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <div
+                        className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-white shadow-2xs"
+                        style={{ backgroundColor: activeColors.recipes }}
+                      >
+                        <Repeat className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
+                          Wiederkehrenden Essenszyklus aktivieren
+                        </span>
+                        <span className="text-[11px] text-neutral-500 block">
+                          Schaltet den Tab „Zyklus“ ein oder aus. Ohne Zyklus planst du direkt per Drag &amp; Drop im Kalender.
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextVal = !cookbookEnableCycle;
+                        saveCookbookChanges({ settings: { enableCycle: nextVal } });
+                      }}
+                      style={cookbookEnableCycle ? { backgroundColor: activeColors.recipes } : undefined}
+                      className={`w-11 h-6 rounded-full transition-colors flex items-center px-1 cursor-pointer shrink-0 ${
+                        cookbookEnableCycle
+                          ? 'justify-end'
+                          : 'bg-neutral-300 dark:bg-neutral-700 justify-start'
+                      }`}
+                    >
+                      <span className="w-4 h-4 rounded-full bg-white shadow-xs" />
+                    </button>
+                  </div>
+
+                  {/* Configurable Kalender & Zyklus Meal Sections (Mittag, Abend, Custom...) */}
+                  <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
+                          Tages-Abschnitte (Kalender &amp; Zyklus)
+                        </span>
+                        <span className="text-[11px] text-neutral-500">
+                          Erstelle oder benenne Abschnitte pro Tag (Standard: Mittag, Abend).
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => saveCookbookChanges({ settings: { mealSections: DEFAULT_MEAL_SECTIONS } })}
+                        className="text-[11px] text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 flex items-center gap-1 cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Standard</span>
+                      </button>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      {cookbookMealSections.map((sec) => (
+                        <div
+                          key={sec.id}
+                          className="flex items-center gap-2 bg-white dark:bg-[#202225] p-1.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136]"
+                        >
+                          <input
+                            type="text"
+                            value={sec.label}
+                            onChange={(e) => {
+                              const next = cookbookMealSections.map((s) =>
+                                s.id === sec.id ? { ...s, label: e.target.value } : s
+                              );
+                              setCookbookMealSections(next);
+                            }}
+                            onBlur={() => {
+                              const cleaned = cookbookMealSections.map((s) => ({
+                                ...s,
+                                label: s.label.trim() || 'Abschnitt',
+                              }));
+                              saveCookbookChanges({ settings: { mealSections: cleaned } });
+                            }}
+                            className="flex-1 text-xs px-2 py-1 rounded-lg bg-transparent outline-hidden font-semibold text-neutral-900 dark:text-neutral-100"
+                          />
+                          {cookbookMealSections.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const next = cookbookMealSections.filter((s) => s.id !== sec.id);
+                                saveCookbookChanges({ settings: { mealSections: next } });
+                              }}
+                              className="p-1.5 rounded-lg text-neutral-400 hover:text-red-500 cursor-pointer"
+                              title="Abschnitt entfernen"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <input
+                        type="text"
+                        value={newSectionInput}
+                        onChange={(e) => setNewSectionInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && newSectionInput.trim()) {
+                            const label = newSectionInput.trim();
+                            const id =
+                              label
+                                .toLowerCase()
+                                .replace(/[^a-z0-9]+/g, '_')
+                                .replace(/^_+|_+$/g, '') || `sec_${Date.now()}`;
+                            const uniqueId = cookbookMealSections.some((s) => s.id === id)
+                              ? `${id}_${Date.now().toString().slice(-4)}`
+                              : id;
+                            saveCookbookChanges({
+                              settings: { mealSections: [...cookbookMealSections, { id: uniqueId, label }] },
+                            });
+                            setNewSectionInput('');
+                          }
+                        }}
+                        placeholder="Neuer Abschnitt (z. B. Frühstück, Snack)..."
+                        className="flex-1 text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const label = newSectionInput.trim();
+                          if (!label) return;
+                          const id =
+                            label
+                              .toLowerCase()
+                              .replace(/[^a-z0-9]+/g, '_')
+                              .replace(/^_+|_+$/g, '') || `sec_${Date.now()}`;
+                          const uniqueId = cookbookMealSections.some((s) => s.id === id)
+                            ? `${id}_${Date.now().toString().slice(-4)}`
+                            : id;
+                          saveCookbookChanges({
+                            settings: { mealSections: [...cookbookMealSections, { id: uniqueId, label }] },
+                          });
+                          setNewSectionInput('');
+                        }}
+                        style={{ backgroundColor: activeColors.recipes }}
+                        className="px-3 py-1.5 rounded-lg text-white font-semibold flex items-center gap-1 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Abschnitt</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Weekday Colors (Mo - So) */}
+                  <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#18191B] space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 font-bold text-neutral-900 dark:text-neutral-100">
+                        <CalendarDays className="w-4 h-4" style={{ color: activeColors.recipes }} />
+                        <span>Wochentags-Farben im Essenskalender</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => saveCookbookChanges({ settings: { weekdayColors: DEFAULT_WEEKDAY_COLORS } })}
+                        className="flex items-center gap-1 text-[11px] text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Zurücksetzen</span>
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-7 gap-1.5">
+                      {(
+                        [
+                          { key: '1', label: 'Mo' },
+                          { key: '2', label: 'Di' },
+                          { key: '3', label: 'Mi' },
+                          { key: '4', label: 'Do' },
+                          { key: '5', label: 'Fr' },
+                          { key: '6', label: 'Sa' },
+                          { key: '0', label: 'So' },
+                        ] as const
+                      ).map((wd) => {
+                        const hex = cookbookWeekdayColors[wd.key] || DEFAULT_WEEKDAY_COLORS[wd.key];
+                        return (
+                          <label
+                            key={wd.key}
+                            className="flex flex-col items-center gap-1 p-1.5 rounded-xl bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] cursor-pointer hover:border-neutral-400"
+                          >
+                            <span className="text-[11px] font-bold">{wd.label}</span>
+                            <input
+                              type="color"
+                              value={hex}
+                              onChange={(e) => {
+                                const nextColors = { ...cookbookWeekdayColors, [wd.key]: e.target.value };
+                                setCookbookWeekdayColors(nextColors);
+                                saveCookbookChanges({ settings: { weekdayColors: nextColors } });
+                              }}
+                              className="w-7 h-5 rounded cursor-pointer border-0 p-0 bg-transparent"
+                            />
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Configurable Ingredient Units (Gramm, KG, Liter, Päckchen, ...) */}
+                  <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
+                          Mengen-Einheiten für Zutaten
+                        </span>
+                        <span className="text-[11px] text-neutral-500">
+                          Stehen beim Anlegen von Gerichten &amp; Zutaten zur schnellen Auswahl bereit (z. B. Gramm, KG, Liter, Päckchen).
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => saveCookbookChanges({ settings: { units: DEFAULT_MEAL_UNITS } })}
+                        className="text-[11px] text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 flex items-center gap-1 cursor-pointer shrink-0"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Standard</span>
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5">
+                      {cookbookUnits.map((u) => (
+                        <span
+                          key={u}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] text-xs font-semibold text-neutral-800 dark:text-neutral-200"
+                        >
+                          <span>{u}</span>
+                          {cookbookUnits.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const next = cookbookUnits.filter((x) => x !== u);
+                                saveCookbookChanges({ settings: { units: next } });
+                              }}
+                              className="text-neutral-400 hover:text-red-500 cursor-pointer"
+                              title="Einheit entfernen"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <input
+                        type="text"
+                        value={newUnitInput}
+                        onChange={(e) => setNewUnitInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && newUnitInput.trim()) {
+                            e.preventDefault();
+                            const clean = newUnitInput.trim();
+                            if (!cookbookUnits.some((u) => u.toLowerCase() === clean.toLowerCase())) {
+                              saveCookbookChanges({ settings: { units: [...cookbookUnits, clean] } });
+                            }
+                            setNewUnitInput('');
+                          }
+                        }}
+                        placeholder="Neue Einheit (z. B. Tasse, Flasche, Handvoll)..."
+                        className="flex-1 text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const clean = newUnitInput.trim();
+                          if (!clean) return;
+                          if (!cookbookUnits.some((u) => u.toLowerCase() === clean.toLowerCase())) {
+                            saveCookbookChanges({ settings: { units: [...cookbookUnits, clean] } });
+                          }
+                          setNewUnitInput('');
+                        }}
+                        style={{ backgroundColor: activeColors.recipes }}
+                        className="px-3 py-1.5 rounded-lg text-white font-semibold flex items-center gap-1 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Einheit</span>
+                      </button>
+                    </div>
                   </div>
 
                   {/* Default Cycle Portions Setting */}
                   <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#18191B] flex items-center justify-between gap-3 flex-wrap">
                     <div>
                       <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
-                        Standard-Portionen im Essenszyklus
+                        Standard-Portionen im Essensplan
                       </span>
                       <span className="text-[11px] text-neutral-500 block">
-                        Vorgabewert für neue Zyklustage. Zutatenmengen werden entsprechend automatisch skaliert.
+                        Vorgabewert für neue Tage. Zutatenmengen werden entsprechend automatisch skaliert.
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5 bg-white dark:bg-[#202225] p-1 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136]">
@@ -1542,7 +2229,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           Einkaufsliste &amp; Verbrauchs-Forecast aktivieren
                         </span>
                         <span className="text-[11px] text-neutral-500 block">
-                          Blendet den Tab „Einkaufsliste“ im Kochbuch sowie den offenen Einkaufs-Forecast auf Wunsch ein oder aus.
+                          Blendet den Tab „Einkaufsliste“ im Essensplan sowie den offenen Einkaufs-Forecast auf Wunsch ein oder aus.
                         </span>
                       </div>
                     </div>
@@ -1572,18 +2259,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     activeColors.recipes,
                     (hex) => updateSuiteModuleColor('recipes', hex),
                     () => resetModuleColorsToOchre('recipes'),
-                    'Kochbuch Akzentfarbe (Ocker-Palette)'
+                    'Essensplan Akzentfarbe (Ocker-Palette)'
                   )}
 
-                  {/* Sharing Settings for Cookbook */}
+                  {/* Legacy Sharing Settings for Essensplan */}
                   <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] space-y-3">
                     <div className="flex items-center gap-2 font-bold text-neutral-900 dark:text-neutral-100">
                       <Share2 className="w-4 h-4" style={{ color: activeColors.recipes }} />
-                      <span>Freigaben für @{currentUser.username}</span>
+                      <span>Katalog- &amp; Plan-Freigaben für @{currentUser.username}</span>
                     </div>
 
                     {!cookbookLoaded ? (
-                      <p className="text-[11px] text-neutral-400">Lade Kochbuch-Einstellungen...</p>
+                      <p className="text-[11px] text-neutral-400">Lade Essensplan-Einstellungen...</p>
                     ) : (
                       <div className="space-y-3">
                         {/* Catalog share */}
@@ -1592,7 +2279,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <div>
                               <span className="font-semibold block">Tellergerichtskatalog freigeben</span>
                               <span className="text-[11px] text-neutral-500">
-                                Andere können deine Tellergerichte in ihrem Kochbuch sehen &amp; einplanen.
+                                Andere können deine Tellergerichte in ihrem Essensplan sehen &amp; einplanen.
                               </span>
                             </div>
                             <button
@@ -2241,7 +2928,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </span>
                 </div>
                 <p className="text-[11px] text-neutral-500 leading-relaxed">
-                  Für dein NAS ist die Rechte-Verwaltung auf ID 2000:100 ausgelegt (umask 0002). Alle Notizen, Wiki-Artikel und Kochbücher liegen isoliert im <span className="font-mono text-neutral-700 dark:text-neutral-300 font-semibold">User/</span> Verzeichnis.
+                  Für dein NAS ist die Rechte-Verwaltung auf ID 2000:100 ausgelegt (umask 0002). Alle Notizen, Wiki-Artikel und Essenspläne liegen isoliert im <span className="font-mono text-neutral-700 dark:text-neutral-300 font-semibold">User/</span> Verzeichnis.
                 </p>
                 <div className="relative">
                   <pre className="text-[10px] p-2.5 rounded-lg bg-neutral-900 text-neutral-200 font-mono overflow-x-auto select-all leading-relaxed border border-neutral-700">

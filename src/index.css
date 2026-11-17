@@ -7,6 +7,12 @@
 }
 
 @layer base {
+  html,
+  body,
+  #root {
+    overscroll-behavior-y: none;
+  }
+
   body {
     font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;

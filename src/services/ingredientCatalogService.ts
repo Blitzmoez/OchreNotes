@@ -8,6 +8,8 @@ export interface CollectedIngredient {
   recipeIds: string[];
   sampleAmounts: string[];
   excludeFromShoppingList: boolean;
+  defaultUnit?: string;
+  isCustom?: boolean;
 }
 
 export interface IngredientDuplicatePair {
@@ -32,7 +34,7 @@ export function normalizeIngredientKey(name: string): string {
     .replace(/[.,;:]+$/, '');
 
   // Strip leading numeric amount if stored directly inside name (legacy entries)
-  const leading = clean.match(/^\d+(?:[.,]\d+)?(?:\s*\/\s*\d+)?\s*(?:g|gr|kg|ml|cl|l|el|tl|stk|stück|st\.|prise|prisen|bund|dose|dosen|packung|becher|glas|zehe|zehen|scheibe|scheiben)?\s+(.+)$/);
+  const leading = clean.match(/^\d+(?:[.,]\d+)?(?:\s*\/\s*\d+)?\s*(?:g|gr|gramm|kg|ml|cl|l|liter|el|tl|stk|stück|st\.|prise|prisen|bund|dose|dosen|packung|päckchen|paeckchen|becher|glas|zehe|zehen|scheibe|scheiben)?\s+(.+)$/);
   if (leading && leading[1]) {
     clean = leading[1].trim();
   }
@@ -123,6 +125,22 @@ export function collectIngredientsFromRecipes(
     }
   }
 
+  // Also include standalone ingredients persisted in ingredientMeta even if not yet linked to a dish
+  for (const meta of Object.values(ingredientMeta)) {
+    if (!meta || !meta.displayName) continue;
+    const key = meta.key || normalizeIngredientKey(meta.displayName);
+    if (!key) continue;
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        key,
+        displayName: meta.displayName.trim(),
+        recipeIds: new Set(),
+        recipeTitles: new Set(),
+        sampleAmounts: new Set(),
+      });
+    }
+  }
+
   return Array.from(buckets.values())
     .map((b) => ({
       key: b.key,
@@ -132,6 +150,8 @@ export function collectIngredientsFromRecipes(
       recipeIds: Array.from(b.recipeIds),
       sampleAmounts: Array.from(b.sampleAmounts),
       excludeFromShoppingList: !!ingredientMeta[b.key]?.excludeFromShoppingList,
+      defaultUnit: ingredientMeta[b.key]?.defaultUnit,
+      isCustom: !!ingredientMeta[b.key]?.isCustom,
     }))
     .sort((a, b) => a.displayName.localeCompare(b.displayName, 'de', { sensitivity: 'base' }));
 }

@@ -1,0 +1,28 @@
+[
+  {
+    "id": "lib_michael",
+    "name": "Michaels Essensplan",
+    "ownerUsername": "michael",
+    "ownerDisplayName": "Michael",
+    "visibility": "private",
+    "invitedUsers": [],
+    "members": [
+      "michael"
+    ],
+    "storageKey": "user:michael",
+    "createdAt": 1794954726155
+  },
+  {
+    "id": "lib_1794954726630_u08f",
+    "name": "Test Lib",
+    "ownerUsername": "sarah",
+    "ownerDisplayName": "Sarah",
+    "visibility": "shared",
+    "invitedUsers": [],
+    "members": [
+      "sarah"
+    ],
+    "storageKey": "lib:lib_1794954726630_u08f",
+    "createdAt": 1794954726631
+  }
+]

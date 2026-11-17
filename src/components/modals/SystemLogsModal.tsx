@@ -16,8 +16,9 @@ import {
   Clock,
   Terminal,
   Activity,
+  Trash2,
 } from 'lucide-react';
-import { SystemHealth, SystemLog } from '../../types';
+import { SystemHealth, SystemLog, OfflineQueueItem } from '../../types';
 import { api } from '../../services/api';
 
 interface SystemLogsModalProps {
@@ -45,8 +46,11 @@ export const SystemLogsModal: React.FC<SystemLogsModalProps> = ({
   const [activeTab, setActiveTab] = useState<DiagnosticTabId>('sync');
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [logs, setLogs] = useState<SystemLog[]>([]);
+  const [queueItems, setQueueItems] = useState<OfflineQueueItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [syncingQueue, setSyncingQueue] = useState(false);
   const [filterLevel, setFilterLevel] = useState<'all' | 'info' | 'warn' | 'error'>('all');
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'server' | 'client'>('all');
   const [copied, setCopied] = useState(false);
 
   const tabRefs = useRef<Record<DiagnosticTabId, HTMLButtonElement | null>>({
@@ -59,11 +63,18 @@ export const SystemLogsModal: React.FC<SystemLogsModalProps> = ({
   const fetchDiagnostics = async () => {
     setLoading(true);
     try {
-      const [h, l] = await Promise.all([api.fetchSystemHealth(), api.fetchSystemLogs()]);
+      const [h, serverLogs] = await Promise.all([api.fetchSystemHealth(), api.fetchSystemLogs()]);
+      const clientLogs = api.getClientLogs();
+      const merged = [...serverLogs, ...clientLogs].sort(
+        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      );
       setHealth(h);
-      setLogs(l);
+      setLogs(merged);
+      setQueueItems(api.getOfflineQueue());
     } catch (e) {
       console.error(e);
+      setLogs(api.getClientLogs());
+      setQueueItems(api.getOfflineQueue());
     } finally {
       setLoading(false);
     }
@@ -88,8 +99,10 @@ export const SystemLogsModal: React.FC<SystemLogsModalProps> = ({
   if (!isOpen) return null;
 
   const filteredLogs = logs.filter((log) => {
-    if (filterLevel === 'all') return true;
-    return log.level === filterLevel;
+    if (filterLevel !== 'all' && log.level !== filterLevel) return false;
+    if (sourceFilter === 'client' && !log.source.startsWith('CLIENT:')) return false;
+    if (sourceFilter === 'server' && log.source.startsWith('CLIENT:')) return false;
+    return true;
   });
 
   const formatLastSavedTime = () => {
@@ -111,12 +124,27 @@ export const SystemLogsModal: React.FC<SystemLogsModalProps> = ({
   };
 
   const handleCopyLogs = () => {
-    const text = logs
+    const text = filteredLogs
       .map((l) => `[${l.timestamp}] [${l.level.toUpperCase()}] [${l.source}] ${l.message}`)
       .join('\n');
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleFlushQueueNow = async () => {
+    setSyncingQueue(true);
+    try {
+      await api.flushQueueNow();
+      await fetchDiagnostics();
+    } finally {
+      setSyncingQueue(false);
+    }
+  };
+
+  const handleClearQueue = () => {
+    api.clearOfflineQueue();
+    fetchDiagnostics();
   };
 
   const handleBodyTouchStart = (e: React.TouchEvent) => {
@@ -143,6 +171,8 @@ export const SystemLogsModal: React.FC<SystemLogsModalProps> = ({
     }
   };
 
+  const effectivePending = queueItems.length || pendingSyncCount;
+
   return (
     <div
       onClick={onClose}
@@ -161,7 +191,7 @@ export const SystemLogsModal: React.FC<SystemLogsModalProps> = ({
                 Docker &amp; Server Systemdiagnose
               </h2>
               <span className="text-[11px] text-neutral-400 block truncate">
-                Synchronität, Serverstatus &amp; Echtzeit-Logs
+                Synchronität, Serverstatus &amp; erweiterte Diagnose-Logs
               </span>
             </div>
           </div>
@@ -186,7 +216,7 @@ export const SystemLogsModal: React.FC<SystemLogsModalProps> = ({
           </div>
         </div>
 
-        {/* Swipeable Tab Bar (matches Module Settings style, optimized touch-pan-x) */}
+        {/* Swipeable Tab Bar */}
         <div className="px-3 sm:px-4 py-2.5 border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#1A1C1F] shrink-0">
           <div
             data-no-tab-swipe
@@ -265,12 +295,12 @@ export const SystemLogsModal: React.FC<SystemLogsModalProps> = ({
                     className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${
                       !isOnline
                         ? 'bg-red-100 dark:bg-red-950/40 text-red-600'
-                        : pendingSyncCount > 0
-                        ? 'bg-amber-100 dark:bg-amber-950/40 text-amber-700'
+                        : effectivePending > 0
+                        ? 'bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300'
                         : 'bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
                     }`}
                   >
-                    {!isOnline ? 'Offline' : pendingSyncCount > 0 ? `${pendingSyncCount} ausstehend` : 'Synchron'}
+                    {!isOnline ? 'Offline' : effectivePending > 0 ? `${effectivePending} ausstehend` : 'Synchron'}
                   </span>
                 </div>
 
@@ -283,8 +313,14 @@ export const SystemLogsModal: React.FC<SystemLogsModalProps> = ({
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-neutral-500">Offline-Warteschlange:</span>
-                    <span className="font-semibold text-emerald-600 dark:text-emerald-400">
-                      {pendingSyncCount === 0 ? 'Alles synchron' : `${pendingSyncCount} ausstehend`}
+                    <span
+                      className={`font-semibold ${
+                        effectivePending === 0
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-amber-600 dark:text-amber-400'
+                      }`}
+                    >
+                      {effectivePending === 0 ? 'Alles synchron' : `${effectivePending} ausstehend`}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
@@ -294,6 +330,58 @@ export const SystemLogsModal: React.FC<SystemLogsModalProps> = ({
                     </span>
                   </div>
                 </div>
+
+                {queueItems.length > 0 && (
+                  <div className="pt-2.5 border-t border-[#E5E3DC] dark:border-[#2F3136] space-y-2">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <span className="text-[11px] font-bold text-amber-700 dark:text-amber-400">
+                        Ausstehende Einträge ({queueItems.length})
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={handleFlushQueueNow}
+                          disabled={syncingQueue || !isOnline}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[var(--ochre-accent)] text-white text-[11px] font-semibold hover:opacity-95 disabled:opacity-50 cursor-pointer"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${syncingQueue ? 'animate-spin' : ''}`} />
+                          <span>Jetzt synchronisieren</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleClearQueue}
+                          className="flex items-center gap-1 px-2 py-1 rounded-lg border border-red-300 dark:border-red-900/50 text-red-600 dark:text-red-400 text-[11px] font-semibold hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Leeren</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1 max-h-36 overflow-y-auto">
+                      {queueItems.map((q) => (
+                        <div
+                          key={q.id}
+                          className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#18191B] border border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2"
+                        >
+                          <div className="min-w-0">
+                            <span className="font-mono text-[10px] font-semibold text-neutral-800 dark:text-neutral-200 block truncate">
+                              {q.action}: {q.payload?.path || q.payload?.notePath || 'Element'}
+                            </span>
+                            {q.lastError && (
+                              <span className="text-[10px] text-amber-600 dark:text-amber-400 block truncate">
+                                {q.lastError} ({q.attempts || 0} Versuche)
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-neutral-400 shrink-0">
+                            {new Date(q.timestamp).toLocaleTimeString('de-DE')}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="p-3.5 rounded-2xl bg-[#FAF9F5] dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] space-y-3">
@@ -427,8 +515,8 @@ export const SystemLogsModal: React.FC<SystemLogsModalProps> = ({
           {/* TAB 3: LOGS */}
           {activeTab === 'logs' && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="px-4 py-2 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 shrink-0 bg-white dark:bg-[#18191B] flex-wrap">
-                <div className="flex items-center gap-1">
+              <div className="px-3 sm:px-4 py-2 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 shrink-0 bg-white dark:bg-[#18191B] flex-wrap">
+                <div className="flex items-center gap-1 flex-wrap">
                   <button
                     type="button"
                     onClick={() => setFilterLevel('all')}
@@ -462,6 +550,23 @@ export const SystemLogsModal: React.FC<SystemLogsModalProps> = ({
                   >
                     Warnungen ({logs.filter((l) => l.level === 'warn').length})
                   </button>
+
+                  <span className="w-px h-3.5 bg-[#E5E3DC] dark:bg-[#2F3136] mx-1" />
+
+                  {(['all', 'server', 'client'] as const).map((src) => (
+                    <button
+                      key={src}
+                      type="button"
+                      onClick={() => setSourceFilter(src)}
+                      className={`px-2 py-0.5 rounded text-[11px] transition-colors cursor-pointer ${
+                        sourceFilter === src
+                          ? 'bg-[var(--ochre-accent)] text-white font-semibold'
+                          : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+                      }`}
+                    >
+                      {src === 'all' ? 'Server+Client' : src === 'server' ? 'Server' : 'Client'}
+                    </button>
+                  ))}
                 </div>
 
                 <button
@@ -483,7 +588,7 @@ export const SystemLogsModal: React.FC<SystemLogsModalProps> = ({
                   filteredLogs.map((log) => (
                     <div key={log.id} className="flex items-start gap-2 border-b border-neutral-900/60 pb-1">
                       <span className="text-neutral-500 shrink-0 tabular-nums">
-                        {log.timestamp.split('T')[1].replace('Z', '')}
+                        {log.timestamp.split('T')[1]?.replace('Z', '') || log.timestamp}
                       </span>
 
                       <span

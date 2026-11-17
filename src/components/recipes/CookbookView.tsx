@@ -34,6 +34,9 @@ import {
   GitMerge,
   CheckCircle2,
   AlertTriangle,
+  Lock,
+  Globe,
+  Mail,
 } from 'lucide-react';
 import {
   User,
@@ -44,14 +47,24 @@ import {
   SharedMealPlan,
   CookbookTab,
   IngredientMeta,
+  MealPlanLibrary,
+  MealPlanInvitation,
+  MealSectionConfig,
 } from '../../types';
 import { api } from '../../services/api';
+import {
+  DEFAULT_MEAL_SECTIONS,
+  DEFAULT_MEAL_UNITS,
+  DEFAULT_WEEKDAY_COLORS,
+  MEAL_TYPE_OPTIONS,
+} from '../../services/profileDefaults';
 import { getScaledIngredientDisplay } from '../../services/portionScaling';
 import { generateWeeklyShoppingList } from '../../services/shoppingListService';
 import {
   collectIngredientsFromRecipes,
   findIngredientDuplicates,
   mergeIngredientInRecipes,
+  normalizeIngredientKey,
   IngredientDuplicatePair,
 } from '../../services/ingredientCatalogService';
 
@@ -96,7 +109,9 @@ interface CookbookViewProps {
   activeTab?: CookbookTab;
   onChangeTab?: (tab: CookbookTab) => void;
   enableShoppingList?: boolean;
+  mobileBarPosition?: 'top' | 'bottom';
   onShoppingListSettingLoaded?: (enabled: boolean) => void;
+  onCycleSettingLoaded?: (enabled: boolean) => void;
   onShareRecipe?: (recipe: Recipe) => void;
   onSnapshotChange?: (snapshot: CookbookSnapshot) => void;
 }
@@ -124,14 +139,121 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+function buildNormalizedSlots(
+  recipeIds: string[] | undefined,
+  slots: Record<string, string[]> | undefined,
+  sections: MealSectionConfig[]
+): Record<string, string[]> {
+  const result: Record<string, string[]> = {};
+  const listSections = sections.length > 0 ? sections : DEFAULT_MEAL_SECTIONS;
+  listSections.forEach((sec) => {
+    result[sec.id] = [];
+  });
+  const fallbackId = listSections[0]?.id || 'mittag';
+  const placed = new Set<string>();
+  if (slots) {
+    Object.entries(slots).forEach(([secId, list]) => {
+      if (!Array.isArray(list)) return;
+      const targetId = result[secId] ? secId : fallbackId;
+      list.forEach((rid) => {
+        if (rid && !result[targetId].includes(rid)) {
+          result[targetId].push(rid);
+          placed.add(rid);
+        }
+      });
+    });
+  }
+  (recipeIds || []).forEach((rid) => {
+    if (rid && !placed.has(rid)) {
+      if (!result[fallbackId]) result[fallbackId] = [];
+      result[fallbackId].push(rid);
+      placed.add(rid);
+    }
+  });
+  return result;
+}
+
+function flattenSlotsToRecipeIds(slots: Record<string, string[]>): string[] {
+  const set = new Set<string>();
+  Object.values(slots).forEach((arr) => {
+    if (Array.isArray(arr)) arr.forEach((id) => set.add(id));
+  });
+  return Array.from(set);
+}
+
+const UNIT_ALIAS_MAP: Record<string, string> = {
+  g: 'Gramm',
+  gr: 'Gramm',
+  gramm: 'Gramm',
+  kg: 'KG',
+  kilogramm: 'KG',
+  l: 'Liter',
+  liter: 'Liter',
+  ml: 'ml',
+  cl: 'ml',
+  pck: 'Päckchen',
+  packung: 'Päckchen',
+  paeckchen: 'Päckchen',
+  päckchen: 'Päckchen',
+  stk: 'Stück',
+  stück: 'Stück',
+  el: 'EL',
+  tl: 'TL',
+  bund: 'Bund',
+  prise: 'Prise',
+  prisen: 'Prise',
+  dose: 'Dose',
+  dosen: 'Dose',
+  becher: 'Becher',
+};
+
+function splitAmountValueAndUnit(
+  rawAmount: string,
+  availableUnits: string[]
+): { amount: string; unit: string } {
+  const trimmed = (rawAmount || '').trim();
+  if (!trimmed) return { amount: '', unit: '' };
+
+  const match = trimmed.match(/^(\d+(?:[.,]\d+)?(?:\s*\/\s*\d+)?)\s*([a-zA-ZäöüÄÖÜß.]+)?$/);
+  if (match) {
+    const numPart = (match[1] || '').trim();
+    const unitRaw = (match[2] || '').replace(/\.+$/, '').trim();
+    if (!unitRaw) {
+      return { amount: numPart, unit: '' };
+    }
+    const lowerUnit = unitRaw.toLowerCase();
+    const directMatch = availableUnits.find((u) => u.toLowerCase() === lowerUnit);
+    if (directMatch) {
+      return { amount: numPart, unit: directMatch };
+    }
+    const aliased = UNIT_ALIAS_MAP[lowerUnit];
+    if (aliased) {
+      const configuredAlias = availableUnits.find((u) => u.toLowerCase() === aliased.toLowerCase());
+      return { amount: numPart, unit: configuredAlias || aliased };
+    }
+    return { amount: trimmed, unit: '' };
+  }
+
+  // Fallback if entire string happens to equal a unit name (e.g., "Prise")
+  const exactUnit = availableUnits.find((u) => u.toLowerCase() === trimmed.toLowerCase());
+  if (exactUnit) {
+    return { amount: '1', unit: exactUnit };
+  }
+
+  return { amount: trimmed, unit: '' };
+}
+
 export const CookbookView: React.FC<CookbookViewProps> = ({
   currentUser,
+  allUsers,
   accentColor = '#C26D2D',
   refreshKey = 0,
   activeTab: controlledTab,
   onChangeTab,
   enableShoppingList = true,
+  mobileBarPosition = 'top',
   onShoppingListSettingLoaded,
+  onCycleSettingLoaded,
   onShareRecipe,
   onSnapshotChange,
 }) => {
@@ -146,6 +268,16 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
   );
 
   const [loading, setLoading] = useState(true);
+  const [hasLibrary, setHasLibrary] = useState<boolean>(true);
+  const [mealLibrary, setMealLibrary] = useState<MealPlanLibrary | null>(null);
+  const [pendingInvitations, setPendingInvitations] = useState<MealPlanInvitation[]>([]);
+
+  // Library onboarding state when user has no library yet
+  const [newLibName, setNewLibName] = useState<string>(`Essensplan von ${currentUser.displayName}`);
+  const [newLibVisibility, setNewLibVisibility] = useState<'private' | 'shared'>('private');
+  const [newLibInvited, setNewLibInvited] = useState<string[]>([]);
+  const [libActionLoading, setLibActionLoading] = useState<boolean>(false);
+  const [libActionError, setLibActionError] = useState<string | null>(null);
 
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
@@ -153,16 +285,26 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
   const [overrides, setOverrides] = useState<Record<string, MealCalendarOverride>>({});
   const [defaultCyclePortions, setDefaultCyclePortions] = useState<number>(2);
   const [serverShoppingEnabled, setServerShoppingEnabled] = useState<boolean>(true);
+  const [enableCycle, setEnableCycle] = useState<boolean>(true);
+  const [mealSections, setMealSections] = useState<MealSectionConfig[]>(DEFAULT_MEAL_SECTIONS);
+  const [availableUnits, setAvailableUnits] = useState<string[]>(DEFAULT_MEAL_UNITS);
+  const [weekdayColors, setWeekdayColors] = useState<Record<string, string>>(DEFAULT_WEEKDAY_COLORS);
   const [ingredientMeta, setIngredientMeta] = useState<Record<string, IngredientMeta>>({});
   const [dismissedDuplicates, setDismissedDuplicates] = useState<string[]>([]);
   const [sharedCatalogs, setSharedCatalogs] = useState<SharedCookbookCatalog[]>([]);
   const [sharedPlans, setSharedPlans] = useState<SharedMealPlan[]>([]);
 
-  // Katalog Sub-Switcher: Tellergerichte | Zutaten
+  // Katalog Sub-Switcher: Tellergerichte | Zutaten + Duplikate-Manager Modal + Standalone Zutat Modal
   const [catalogSubTab, setCatalogSubTab] = useState<'dishes' | 'ingredients'>('dishes');
   const [ingredientSearch, setIngredientSearch] = useState<string>('');
   const [ingredientFilter, setIngredientFilter] = useState<'all' | 'active' | 'excluded'>('all');
   const [duplicateMasterChoices, setDuplicateMasterChoices] = useState<Record<string, 'left' | 'right'>>({});
+  const [showDuplicatesModal, setShowDuplicatesModal] = useState<boolean>(false);
+  const [showAddIngredientModal, setShowAddIngredientModal] = useState<boolean>(false);
+  const [newIngredientName, setNewIngredientName] = useState<string>('');
+  const [newIngredientUnit, setNewIngredientUnit] = useState<string>('Gramm');
+  const [newIngredientExcludeShopping, setNewIngredientExcludeShopping] = useState<boolean>(false);
+  const [newIngredientError, setNewIngredientError] = useState<string | null>(null);
 
   // Active filters & source selection
   const [catalogSource, setCatalogSource] = useState<string>('own');
@@ -181,16 +323,33 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
   const [isOverlayFileDragOver, setIsOverlayFileDragOver] = useState<boolean>(false);
   const [dragOverCardId, setDragOverCardId] = useState<string | null>(null);
 
-  // Create/Edit Recipe Modal (with structured Komponenten & "Keine Einkaufsliste" switch)
+  // Create/Edit Recipe Modal (Tabbed & Controlled: Rezept | Kategorie & Zeit | Verfügbarkeit)
   const [editingRecipe, setEditingRecipe] = useState<Recipe | null>(null);
   const [isRecipeModalOpen, setIsRecipeModalOpen] = useState(false);
-  const [formComponents, setFormComponents] = useState<{ id: string; name: string; amount: string }[]>([]);
-  const [formExcludeFromShoppingList, setFormExcludeFromShoppingList] = useState<boolean>(false);
+  const [recipeFormTab, setRecipeFormTab] = useState<'recipe' | 'category' | 'availability'>('recipe');
+  const [formTitle, setFormTitle] = useState<string>('');
+  const [formDescription, setFormDescription] = useState<string>('');
+  const [formInstructions, setFormInstructions] = useState<string>('');
+  const [formCategory, setFormCategory] = useState<string>('Mittagessen');
+  const [formCustomCategory, setFormCustomCategory] = useState<string>('');
+  const [formPrepTime, setFormPrepTime] = useState<string>('25');
+  const [formPortions, setFormPortions] = useState<string>('2');
+  const [formComponents, setFormComponents] = useState<
+    { id: string; name: string; amount: string; unit: string }[]
+  >([]);
+  const [formMealTypes, setFormMealTypes] = useState<string[]>([]);
   const [bulkComponentsMode, setBulkComponentsMode] = useState<boolean>(false);
   const [bulkComponentsText, setBulkComponentsText] = useState<string>('');
+  const [ingredientPickerQuery, setIngredientPickerQuery] = useState<string>('');
+  const [showIngredientDropdown, setShowIngredientDropdown] = useState<boolean>(false);
+  const [formValidationError, setFormValidationError] = useState<string | null>(null);
 
-  // Cycle Mobile/Tablet "+ Gericht hinzufügen" -> Top-Anchored Light Katalog Overlay
-  const [cyclePickerDayIndex, setCyclePickerDayIndex] = useState<number | null>(null);
+  // Mobile/Tablet "+ Gericht hinzufügen" -> Top-Anchored Light Katalog Overlay (for Calendar & Cycle sections)
+  const [pickerTarget, setPickerTarget] = useState<
+    | { mode: 'cycle'; dayIndex: number; sectionId: string }
+    | { mode: 'calendar'; dateIso: string; sectionId: string }
+    | null
+  >(null);
   const [cyclePickerSearch, setCyclePickerSearch] = useState<string>('');
   const [cyclePickerCategory, setCyclePickerCategory] = useState<string>('all');
 
@@ -203,9 +362,10 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
   const presentationScrollRef = useRef<HTMLDivElement>(null);
   const presentationDayRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  // Mobile/Tablet Left Katalog Drawer & 20%-Retract Drag State
+  // Mobile/Tablet Left Katalog Drawer & 1:1 Pixel-Launcher Finger Swipe + 20%-Retract Drag State
   const [isLightCatalogOpen, setIsLightCatalogOpen] = useState<boolean>(false);
   const [isLightCatalogRetracted, setIsLightCatalogRetracted] = useState<boolean>(false);
+  const [catalogDragX, setCatalogDragX] = useState<number | null>(null);
   const [isMobileNavExpanded, setIsMobileNavExpanded] = useState<boolean>(false);
   const [weekOffset, setWeekOffset] = useState<number>(0);
 
@@ -217,6 +377,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     y: number;
     hoverDate: string | null;
     hoverCycleDay: number | null;
+    hoverSectionId: string | null;
   } | null>(null);
 
   const pointerDragOriginRef = useRef<{
@@ -228,37 +389,78 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     pointerId: number;
   } | null>(null);
 
-  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const catalogSwipeRef = useRef<{
+    startX: number;
+    startY: number;
+    initialX: number;
+    currentX: number;
+    lastX: number;
+    lastTime: number;
+    isTracking: boolean;
+    lockedAxis: 'horizontal' | 'vertical' | null;
+  } | null>(null);
+  const [recentDropFlash, setRecentDropFlash] = useState<{
+    slotKey: string;
+    targetKey: string;
+    recipeId: string;
+  } | null>(null);
+  const dropFlashTimerRef = useRef<number | null>(null);
+
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
 
-  // Sync Recipe Create/Edit form fields whenever modal opens
+  // Sync Recipe Create/Edit controlled form fields whenever modal opens
   useEffect(() => {
     if (!isRecipeModalOpen) return;
+    setRecipeFormTab('recipe');
+    setFormValidationError(null);
+    setIngredientPickerQuery('');
+    setShowIngredientDropdown(false);
     if (editingRecipe) {
       const initialComps =
         editingRecipe.ingredients && editingRecipe.ingredients.length > 0
-          ? editingRecipe.ingredients.map((i, idx) => ({
-              id: i.id || `comp_${Date.now()}_${idx}`,
-              name: i.name || '',
-              amount: i.amount || '',
-            }))
-          : [{ id: `comp_${Date.now()}_0`, name: '', amount: '' }];
+          ? editingRecipe.ingredients.map((i, idx) => {
+              const split = splitAmountValueAndUnit(i.amount || '', availableUnits);
+              return {
+                id: i.id || `comp_${Date.now()}_${idx}`,
+                name: i.name || '',
+                amount: split.amount,
+                unit: split.unit,
+              };
+            })
+          : [];
+      setFormTitle(editingRecipe.title || '');
+      setFormDescription(editingRecipe.description || '');
+      setFormInstructions((editingRecipe.instructions || []).join('\n'));
+      setFormCategory(editingRecipe.category || categories[0] || 'Mittagessen');
+      setFormCustomCategory('');
+      setFormPrepTime(String(editingRecipe.prepTimeMinutes || 25));
+      setFormPortions(String(editingRecipe.portions || defaultCyclePortions || 2));
       setFormComponents(initialComps);
-      setFormExcludeFromShoppingList(!!editingRecipe.excludeFromShoppingList);
+      setFormMealTypes(editingRecipe.mealTypes || []);
       setBulkComponentsText(
         initialComps
           .filter((c) => c.name.trim())
-          .map((c) => (c.amount.trim() ? `${c.name} | ${c.amount}` : c.name))
+          .map((c) => {
+            const combined = [c.amount.trim(), c.unit.trim()].filter(Boolean).join(' ');
+            return combined ? `${c.name} | ${combined}` : c.name;
+          })
           .join('\n')
       );
     } else {
-      setFormComponents([{ id: `comp_${Date.now()}_0`, name: '', amount: '' }]);
-      setFormExcludeFromShoppingList(false);
+      setFormTitle('');
+      setFormDescription('');
+      setFormInstructions('');
+      setFormCategory(categories[0] || 'Mittagessen');
+      setFormCustomCategory('');
+      setFormPrepTime('25');
+      setFormPortions(String(defaultCyclePortions || 2));
+      setFormComponents([]);
+      setFormMealTypes([]);
       setBulkComponentsText('');
     }
     setBulkComponentsMode(false);
-  }, [isRecipeModalOpen, editingRecipe]);
+  }, [isRecipeModalOpen, editingRecipe, availableUnits, categories, defaultCyclePortions]);
 
   // Open Recipe Overlay helper (allows passing specific target portions from Calendar/Cycle)
   const openRecipeOverlay = useCallback((recipe: Recipe, targetPortions?: number) => {
@@ -268,21 +470,41 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     setLightboxImageUrl(null);
   }, []);
 
-  // Load user's cookbook + shared catalogs/plans from backend
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    api
-      .fetchCookbook(currentUser.username)
-      .then((data) => {
-        if (cancelled) return;
+  const loadCookbookData = useCallback(
+    async (isCancelled?: () => boolean) => {
+      setLoading(true);
+      try {
+        const data = await api.fetchCookbook(currentUser.username);
+        if (isCancelled?.()) return;
+        const libraryActive = data.hasLibrary !== false;
+        setHasLibrary(libraryActive);
+        setMealLibrary(data.library || null);
+        setPendingInvitations(data.invitations || []);
+        setNewLibName(`Essensplan von ${currentUser.displayName}`);
         setRecipes(data.recipes || []);
         setCategories(data.categories?.length ? data.categories : DEFAULT_CATEGORIES);
         const defP = Math.max(1, data.settings?.defaultCyclePortions || data.cycle?.defaultPortions || 2);
         const shopEnabled = data.settings?.enableShoppingList !== false;
+        const cycleEnabled = data.settings?.enableCycle !== false;
         setDefaultCyclePortions(defP);
         setServerShoppingEnabled(shopEnabled);
+        setEnableCycle(cycleEnabled);
         onShoppingListSettingLoaded?.(shopEnabled);
+        onCycleSettingLoaded?.(cycleEnabled);
+        setMealSections(
+          data.settings?.mealSections && data.settings.mealSections.length > 0
+            ? data.settings.mealSections
+            : DEFAULT_MEAL_SECTIONS
+        );
+        setAvailableUnits(
+          data.settings?.units && data.settings.units.length > 0
+            ? data.settings.units
+            : DEFAULT_MEAL_UNITS
+        );
+        setWeekdayColors({
+          ...DEFAULT_WEEKDAY_COLORS,
+          ...(data.settings?.weekdayColors || {}),
+        });
         setCycle(data.cycle || EMPTY_CYCLE);
         setOverrides(data.overrides || {});
         setIngredientMeta(data.ingredientMeta || {});
@@ -291,24 +513,34 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
         setSharedPlans(data.sharedPlans || []);
         setCatalogSource('own');
         setPlanOwner('own');
-      })
-      .catch((err) => console.error('Fehler beim Laden des Kochbuchs:', err))
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+      } catch (err) {
+        console.error('Fehler beim Laden des Essensplans:', err);
+      } finally {
+        if (!isCancelled?.()) setLoading(false);
+      }
+    },
+    [currentUser.username, currentUser.displayName, onShoppingListSettingLoaded, onCycleSettingLoaded]
+  );
+
+  // Load user's Essensplan + shared catalogs/plans from backend
+  useEffect(() => {
+    let cancelled = false;
+    loadCookbookData(() => cancelled);
     return () => {
       cancelled = true;
     };
-  }, [currentUser.username, refreshKey, onShoppingListSettingLoaded]);
+  }, [loadCookbookData, refreshKey]);
 
   const effectiveShoppingEnabled = enableShoppingList && serverShoppingEnabled;
 
-  // Redirect away from 'shopping' if Einkaufsliste feature is disabled in settings
+  // Redirect away from 'shopping' or 'cycle' if disabled in settings
   useEffect(() => {
     if (!effectiveShoppingEnabled && activeTab === 'shopping') {
       setActiveTab('calendar');
+    } else if (!enableCycle && activeTab === 'cycle') {
+      setActiveTab('calendar');
     }
-  }, [effectiveShoppingEnabled, activeTab, setActiveTab]);
+  }, [effectiveShoppingEnabled, enableCycle, activeTab, setActiveTab]);
 
   // Persistence helper
   const persistCookbook = useCallback(
@@ -458,9 +690,12 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       const cycleDay = displayedCycle.days.find((cd) => cd.dayIndex === cycleIndex);
 
       const isOverridden = !!displayedOverrides[iso];
-      const activeRecipeIds = isOverridden
-        ? displayedOverrides[iso].recipeIds
-        : cycleDay?.recipeIds || [];
+      const daySlots = buildNormalizedSlots(
+        isOverridden ? displayedOverrides[iso].recipeIds : cycleDay?.recipeIds,
+        isOverridden ? displayedOverrides[iso].slots : cycleDay?.slots,
+        mealSections
+      );
+      const activeRecipeIds = flattenSlotsToRecipeIds(daySlots);
       const dayPortions =
         (isOverridden ? displayedOverrides[iso]?.portions : undefined) ??
         cycleDay?.portions ??
@@ -470,17 +705,19 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       days.push({
         date: iso,
         dateObj: d,
+        isoWeekday: String(d.getDay()),
         weekday: d.toLocaleDateString('de-DE', { weekday: 'short' }),
         dayMonth: d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }),
         isToday: iso === new Date().toISOString().split('T')[0],
         cycleDayIndex: cycleIndex,
         isOverridden,
+        slots: daySlots,
         recipeIds: activeRecipeIds,
         portions: dayPortions,
       });
     }
     return days;
-  }, [displayedCycle, displayedOverrides, weekOffset, defaultCyclePortions]);
+  }, [displayedCycle, displayedOverrides, weekOffset, defaultCyclePortions, mealSections]);
 
   const calendarDays = useMemo(() => getCalendarDays(), [getCalendarDays]);
 
@@ -571,6 +808,60 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     [ingredientMeta, persistCookbook]
   );
 
+  const handleCreateStandaloneIngredient = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      const trimmed = newIngredientName.trim();
+      if (!trimmed) {
+        setNewIngredientError('Bitte einen Zutatennamen eingeben.');
+        return;
+      }
+      const key = normalizeIngredientKey(trimmed);
+      if (!key) {
+        setNewIngredientError('Bitte einen gültigen Zutatennamen eingeben.');
+        return;
+      }
+      const alreadyExists = collectedIngredients.some((ing) => ing.key === key);
+      if (alreadyExists) {
+        setNewIngredientError(`„${trimmed}“ ist bereits in den Zutaten vorhanden.`);
+        return;
+      }
+
+      const nextMeta: Record<string, IngredientMeta> = {
+        ...ingredientMeta,
+        [key]: {
+          key,
+          displayName: trimmed,
+          defaultUnit: newIngredientUnit || undefined,
+          excludeFromShoppingList: newIngredientExcludeShopping,
+          isCustom: true,
+        },
+      };
+      persistCookbook({ ingredientMeta: nextMeta });
+      setNewIngredientName('');
+      setNewIngredientError(null);
+      setNewIngredientExcludeShopping(false);
+      setShowAddIngredientModal(false);
+    },
+    [
+      newIngredientName,
+      newIngredientUnit,
+      newIngredientExcludeShopping,
+      collectedIngredients,
+      ingredientMeta,
+      persistCookbook,
+    ]
+  );
+
+  const handleDeleteUnusedIngredient = useCallback(
+    (key: string) => {
+      const nextMeta = { ...ingredientMeta };
+      delete nextMeta[key];
+      persistCookbook({ ingredientMeta: nextMeta });
+    },
+    [ingredientMeta, persistCookbook]
+  );
+
   const handleKeepBothDuplicates = useCallback(
     (pairKey: string) => {
       const nextDismissed = Array.from(new Set([...dismissedDuplicates, pairKey]));
@@ -623,51 +914,115 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     return () => window.clearInterval(timer);
   }, [activeTab, presentationAutoPlay]);
 
-  // Toggle recipe assignment in Cycle day (used by Cycle Mobile Light Katalog Overlay)
-  const handleToggleRecipeInCycleDay = useCallback(
-    (dayIndex: number, recipeId: string) => {
-      if (isViewingSharedPlan || !recipeId) return;
-      const updated = cycle.days.map((d) => {
-        if (d.dayIndex !== dayIndex) return d;
-        const exists = d.recipeIds.includes(recipeId);
-        return {
-          ...d,
-          recipeIds: exists ? d.recipeIds.filter((id) => id !== recipeId) : [...d.recipeIds, recipeId],
-          portions: d.portions ?? defaultCyclePortions,
-        };
-      });
-      persistCookbook({ cycle: { ...cycle, days: updated } });
+  const triggerDropFlash = useCallback(
+    (scopeKey: string, sectionId: string, recipeId: string) => {
+      const sec = sectionId || mealSections[0]?.id || 'mittag';
+      const slotKey = `${scopeKey}__${sec}`;
+      const targetKey = `${slotKey}__${recipeId}`;
+      if (dropFlashTimerRef.current) window.clearTimeout(dropFlashTimerRef.current);
+      setRecentDropFlash({ slotKey, targetKey, recipeId });
+      dropFlashTimerRef.current = window.setTimeout(() => {
+        setRecentDropFlash(null);
+      }, 1300);
     },
-    [isViewingSharedPlan, cycle, defaultCyclePortions, persistCookbook]
+    [mealSections]
   );
 
-  // Toggle "Keine Einkaufsliste" directly on an own recipe
-  const handleToggleExcludeFromShoppingList = useCallback(
-    (recipe: Recipe) => {
-      const isOwn = !recipe.sharedFrom && recipes.some((r) => r.id === recipe.id);
-      if (!isOwn) return;
-      const nextVal = !recipe.excludeFromShoppingList;
-      const nextRecipes = recipes.map((r) =>
-        r.id === recipe.id ? { ...r, excludeFromShoppingList: nextVal } : r
-      );
-      persistCookbook({ recipes: nextRecipes });
+  // Toggle recipe assignment in a section of Cycle day or Calendar date (used by Mobile Light Katalog Overlay)
+  const handleToggleRecipeInTarget = useCallback(
+    (
+      target:
+        | { mode: 'cycle'; dayIndex: number; sectionId: string }
+        | { mode: 'calendar'; dateIso: string; sectionId: string },
+      recipeId: string
+    ) => {
+      if (isViewingSharedPlan || !recipeId) return;
+      const fallbackSection = mealSections[0]?.id || 'mittag';
+      if (target.mode === 'cycle') {
+        let wasAdded = false;
+        const secId = target.sectionId || fallbackSection;
+        const updated = cycle.days.map((d) => {
+          if (d.dayIndex !== target.dayIndex) return d;
+          const slots = buildNormalizedSlots(d.recipeIds, d.slots, mealSections);
+          const list = slots[secId] || [];
+          const exists = list.includes(recipeId);
+          wasAdded = !exists;
+          slots[secId] = exists
+            ? list.filter((id) => id !== recipeId)
+            : [...list, recipeId];
+          return {
+            ...d,
+            slots,
+            recipeIds: flattenSlotsToRecipeIds(slots),
+            portions: d.portions ?? defaultCyclePortions,
+          };
+        });
+        persistCookbook({ cycle: { ...cycle, days: updated } });
+        if (wasAdded) triggerDropFlash(String(target.dayIndex), secId, recipeId);
+      } else {
+        const dayObj = calendarDays.find((d) => d.date === target.dateIso);
+        const existingOv = overrides[target.dateIso];
+        const slots = buildNormalizedSlots(
+          existingOv ? existingOv.recipeIds : dayObj?.recipeIds,
+          existingOv ? existingOv.slots : dayObj?.slots,
+          mealSections
+        );
+        const secId = target.sectionId || fallbackSection;
+        const list = slots[secId] || [];
+        const exists = list.includes(recipeId);
+        slots[secId] = exists
+          ? list.filter((id) => id !== recipeId)
+          : [...list, recipeId];
+        const nextOverrides = {
+          ...overrides,
+          [target.dateIso]: {
+            date: target.dateIso,
+            slots,
+            recipeIds: flattenSlotsToRecipeIds(slots),
+            portions: existingOv?.portions ?? dayObj?.portions ?? defaultCyclePortions,
+            isOneTimeChange: true,
+            note: 'Kurzfristig angepasst',
+          },
+        };
+        persistCookbook({ overrides: nextOverrides });
+        if (!exists) triggerDropFlash(target.dateIso, secId, recipeId);
+      }
     },
-    [recipes, persistCookbook]
+    [
+      isViewingSharedPlan,
+      mealSections,
+      cycle,
+      calendarDays,
+      overrides,
+      defaultCyclePortions,
+      persistCookbook,
+      triggerDropFlash,
+    ]
   );
 
   const handleAssignRecipeToDate = useCallback(
-    (dateIso: string, recipeId: string) => {
+    (dateIso: string, recipeId: string, sectionId?: string) => {
       if (isViewingSharedPlan || !recipeId) return;
       const dayObj = calendarDays.find((d) => d.date === dateIso);
-      const currentList = overrides[dateIso]?.recipeIds || dayObj?.recipeIds || [];
-      const currentPortions = overrides[dateIso]?.portions ?? dayObj?.portions ?? defaultCyclePortions;
+      const existingOv = overrides[dateIso];
+      const slots = buildNormalizedSlots(
+        existingOv ? existingOv.recipeIds : dayObj?.recipeIds,
+        existingOv ? existingOv.slots : dayObj?.slots,
+        mealSections
+      );
+      const targetSection = sectionId || mealSections[0]?.id || 'mittag';
+      if (!slots[targetSection]) slots[targetSection] = [];
+      if (!slots[targetSection].includes(recipeId)) {
+        slots[targetSection] = [...slots[targetSection], recipeId];
+      }
+      const currentPortions = existingOv?.portions ?? dayObj?.portions ?? defaultCyclePortions;
 
-      const updatedList = Array.from(new Set([...currentList, recipeId]));
       const nextOverrides = {
         ...overrides,
         [dateIso]: {
           date: dateIso,
-          recipeIds: updatedList,
+          slots,
+          recipeIds: flattenSlotsToRecipeIds(slots),
           portions: currentPortions,
           isOneTimeChange: true,
           note: 'Kurzfristig angepasst',
@@ -675,36 +1030,46 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       };
       persistCookbook({ overrides: nextOverrides });
     },
-    [isViewingSharedPlan, calendarDays, overrides, defaultCyclePortions, persistCookbook]
+    [isViewingSharedPlan, calendarDays, overrides, mealSections, defaultCyclePortions, persistCookbook]
   );
 
   const handleAssignRecipeToCycleDay = useCallback(
-    (dayIndex: number, recipeId: string) => {
+    (dayIndex: number, recipeId: string, sectionId?: string) => {
       if (isViewingSharedPlan || !recipeId) return;
-      const updated = cycle.days.map((d) =>
-        d.dayIndex === dayIndex
-          ? {
-              ...d,
-              recipeIds: Array.from(new Set([...d.recipeIds, recipeId])),
-              portions: d.portions ?? defaultCyclePortions,
-            }
-          : d
-      );
+      const targetSection = sectionId || mealSections[0]?.id || 'mittag';
+      const updated = cycle.days.map((d) => {
+        if (d.dayIndex !== dayIndex) return d;
+        const slots = buildNormalizedSlots(d.recipeIds, d.slots, mealSections);
+        if (!slots[targetSection]) slots[targetSection] = [];
+        if (!slots[targetSection].includes(recipeId)) {
+          slots[targetSection] = [...slots[targetSection], recipeId];
+        }
+        return {
+          ...d,
+          slots,
+          recipeIds: flattenSlotsToRecipeIds(slots),
+          portions: d.portions ?? defaultCyclePortions,
+        };
+      });
       persistCookbook({ cycle: { ...cycle, days: updated } });
     },
-    [isViewingSharedPlan, cycle, defaultCyclePortions, persistCookbook]
+    [isViewingSharedPlan, cycle, mealSections, defaultCyclePortions, persistCookbook]
   );
 
-  const handleDropOnDate = (dateIso: string) => {
+  const handleDropOnDate = (dateIso: string, sectionId?: string) => {
     if (!draggedRecipeId || isViewingSharedPlan) return;
-    handleAssignRecipeToDate(dateIso, draggedRecipeId);
+    const sec = sectionId || mealSections[0]?.id || 'mittag';
+    handleAssignRecipeToDate(dateIso, draggedRecipeId, sec);
+    triggerDropFlash(dateIso, sec, draggedRecipeId);
     setDraggedRecipeId(null);
     setIsLightCatalogRetracted(false);
   };
 
-  const handleDropOnCycleDay = (dayIndex: number) => {
+  const handleDropOnCycleDay = (dayIndex: number, sectionId?: string) => {
     if (!draggedRecipeId || isViewingSharedPlan) return;
-    handleAssignRecipeToCycleDay(dayIndex, draggedRecipeId);
+    const sec = sectionId || mealSections[0]?.id || 'mittag';
+    handleAssignRecipeToCycleDay(dayIndex, draggedRecipeId, sec);
+    triggerDropFlash(String(dayIndex), sec, draggedRecipeId);
     setDraggedRecipeId(null);
     setIsLightCatalogRetracted(false);
   };
@@ -713,14 +1078,20 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     if (isViewingSharedPlan) return;
     const clamped = Math.max(1, Math.min(24, nextPortions));
     const dayObj = calendarDays.find((d) => d.date === dateIso);
-    const currentIds = overrides[dateIso]?.recipeIds ?? dayObj?.recipeIds ?? [];
+    const existingOv = overrides[dateIso];
+    const slots = buildNormalizedSlots(
+      existingOv ? existingOv.recipeIds : dayObj?.recipeIds,
+      existingOv ? existingOv.slots : dayObj?.slots,
+      mealSections
+    );
     const nextOverrides = {
       ...overrides,
       [dateIso]: {
         date: dateIso,
-        recipeIds: currentIds,
+        slots,
+        recipeIds: flattenSlotsToRecipeIds(slots),
         portions: clamped,
-        isOneTimeChange: overrides[dateIso]?.isOneTimeChange ?? false,
+        isOneTimeChange: existingOv?.isOneTimeChange ?? false,
       },
     };
     persistCookbook({ overrides: nextOverrides });
@@ -735,21 +1106,54 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     persistCookbook({ cycle: { ...cycle, days: updated } });
   };
 
-  const handleRemoveFromDate = (dateIso: string, recipeId: string) => {
+  const handleRemoveFromDate = (dateIso: string, recipeId: string, sectionId?: string) => {
     if (isViewingSharedPlan) return;
     const dayObj = calendarDays.find((d) => d.date === dateIso);
-    const current = overrides[dateIso]?.recipeIds || dayObj?.recipeIds || [];
-    const filtered = current.filter((id) => id !== recipeId);
+    const existingOv = overrides[dateIso];
+    const slots = buildNormalizedSlots(
+      existingOv ? existingOv.recipeIds : dayObj?.recipeIds,
+      existingOv ? existingOv.slots : dayObj?.slots,
+      mealSections
+    );
+    if (sectionId && slots[sectionId]) {
+      slots[sectionId] = slots[sectionId].filter((id) => id !== recipeId);
+    } else {
+      Object.keys(slots).forEach((k) => {
+        slots[k] = slots[k].filter((id) => id !== recipeId);
+      });
+    }
     const nextOverrides = {
       ...overrides,
       [dateIso]: {
         date: dateIso,
-        recipeIds: filtered,
-        portions: overrides[dateIso]?.portions ?? dayObj?.portions ?? defaultCyclePortions,
+        slots,
+        recipeIds: flattenSlotsToRecipeIds(slots),
+        portions: existingOv?.portions ?? dayObj?.portions ?? defaultCyclePortions,
         isOneTimeChange: true,
       },
     };
     persistCookbook({ overrides: nextOverrides });
+  };
+
+  const handleRemoveFromCycleDay = (dayIndex: number, recipeId: string, sectionId?: string) => {
+    if (isViewingSharedPlan) return;
+    const updated = cycle.days.map((d) => {
+      if (d.dayIndex !== dayIndex) return d;
+      const slots = buildNormalizedSlots(d.recipeIds, d.slots, mealSections);
+      if (sectionId && slots[sectionId]) {
+        slots[sectionId] = slots[sectionId].filter((id) => id !== recipeId);
+      } else {
+        Object.keys(slots).forEach((k) => {
+          slots[k] = slots[k].filter((id) => id !== recipeId);
+        });
+      }
+      return {
+        ...d,
+        slots,
+        recipeIds: flattenSlotsToRecipeIds(slots),
+      };
+    });
+    persistCookbook({ cycle: { ...cycle, days: updated } });
   };
 
   const handleResetDateToCycle = (dateIso: string) => {
@@ -865,20 +1269,23 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
 
       if (e.cancelable) e.preventDefault();
 
-      // Hit-test Calendar or Cycle target underneath pointer
+      // Hit-test Calendar or Cycle target + section underneath pointer
       let hoverDate: string | null = null;
       let hoverCycleDay: number | null = null;
+      let hoverSectionId: string | null = null;
       const els = document.elementsFromPoint(e.clientX, e.clientY);
       for (const el of els) {
+        const sAttr = el.getAttribute?.('data-drop-section');
+        if (sAttr && !hoverSectionId) {
+          hoverSectionId = sAttr;
+        }
         const dAttr = el.getAttribute?.('data-drop-date');
-        if (dAttr) {
+        if (dAttr && !hoverDate) {
           hoverDate = dAttr;
-          break;
         }
         const cAttr = el.getAttribute?.('data-drop-cycleday');
-        if (cAttr !== null && cAttr !== undefined && cAttr !== '') {
+        if (cAttr !== null && cAttr !== undefined && cAttr !== '' && hoverCycleDay === null) {
           hoverCycleDay = parseInt(cAttr, 10);
-          break;
         }
       }
 
@@ -888,6 +1295,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
         y: e.clientY,
         hoverDate,
         hoverCycleDay,
+        hoverSectionId,
       });
     };
 
@@ -899,23 +1307,26 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
         const els = document.elementsFromPoint(e.clientX, e.clientY);
         let droppedDate: string | null = null;
         let droppedCycleDay: number | null = null;
+        let droppedSectionId: string | undefined = undefined;
         for (const el of els) {
+          const sAttr = el.getAttribute?.('data-drop-section');
+          if (sAttr && !droppedSectionId) {
+            droppedSectionId = sAttr;
+          }
           const dAttr = el.getAttribute?.('data-drop-date');
-          if (dAttr) {
+          if (dAttr && !droppedDate) {
             droppedDate = dAttr;
-            break;
           }
           const cAttr = el.getAttribute?.('data-drop-cycleday');
-          if (cAttr !== null && cAttr !== undefined && cAttr !== '') {
+          if (cAttr !== null && cAttr !== undefined && cAttr !== '' && droppedCycleDay === null) {
             droppedCycleDay = parseInt(cAttr, 10);
-            break;
           }
         }
 
         if (droppedDate) {
-          handleAssignRecipeToDate(droppedDate, origin.recipe.id);
+          handleAssignRecipeToDate(droppedDate, origin.recipe.id, droppedSectionId);
         } else if (droppedCycleDay !== null && !Number.isNaN(droppedCycleDay)) {
-          handleAssignRecipeToCycleDay(droppedCycleDay, origin.recipe.id);
+          handleAssignRecipeToCycleDay(droppedCycleDay, origin.recipe.id, droppedSectionId);
         }
       }
 
@@ -935,37 +1346,103 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     };
   }, [handleAssignRecipeToDate, handleAssignRecipeToCycleDay]);
 
-  // Mobile/Tablet swipe gesture from left edge to pull in / close Katalog
+  // Mobile/Tablet Pixel-Launcher 1:1 finger-tracked swipe for left Katalog Drawer
   useEffect(() => {
-    if (activeTab !== 'calendar' && activeTab !== 'cycle') return;
+    if (!hasLibrary || (activeTab !== 'calendar' && activeTab !== 'cycle')) return;
+    const DRAWER_W = 300;
     const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1 || pointerDragOriginRef.current?.active) return;
       const target = e.target as HTMLElement | null;
-      if (target?.closest('[data-grip-drag]') || target?.closest('input') || target?.closest('select')) {
-        swipeStartRef.current = null;
+      if (
+        target?.closest('[data-grip-drag]') ||
+        target?.closest('[data-no-swipe="true"]') ||
+        target?.closest('input') ||
+        target?.closest('select') ||
+        target?.closest('textarea')
+      ) {
+        catalogSwipeRef.current = null;
         return;
       }
-      swipeStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      const x = e.touches[0].clientX;
+      const y = e.touches[0].clientY;
+      if (!isLightCatalogOpen && x > 44) {
+        catalogSwipeRef.current = null;
+        return;
+      }
+      if (isLightCatalogOpen && x > DRAWER_W + 40) {
+        catalogSwipeRef.current = null;
+        return;
+      }
+      const initialX = isLightCatalogOpen ? 0 : -DRAWER_W;
+      catalogSwipeRef.current = {
+        startX: x,
+        startY: y,
+        initialX,
+        currentX: initialX,
+        lastX: x,
+        lastTime: performance.now(),
+        isTracking: false,
+        lockedAxis: null,
+      };
     };
-    const onTouchEnd = (e: TouchEvent) => {
-      if (!swipeStartRef.current) return;
-      const dx = e.changedTouches[0].clientX - swipeStartRef.current.x;
-      const dy = e.changedTouches[0].clientY - swipeStartRef.current.y;
-      if (Math.abs(dx) > Math.abs(dy) * 1.4) {
-        if (dx > 50 && swipeStartRef.current.x < 70 && !isLightCatalogOpen) {
-          setIsLightCatalogOpen(true);
-        } else if (dx < -50 && isLightCatalogOpen && !pointerDragOriginRef.current?.active) {
-          setIsLightCatalogOpen(false);
+
+    const onTouchMove = (e: TouchEvent) => {
+      const s = catalogSwipeRef.current;
+      if (!s || e.touches.length !== 1) return;
+      const x = e.touches[0].clientX;
+      const y = e.touches[0].clientY;
+      const dx = x - s.startX;
+      const dy = y - s.startY;
+
+      if (!s.lockedAxis) {
+        if (Math.hypot(dx, dy) < 8) return;
+        if (Math.abs(dx) > Math.abs(dy) * 1.1) {
+          s.lockedAxis = 'horizontal';
+          s.isTracking = true;
+        } else {
+          s.lockedAxis = 'vertical';
+          catalogSwipeRef.current = null;
+          return;
         }
       }
-      swipeStartRef.current = null;
+
+      if (s.lockedAxis === 'horizontal') {
+        if (e.cancelable) e.preventDefault();
+        const nextX = Math.max(-DRAWER_W, Math.min(0, s.initialX + dx));
+        s.lastX = x;
+        s.lastTime = performance.now();
+        s.currentX = nextX;
+        setCatalogDragX(nextX);
+      }
     };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      const s = catalogSwipeRef.current;
+      catalogSwipeRef.current = null;
+      if (!s || !s.isTracking) {
+        setCatalogDragX(null);
+        return;
+      }
+      const endX = e.changedTouches[0]?.clientX ?? s.lastX;
+      const dt = Math.max(16, performance.now() - s.lastTime);
+      const velocity = (endX - s.lastX) / dt;
+      const progress = (s.currentX + DRAWER_W) / DRAWER_W;
+      const shouldOpen = velocity > 0.35 || (velocity >= -0.35 && progress > 0.4);
+      setCatalogDragX(null);
+      setIsLightCatalogOpen(shouldOpen);
+    };
+
     window.addEventListener('touchstart', onTouchStart, { passive: true });
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
     window.addEventListener('touchend', onTouchEnd, { passive: true });
+    window.addEventListener('touchcancel', onTouchEnd, { passive: true });
     return () => {
       window.removeEventListener('touchstart', onTouchStart);
+      window.removeEventListener('touchmove', onTouchMove);
       window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchcancel', onTouchEnd);
     };
-  }, [activeTab, isLightCatalogOpen]);
+  }, [hasLibrary, activeTab, isLightCatalogOpen]);
 
   // Render reusable Katalog Sidebar Content (used both in Desktop Left Sidebar AND Mobile/Tablet Swipe Katalog Drawer)
   const renderCatalogSidebarContent = (isMobileSwipeDrawer: boolean) => (
@@ -1053,7 +1530,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
           : 'Gericht auf Kalender oder Zyklus ziehen · Bild auf Karte droppen'}
       </p>
 
-      <div className="flex-1 overflow-y-auto py-1 pb-16 lg:pb-2 space-y-2 no-scrollbar">
+      <div className="flex-1 overflow-y-auto overscroll-y-contain py-1 pb-16 lg:pb-2 space-y-2 no-scrollbar">
         {filteredRecipes.length === 0 ? (
           <div className="text-center text-[11px] text-neutral-400 py-8">
             Keine passenden Tellergerichte gefunden.
@@ -1185,7 +1662,243 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       {/* Main Content Area (Zero sub-header bar - Desktop switches in Header, Mobile uses FAB) */}
       {loading ? (
         <div className="flex-1 flex items-center justify-center text-xs text-neutral-400">
-          Lade Kochbuch-Daten...
+          Lade Essensplan-Daten...
+        </div>
+      ) : !hasLibrary ? (
+        <div className="flex-1 overflow-y-auto p-4 md:p-8 pb-24">
+          <div className="max-w-xl mx-auto space-y-5">
+            <div className="text-center space-y-1.5 pt-2">
+              <div
+                style={{ backgroundColor: `${accentColor}1A`, color: accentColor }}
+                className="w-12 h-12 rounded-2xl mx-auto flex items-center justify-center"
+              >
+                <Utensils className="w-6 h-6" />
+              </div>
+              <h2 className="text-lg font-bold text-neutral-900 dark:text-neutral-100">
+                Dein Essensplan ist noch leer
+              </h2>
+              <p className="text-xs text-neutral-500 max-w-md mx-auto">
+                Erstelle eine eigene Essensplan-Bibliothek (privat oder freigegeben) oder nimm eine bestehende Einladung an.
+              </p>
+            </div>
+
+            {pendingInvitations.length > 0 && (
+              <div className="p-4 rounded-2xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-xs space-y-3">
+                <div className="flex items-center gap-2 text-xs font-bold text-neutral-900 dark:text-neutral-100">
+                  <Mail className="w-4 h-4" style={{ color: accentColor }} />
+                  <span>Ausstehende Einladungen ({pendingInvitations.length})</span>
+                </div>
+                <div className="space-y-2.5">
+                  {pendingInvitations.map((inv) => (
+                    <div
+                      key={inv.libraryId}
+                      className="p-3 rounded-xl bg-[#F4F3EF] dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                    >
+                      <div className="min-w-0">
+                        <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 block truncate">
+                          {inv.name}
+                        </span>
+                        <span className="text-[11px] text-neutral-500 block">
+                          Eingeladen von {inv.ownerDisplayName} · {inv.membersCount} Mitglieder
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          disabled={libActionLoading}
+                          onClick={async () => {
+                            setLibActionLoading(true);
+                            setLibActionError(null);
+                            try {
+                              await api.declineMealLibrary(currentUser.username, inv.libraryId);
+                              await loadCookbookData();
+                            } catch (err: any) {
+                              setLibActionError(err?.message || 'Einladung konnte nicht abgelehnt werden.');
+                            } finally {
+                              setLibActionLoading(false);
+                            }
+                          }}
+                          className="px-3 py-1.5 rounded-xl border border-[#E5E3DC] dark:border-[#363940] bg-white dark:bg-[#1E2024] text-xs font-semibold text-neutral-600 dark:text-neutral-300 cursor-pointer hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                        >
+                          Ablehnen
+                        </button>
+                        <button
+                          type="button"
+                          disabled={libActionLoading}
+                          onClick={async () => {
+                            setLibActionLoading(true);
+                            setLibActionError(null);
+                            try {
+                              await api.joinMealLibrary(currentUser.username, inv.libraryId);
+                              await loadCookbookData();
+                            } catch (err: any) {
+                              setLibActionError(err?.message || 'Beitritt fehlgeschlagen.');
+                            } finally {
+                              setLibActionLoading(false);
+                            }
+                          }}
+                          style={{ backgroundColor: accentColor }}
+                          className="px-3.5 py-1.5 rounded-xl text-white text-xs font-bold shadow-xs cursor-pointer hover:opacity-95"
+                        >
+                          Beitreten
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setLibActionLoading(true);
+                setLibActionError(null);
+                try {
+                  await api.createOrUpdateMealLibrary({
+                    username: currentUser.username,
+                    name: newLibName.trim() || `Essensplan von ${currentUser.displayName}`,
+                    visibility: newLibVisibility,
+                    invitedUsers: newLibVisibility === 'shared' ? newLibInvited : [],
+                  });
+                  await loadCookbookData();
+                } catch (err: any) {
+                  setLibActionError(err?.message || 'Bibliothek konnte nicht erstellt werden.');
+                } finally {
+                  setLibActionLoading(false);
+                }
+              }}
+              className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-xs space-y-4 text-xs"
+            >
+              <div>
+                <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                  Neue Essensplan-Bibliothek erstellen
+                </h3>
+                <p className="text-[11px] text-neutral-500 mt-0.5">
+                  Du kannst später in den Einstellungen weitere Personen einladen oder Einstellungen anpassen.
+                </p>
+              </div>
+
+              <div>
+                <label className="font-semibold block mb-1 text-neutral-700 dark:text-neutral-300">
+                  Name der Bibliothek
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newLibName}
+                  onChange={(e) => setNewLibName(e.target.value)}
+                  placeholder={`Essensplan von ${currentUser.displayName}`}
+                  className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="font-semibold block text-neutral-700 dark:text-neutral-300">
+                  Sichtbarkeit
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setNewLibVisibility('private')}
+                    style={
+                      newLibVisibility === 'private'
+                        ? { borderColor: accentColor, backgroundColor: `${accentColor}12` }
+                        : undefined
+                    }
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                      newLibVisibility === 'private'
+                        ? 'border-2'
+                        : 'border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF]/70 dark:bg-[#25272C]'
+                    }`}
+                  >
+                    <Lock className="w-4 h-4 shrink-0 mt-0.5" style={{ color: accentColor }} />
+                    <div>
+                      <span className="font-bold block text-neutral-900 dark:text-neutral-100">Privat</span>
+                      <span className="text-[10px] text-neutral-500 block">Nur für dich sichtbar</span>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setNewLibVisibility('shared')}
+                    style={
+                      newLibVisibility === 'shared'
+                        ? { borderColor: accentColor, backgroundColor: `${accentColor}12` }
+                        : undefined
+                    }
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                      newLibVisibility === 'shared'
+                        ? 'border-2'
+                        : 'border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF]/70 dark:bg-[#25272C]'
+                    }`}
+                  >
+                    <Globe className="w-4 h-4 shrink-0 mt-0.5" style={{ color: accentColor }} />
+                    <div>
+                      <span className="font-bold block text-neutral-900 dark:text-neutral-100">Freigegeben</span>
+                      <span className="text-[10px] text-neutral-500 block">Gemeinsam planen</span>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {newLibVisibility === 'shared' && allUsers.filter((u) => u.username !== currentUser.username).length > 0 && (
+                <div className="space-y-1.5">
+                  <label className="font-semibold block text-neutral-700 dark:text-neutral-300">
+                    Benutzer einladen
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {allUsers
+                      .filter((u) => u.username !== currentUser.username)
+                      .map((u) => {
+                        const isInvited = newLibInvited.includes(u.username);
+                        return (
+                          <button
+                            key={u.username}
+                            type="button"
+                            onClick={() =>
+                              setNewLibInvited((prev) =>
+                                isInvited ? prev.filter((x) => x !== u.username) : [...prev, u.username]
+                              )
+                            }
+                            style={
+                              isInvited
+                                ? { backgroundColor: accentColor, borderColor: accentColor, color: '#fff' }
+                                : undefined
+                            }
+                            className={`px-3 py-1.5 rounded-full border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-all ${
+                              isInvited
+                                ? 'shadow-2xs'
+                                : 'border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-700 dark:text-neutral-300'
+                            }`}
+                          >
+                            {isInvited ? <Check className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
+                            <span>{u.displayName}</span>
+                          </button>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+
+              {libActionError && (
+                <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-[11px]">
+                  {libActionError}
+                </div>
+              )}
+
+              <div className="flex justify-end pt-1">
+                <button
+                  type="submit"
+                  disabled={libActionLoading}
+                  style={{ backgroundColor: accentColor }}
+                  className="px-5 py-2 rounded-full text-white font-bold shadow-xs hover:opacity-95 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {libActionLoading ? 'Erstelle...' : 'Bibliothek anlegen'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       ) : (
         <div className="flex-1 overflow-hidden flex relative">
@@ -1196,11 +1909,11 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
             </aside>
           )}
 
-          {/* Mobile & Tablet Left Pull-Out "Katalog" Handle + Drawer (Retracts to 20% visibility when dragging a dish!) */}
+          {/* Mobile & Tablet Left Pull-Out "Katalog" Handle + 1:1 Pixel-Launcher Swipe Drawer */}
           {(activeTab === 'calendar' || activeTab === 'cycle') && (
             <div className="lg:hidden">
               {/* Left-edge Handle Tab */}
-              {!isLightCatalogOpen && (
+              {!isLightCatalogOpen && catalogDragX === null && (
                 <button
                   type="button"
                   onClick={() => setIsLightCatalogOpen(true)}
@@ -1214,18 +1927,43 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 </button>
               )}
 
-              {/* Backdrop when Katalog is open & NOT retracted during drag */}
-              {isLightCatalogOpen && !isLightCatalogRetracted && (
+              {/* Backdrop synced live with finger swipe & retracted drag */}
+              {((isLightCatalogOpen && !isLightCatalogRetracted) ||
+                (catalogDragX !== null && catalogDragX > -295)) && (
                 <div
                   onClick={() => setIsLightCatalogOpen(false)}
-                  className="fixed inset-0 top-14 bg-black/30 backdrop-blur-2xs z-30 animate-in fade-in duration-150"
+                  style={
+                    catalogDragX !== null
+                      ? {
+                          opacity: Math.max(0, Math.min(1, (catalogDragX + 300) / 300)),
+                          transition: 'none',
+                        }
+                      : undefined
+                  }
+                  className={`fixed inset-0 ${
+                    mobileBarPosition === 'bottom' ? 'bottom-[3.75rem]' : 'top-14'
+                  } bg-black/30 backdrop-blur-2xs z-30`}
                 />
               )}
 
-              {/* Pull-out Katalog Panel: Retracts to 20% (-translate-x-[80%]) while dragging a dish, slides right back on release */}
+              {/* Pull-out Katalog Panel: 1:1 finger-tracked swipe + retracts to 20% while dragging a dish */}
               <div
-                className={`fixed top-14 bottom-0 left-0 z-40 w-72 sm:w-80 bg-white dark:bg-[#1A1C1F] border-r border-[#E5E3DC] dark:border-[#2B2D31] shadow-2xl p-3 flex flex-col transition-transform duration-200 ease-out ${
-                  !isLightCatalogOpen
+                style={
+                  catalogDragX !== null
+                    ? {
+                        transform: `translateX(${catalogDragX}px)`,
+                        transition: 'none',
+                      }
+                    : undefined
+                }
+                className={`fixed ${
+                  mobileBarPosition === 'bottom' ? 'top-0 bottom-[3.75rem]' : 'top-14 bottom-0'
+                } left-0 z-40 w-[300px] bg-white dark:bg-[#1A1C1F] border-r border-[#E5E3DC] dark:border-[#2B2D31] shadow-2xl p-3 flex flex-col ${
+                  catalogDragX === null ? 'transition-transform duration-200 ease-out' : ''
+                } ${
+                  catalogDragX !== null
+                    ? ''
+                    : !isLightCatalogOpen
                     ? '-translate-x-full pointer-events-none'
                     : isLightCatalogRetracted
                     ? '-translate-x-[80%] pointer-events-none'
@@ -1244,7 +1982,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
             <div className="flex-1 flex flex-col h-full overflow-hidden p-3 md:p-5 pb-20 lg:pb-5">
               {/* Plan Owner Selector + Week Nav */}
               <div className="flex flex-wrap items-center justify-between gap-2 pb-3 shrink-0">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <button
                     type="button"
                     onClick={() => setWeekOffset((w) => w - 1)}
@@ -1253,13 +1991,18 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                   >
                     <ChevronLeft className="w-4 h-4 text-neutral-600 dark:text-neutral-300" />
                   </button>
-                  <span className="text-xs font-bold text-neutral-800 dark:text-neutral-200 tabular-nums">
-                    {weekOffset === 0
-                      ? 'Aktuelle Woche'
-                      : weekOffset > 0
-                      ? `+${weekOffset} Wochen`
-                      : `${weekOffset} Wochen`}
-                  </span>
+                  {weekOffset === 0 ? (
+                    <span
+                      style={{ backgroundColor: accentColor }}
+                      className="text-xs font-extrabold text-white px-3 py-1 rounded-full shadow-2xs tabular-nums"
+                    >
+                      Aktuelle Woche · {calendarDays[0]?.dayMonth} – {calendarDays[6]?.dayMonth}
+                    </span>
+                  ) : (
+                    <span className="text-xs font-bold text-neutral-800 dark:text-neutral-200 tabular-nums px-1">
+                      {weekOffset > 0 ? `+${weekOffset} Wochen` : `${weekOffset} Wochen`} · {calendarDays[0]?.dayMonth} – {calendarDays[6]?.dayMonth}
+                    </span>
+                  )}
                   <button
                     type="button"
                     onClick={() => setWeekOffset((w) => w + 1)}
@@ -1273,15 +2016,20 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       type="button"
                       onClick={() => setWeekOffset(0)}
                       style={{ backgroundColor: `${accentColor}1A`, color: accentColor }}
-                      className="text-[11px] px-2.5 py-0.5 rounded-full font-semibold cursor-pointer"
+                      className="text-[11px] px-2.5 py-1 rounded-full font-bold cursor-pointer"
                     >
-                      Heute
+                      Zur aktuellen Woche
                     </button>
                   )}
                 </div>
 
                 {/* Plan Switcher if shared plans exist */}
                 <div className="flex items-center gap-2 flex-wrap">
+                  {mealLibrary && (
+                    <span className="text-[11px] font-semibold text-neutral-500 hidden sm:inline">
+                      {mealLibrary.name}
+                    </span>
+                  )}
                   {sharedPlans.length > 0 && (
                     <select
                       value={planOwner}
@@ -1296,17 +2044,20 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       ))}
                     </select>
                   )}
-                  <span className="text-[11px] text-neutral-500">
-                    {displayedCycle.cycleLengthDays}-Tage-Zyklus
-                    {isViewingSharedPlan ? ' · Nur Lesen' : ''}
-                  </span>
+                  {enableCycle && (
+                    <span className="text-[11px] text-neutral-500">
+                      {displayedCycle.cycleLengthDays}-Tage-Zyklus
+                      {isViewingSharedPlan ? ' · Nur Lesen' : ''}
+                    </span>
+                  )}
                 </div>
               </div>
 
-              {/* 7-Days Calendar Cards */}
-              <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-2.5 overflow-y-auto pr-1">
+              {/* 7-Days Calendar Cards with Configurable Sections & Right-Aligned Mobile Day Labels */}
+              <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-2.5 overflow-y-auto overscroll-y-contain pr-1">
                 {calendarDays.map((day) => {
-                  const isDropHovered = pointerDrag?.hoverDate === day.date;
+                  const isDayDropHovered = pointerDrag?.hoverDate === day.date;
+                  const weekdayColor = weekdayColors[day.isoWeekday] || accentColor;
                   return (
                     <div
                       key={day.date}
@@ -1318,125 +2069,234 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       }}
                       onDrop={(e) => {
                         e.preventDefault();
-                        handleDropOnDate(day.date);
+                        handleDropOnDate(day.date, mealSections[0]?.id);
                       }}
                       style={
-                        isDropHovered
-                          ? { borderColor: accentColor, backgroundColor: `${accentColor}1C` }
+                        isDayDropHovered
+                          ? { borderColor: accentColor, backgroundColor: `${accentColor}12` }
                           : day.isToday
-                          ? { borderColor: accentColor, backgroundColor: `${accentColor}0D` }
-                          : undefined
+                          ? { borderColor: accentColor, backgroundColor: `${accentColor}0A` }
+                          : { borderTopColor: weekdayColor, borderTopWidth: '3px' }
                       }
-                      className={`rounded-2xl border p-2.5 flex flex-col transition-all min-h-[155px] ${
-                        isDropHovered
+                      className={`rounded-2xl border p-2.5 flex flex-col transition-all min-h-[210px] ${
+                        isDayDropHovered
                           ? 'ring-2 ring-offset-1 shadow-md'
                           : day.isToday
-                          ? 'shadow-xs'
+                          ? 'ring-2 shadow-sm'
                           : 'border-[#E5E3DC] dark:border-[#2B2D31] bg-white dark:bg-[#1E2024]'
                       }`}
                     >
-                      {/* Day Header */}
-                      <div className="flex items-center justify-between pb-1.5 border-b border-[#E5E3DC]/60 dark:border-[#2B2D31]">
-                        <div>
-                          <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 block">
-                            {day.weekday}
-                          </span>
-                          <span className="text-[10px] text-neutral-400 tabular-nums">{day.dayMonth}</span>
-                        </div>
-                        <div className="flex flex-col items-end gap-0.5">
-                          {day.isOverridden ? (
+                      {/* Day Header: On Mobile/Tablet label sits on the RIGHT so open Katalog drawer never covers it */}
+                      <div className="flex flex-row-reverse lg:flex-col items-start justify-between gap-1.5 pb-2 border-b border-[#E5E3DC]/70 dark:border-[#2B2D31]">
+                        <div className="text-right lg:text-left lg:w-full">
+                          <div className="flex items-center justify-end lg:justify-between gap-1.5 flex-wrap">
+                            {day.isToday && (
+                              <span
+                                style={{ backgroundColor: accentColor }}
+                                className="text-[10px] font-extrabold text-white px-2 py-0.5 rounded-full shadow-2xs"
+                              >
+                                Heute
+                              </span>
+                            )}
                             <span
-                              title="Einmalige Änderung"
-                              className="text-[10px] font-semibold"
-                              style={{ color: accentColor }}
+                              style={{ color: weekdayColor }}
+                              className="text-xs font-extrabold tracking-tight flex items-center gap-1"
                             >
-                              Einmalig
+                              <span
+                                style={{ backgroundColor: weekdayColor }}
+                                className="w-2 h-2 rounded-full inline-block shrink-0"
+                              />
+                              {day.weekday}
                             </span>
-                          ) : (
-                            <span className="text-[10px] text-neutral-400 font-mono tabular-nums">
-                              Z:{day.cycleDayIndex + 1}
-                            </span>
-                          )}
-                          {/* Compact Day Portions Indicator / Stepper */}
-                          <div className="flex items-center gap-0.5 text-[10px] font-semibold text-neutral-600 dark:text-neutral-300 tabular-nums">
-                            {!isViewingSharedPlan && (
-                              <button
-                                type="button"
-                                onClick={() => handleUpdateDatePortions(day.date, day.portions - 1)}
-                                className="w-4 h-4 rounded bg-[#F4F3EF] dark:bg-[#2A2C31] hover:bg-neutral-200 dark:hover:bg-neutral-700 flex items-center justify-center cursor-pointer"
-                                title="Portionen verringern"
+                          </div>
+                          <span className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 tabular-nums block mt-0.5">
+                            {day.dayMonth}
+                          </span>
+                        </div>
+
+                        <div className="flex flex-col items-start lg:items-stretch lg:w-full gap-1">
+                          <div className="flex items-center justify-between gap-1 flex-wrap">
+                            {day.isOverridden ? (
+                              <span
+                                title="Einmalige Änderung"
+                                style={{ backgroundColor: `${accentColor}1A`, color: accentColor }}
+                                className="text-[10px] font-bold px-1.5 py-0.5 rounded-md"
                               >
-                                −
-                              </button>
+                                Einmalig
+                              </span>
+                            ) : enableCycle ? (
+                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-500 dark:text-neutral-400 font-mono tabular-nums">
+                                Zyklus Tag {day.cycleDayIndex + 1}
+                              </span>
+                            ) : (
+                              <span />
                             )}
-                            <span className="px-1" title="Geplante Portionen an diesem Tag">
-                              {day.portions}P
-                            </span>
-                            {!isViewingSharedPlan && (
-                              <button
-                                type="button"
-                                onClick={() => handleUpdateDatePortions(day.date, day.portions + 1)}
-                                className="w-4 h-4 rounded bg-[#F4F3EF] dark:bg-[#2A2C31] hover:bg-neutral-200 dark:hover:bg-neutral-700 flex items-center justify-center cursor-pointer"
-                                title="Portionen erhöhen"
-                              >
-                                +
-                              </button>
-                            )}
+
+                            {/* Compact Day Portions Stepper */}
+                            <div className="flex items-center gap-0.5 text-[10px] font-semibold text-neutral-600 dark:text-neutral-300 tabular-nums">
+                              {!isViewingSharedPlan && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateDatePortions(day.date, day.portions - 1)}
+                                  className="w-4 h-4 rounded bg-[#F4F3EF] dark:bg-[#2A2C31] hover:bg-neutral-200 dark:hover:bg-neutral-700 flex items-center justify-center cursor-pointer"
+                                  title="Portionen verringern"
+                                >
+                                  −
+                                </button>
+                              )}
+                              <span className="px-1" title="Geplante Portionen an diesem Tag">
+                                {day.portions}P
+                              </span>
+                              {!isViewingSharedPlan && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateDatePortions(day.date, day.portions + 1)}
+                                  className="w-4 h-4 rounded bg-[#F4F3EF] dark:bg-[#2A2C31] hover:bg-neutral-200 dark:hover:bg-neutral-700 flex items-center justify-center cursor-pointer"
+                                  title="Portionen erhöhen"
+                                >
+                                  +
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
 
-                      {/* Assigned Dishes */}
-                      <div className="flex-1 py-1.5 space-y-1.5 overflow-y-auto no-scrollbar">
-                        {day.recipeIds.length === 0 ? (
-                          <div className="h-full flex items-center justify-center border-2 border-dashed border-[#E5E3DC] dark:border-[#2B2D31] rounded-xl p-2 text-center">
-                            <span className="text-[10px] text-neutral-400">
-                              {isViewingSharedPlan ? 'Kein Gericht' : 'Gericht hierher ziehen'}
-                            </span>
-                          </div>
-                        ) : (
-                          day.recipeIds.map((rid) => {
-                            const r = getRecipeById(rid);
-                            if (!r) return null;
-                            return (
-                              <div
-                                key={rid}
-                                onClick={() => openRecipeOverlay(r, day.portions)}
-                                className="group p-1.5 rounded-xl bg-[#F4F3EF] dark:bg-[#282A2F] border border-[#E5E3DC] dark:border-[#383A40] text-[11px] font-medium flex items-center justify-between hover:border-neutral-400 transition-all cursor-pointer gap-1.5"
-                              >
-                                {r.images?.[0] && (
-                                  <img
-                                    src={r.images[0]}
-                                    alt={r.title}
-                                    className="w-6 h-6 rounded-md object-cover shrink-0"
-                                  />
-                                )}
-                                <div className="truncate flex-1 pr-0.5">
-                                  <span className="block truncate font-semibold text-neutral-800 dark:text-neutral-200">
-                                    {r.title}
-                                  </span>
-                                  <span className="text-[9px] text-neutral-400 flex items-center gap-1 tabular-nums">
-                                    <Clock className="w-2.5 h-2.5" />
-                                    {r.prepTimeMinutes}m · {day.portions} Port.
+                      {/* Configurable Sections (e.g. Mittag, Abend, ...) */}
+                      <div className="flex-1 py-2 space-y-2 overflow-y-auto overscroll-y-contain no-scrollbar">
+                        {mealSections.map((sec, secIdx) => {
+                          const slotIds = day.slots[sec.id] || [];
+                          const isSectionHovered =
+                            pointerDrag?.hoverDate === day.date &&
+                            (pointerDrag.hoverSectionId
+                              ? pointerDrag.hoverSectionId === sec.id
+                              : secIdx === 0);
+                          const isSlotDropped = recentDropFlash?.slotKey === `${day.date}__${sec.id}`;
+                          return (
+                            <div
+                              key={sec.id}
+                              data-drop-date={day.date}
+                              data-drop-section={sec.id}
+                              onDragOver={(e) => {
+                                if (isViewingSharedPlan) return;
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.dataTransfer.dropEffect = 'copy';
+                              }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                handleDropOnDate(day.date, sec.id);
+                              }}
+                              style={
+                                isSectionHovered || isSlotDropped
+                                  ? { borderColor: accentColor, backgroundColor: `${accentColor}1C` }
+                                  : undefined
+                              }
+                              className={`rounded-xl border p-1.5 space-y-1 transition-all duration-300 ${
+                                isSectionHovered || isSlotDropped
+                                  ? 'ring-2 shadow-xs'
+                                  : 'border-[#E5E3DC]/80 dark:border-[#2B2D31] bg-[#FAF9F5]/80 dark:bg-[#191B1F]/70'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-1 px-0.5">
+                                <span className="text-[10px] font-bold tracking-wide text-neutral-500 dark:text-neutral-400 truncate">
+                                  {sec.label}
+                                </span>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  {isSlotDropped && (
+                                    <span
+                                      style={{ backgroundColor: accentColor }}
+                                      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-extrabold text-white shadow-xs animate-in fade-in zoom-in-95 duration-200"
+                                    >
+                                      <Check className="w-2.5 h-2.5" />
+                                      <span>Abgelegt</span>
+                                    </span>
+                                  )}
+                                  {!isViewingSharedPlan && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setCyclePickerSearch('');
+                                        setCyclePickerCategory('all');
+                                        setPickerTarget({ mode: 'calendar', dateIso: day.date, sectionId: sec.id });
+                                      }}
+                                      className="w-4 h-4 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 flex items-center justify-center cursor-pointer shrink-0"
+                                      title={`Gericht zu ${sec.label} hinzufügen`}
+                                    >
+                                      <Plus className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {slotIds.length === 0 ? (
+                                <div className="border border-dashed border-[#E5E3DC] dark:border-[#2B2D31] rounded-lg px-2 py-1.5 text-center">
+                                  <span className="text-[10px] text-neutral-400">
+                                    {isViewingSharedPlan ? 'Offen' : 'Ziehen oder +'}
                                   </span>
                                 </div>
-                                {!isViewingSharedPlan && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleRemoveFromDate(day.date, rid);
-                                    }}
-                                    className="opacity-0 group-hover:opacity-100 p-0.5 rounded-full hover:bg-neutral-300 dark:hover:bg-neutral-700 text-neutral-400 hover:text-red-500 transition-opacity cursor-pointer"
-                                    title="Gericht für diesen Tag entfernen"
-                                  >
-                                    <X className="w-3 h-3" />
-                                  </button>
-                                )}
-                              </div>
-                            );
-                          })
-                        )}
+                              ) : (
+                                slotIds.map((rid) => {
+                                  const r = getRecipeById(rid);
+                                  if (!r) return null;
+                                  const isDroppedCard =
+                                    recentDropFlash?.targetKey === `${day.date}__${sec.id}__${rid}`;
+                                  return (
+                                    <div
+                                      key={rid}
+                                      onClick={() => openRecipeOverlay(r, day.portions)}
+                                      style={
+                                        isDroppedCard
+                                          ? { borderColor: accentColor, backgroundColor: `${accentColor}16` }
+                                          : undefined
+                                      }
+                                      className={`group p-1.5 rounded-lg bg-white dark:bg-[#26282E] border border-[#E5E3DC] dark:border-[#383A40] text-[11px] font-medium flex items-center justify-between hover:border-neutral-400 transition-all duration-300 cursor-pointer gap-1.5 ${
+                                        isDroppedCard
+                                          ? 'ring-2 scale-[1.03] shadow-md animate-in zoom-in-95 duration-200'
+                                          : ''
+                                      }`}
+                                    >
+                                      {r.images?.[0] && (
+                                        <img
+                                          src={r.images[0]}
+                                          alt={r.title}
+                                          className="w-5 h-5 rounded-md object-cover shrink-0"
+                                        />
+                                      )}
+                                      <div className="truncate flex-1 pr-0.5">
+                                        <span className="block truncate font-semibold text-neutral-800 dark:text-neutral-200">
+                                          {r.title}
+                                        </span>
+                                      </div>
+                                      {isDroppedCard && (
+                                        <span
+                                          style={{ backgroundColor: accentColor }}
+                                          className="w-4 h-4 rounded-full text-white flex items-center justify-center shrink-0 animate-bounce"
+                                        >
+                                          <Check className="w-2.5 h-2.5" />
+                                        </span>
+                                      )}
+                                      {!isViewingSharedPlan && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleRemoveFromDate(day.date, rid, sec.id);
+                                          }}
+                                          className="lg:opacity-0 lg:group-hover:opacity-100 p-0.5 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-400 hover:text-red-500 transition-opacity cursor-pointer shrink-0"
+                                          title="Aus Abschnitt entfernen"
+                                        >
+                                          <X className="w-3 h-3" />
+                                        </button>
+                                      )}
+                                    </div>
+                                  );
+                                })
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
 
                       {!isViewingSharedPlan && day.isOverridden && (
@@ -1446,7 +2306,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                           style={{ color: accentColor }}
                           className="text-[10px] hover:underline text-center pt-1 block w-full cursor-pointer"
                         >
-                          ↩ Auf Zyklus zurücksetzen
+                          {enableCycle ? '↩ Auf Zyklus zurücksetzen' : '✕ Tag zurücksetzen'}
                         </button>
                       )}
                     </div>
@@ -1457,10 +2317,10 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
           )}
 
           {/* ======================================================== */}
-          {/* TAB 2: ZYKLUS BEARBEITEN (With Left Katalog + Drag&Drop + Portions Scaling) */}
+          {/* TAB 2: ZYKLUS BEARBEITEN (With Left Katalog + Drag&Drop + Sections + Right Mobile Labels) */}
           {/* ======================================================== */}
           {activeTab === 'cycle' && (
-            <div className="flex-1 p-4 md:p-6 pb-24 lg:pb-6 overflow-y-auto space-y-5">
+            <div className="flex-1 p-4 md:p-6 pb-24 lg:pb-6 overflow-y-auto overscroll-y-contain space-y-5">
               <div className="max-w-5xl mx-auto space-y-5">
                 <div className="p-4 rounded-2xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                   <div>
@@ -1473,7 +2333,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       </span>
                     </h3>
                     <p className="text-xs text-neutral-500 mt-0.5">
-                      Ziehe Gerichte aus dem Katalog links auf die Tage und passe pro Tag die gewünschten Portionen an (Standard: {defaultCyclePortions} Port.).
+                      Ziehe Gerichte aus dem Katalog links direkt in die Abschnitte der Tage (Standard: {defaultCyclePortions} Port.).
                     </p>
                   </div>
 
@@ -1507,6 +2367,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                 dayIndex: i,
                                 label: `Tag ${i + 1}`,
                                 recipeIds: [],
+                                slots: buildNormalizedSlots([], undefined, mealSections),
                                 portions: defaultCyclePortions,
                               }
                             );
@@ -1533,7 +2394,8 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                   {displayedCycle.days.map((cd) => {
                     const dayPortions = cd.portions ?? displayedCycle.defaultPortions ?? defaultCyclePortions;
-                    const isDropHovered = pointerDrag?.hoverCycleDay === cd.dayIndex;
+                    const isDayDropHovered = pointerDrag?.hoverCycleDay === cd.dayIndex;
+                    const cycleSlots = buildNormalizedSlots(cd.recipeIds, cd.slots, mealSections);
                     return (
                       <div
                         key={cd.dayIndex}
@@ -1545,19 +2407,20 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                         }}
                         onDrop={(e) => {
                           e.preventDefault();
-                          handleDropOnCycleDay(cd.dayIndex);
+                          handleDropOnCycleDay(cd.dayIndex, mealSections[0]?.id);
                         }}
                         style={
-                          isDropHovered
-                            ? { borderColor: accentColor, backgroundColor: `${accentColor}1C` }
+                          isDayDropHovered
+                            ? { borderColor: accentColor, backgroundColor: `${accentColor}12` }
                             : undefined
                         }
-                        className={`p-3 rounded-2xl border border-[#E5E3DC] dark:border-[#2B2D31] bg-white dark:bg-[#1E2024] shadow-2xs flex flex-col min-h-[190px] transition-all ${
-                          isDropHovered ? 'ring-2 ring-offset-1 shadow-md' : ''
+                        className={`p-3 rounded-2xl border border-[#E5E3DC] dark:border-[#2B2D31] bg-white dark:bg-[#1E2024] shadow-2xs flex flex-col min-h-[210px] transition-all ${
+                          isDayDropHovered ? 'ring-2 ring-offset-1 shadow-md' : ''
                         }`}
                       >
-                        <div className="flex items-center justify-between gap-2 pb-2 border-b border-[#E5E3DC] dark:border-[#2B2D31]">
-                          <span className="text-xs font-bold text-neutral-800 dark:text-neutral-200 truncate">
+                        {/* Day Header: On Mobile/Tablet label sits on the RIGHT so open Katalog drawer never covers it */}
+                        <div className="flex flex-row-reverse lg:flex-row items-center justify-between gap-2 pb-2 border-b border-[#E5E3DC] dark:border-[#2B2D31]">
+                          <span className="text-xs font-bold text-neutral-800 dark:text-neutral-200 truncate text-right lg:text-left">
                             {cd.label || `Tag ${cd.dayIndex + 1}`}
                           </span>
 
@@ -1595,59 +2458,142 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                           </div>
                         </div>
 
-                        <div className="flex-1 py-2 space-y-1.5 overflow-y-auto no-scrollbar">
-                          {cd.recipeIds.length === 0 ? (
-                            <div className="h-full flex items-center justify-center border border-dashed border-[#E5E3DC] dark:border-[#2B2D31] rounded-xl p-2 text-center">
-                              <span className="text-[11px] text-neutral-400 italic">
-                                {isViewingSharedPlan ? 'Kein Gericht' : 'Gericht hierher ziehen'}
-                              </span>
-                            </div>
-                          ) : (
-                            cd.recipeIds.map((rid) => {
-                              const r = getRecipeById(rid);
-                              if (!r) return null;
-                              const isScaled = dayPortions !== r.portions;
-                              return (
-                                <div
-                                  key={rid}
-                                  onClick={() => openRecipeOverlay(r, dayPortions)}
-                                  className="p-1.5 rounded-lg bg-[#F4F3EF] dark:bg-[#282A2F] border border-[#E5E3DC]/80 dark:border-[#363940] text-[11px] font-medium flex items-center justify-between gap-1.5 cursor-pointer hover:border-neutral-400 transition-all"
-                                >
-                                  {r.images?.[0] && (
-                                    <img
-                                      src={r.images[0]}
-                                      alt={r.title}
-                                      className="w-6 h-6 rounded-md object-cover shrink-0"
-                                    />
-                                  )}
-                                  <div className="min-w-0 flex-1">
-                                    <span className="truncate block font-semibold">{r.title}</span>
-                                    <span className="text-[9px] text-neutral-400 tabular-nums">
-                                      {dayPortions} Port.{isScaled ? ` (Basis: ${r.portions})` : ''}
+                        <div className="flex-1 py-2 space-y-2 overflow-y-auto overscroll-y-contain no-scrollbar">
+                          {mealSections.map((sec, secIdx) => {
+                            const secIds = cycleSlots[sec.id] || [];
+                            const isSecHovered =
+                              pointerDrag?.hoverCycleDay === cd.dayIndex &&
+                              (pointerDrag.hoverSectionId
+                                ? pointerDrag.hoverSectionId === sec.id
+                                : secIdx === 0);
+                            const isSlotDropped = recentDropFlash?.slotKey === `${cd.dayIndex}__${sec.id}`;
+                            return (
+                              <div
+                                key={sec.id}
+                                data-drop-cycleday={cd.dayIndex}
+                                data-drop-section={sec.id}
+                                onDragOver={(e) => {
+                                  if (isViewingSharedPlan) return;
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  e.dataTransfer.dropEffect = 'copy';
+                                }}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  handleDropOnCycleDay(cd.dayIndex, sec.id);
+                                }}
+                                style={
+                                  isSecHovered || isSlotDropped
+                                    ? { borderColor: accentColor, backgroundColor: `${accentColor}1C` }
+                                    : undefined
+                                }
+                                className={`rounded-xl border p-1.5 space-y-1 transition-all duration-300 ${
+                                  isSecHovered || isSlotDropped
+                                    ? 'ring-2 shadow-xs'
+                                    : 'border-[#E5E3DC]/80 dark:border-[#2B2D31] bg-[#FAF9F5]/80 dark:bg-[#191B1F]/70'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-1 px-0.5">
+                                  <span className="text-[10px] font-bold tracking-wide text-neutral-500 dark:text-neutral-400 truncate">
+                                    {sec.label}
+                                  </span>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    {isSlotDropped && (
+                                      <span
+                                        style={{ backgroundColor: accentColor }}
+                                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-extrabold text-white shadow-xs animate-in fade-in zoom-in-95 duration-200"
+                                      >
+                                        <Check className="w-2.5 h-2.5" />
+                                        <span>Abgelegt</span>
+                                      </span>
+                                    )}
+                                    {!isViewingSharedPlan && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setCyclePickerSearch('');
+                                          setCyclePickerCategory('all');
+                                          setPickerTarget({ mode: 'cycle', dayIndex: cd.dayIndex, sectionId: sec.id });
+                                        }}
+                                        className="w-4 h-4 rounded-md hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 flex items-center justify-center cursor-pointer shrink-0"
+                                        title={`Gericht zu ${sec.label} hinzufügen`}
+                                      >
+                                        <Plus className="w-3 h-3" />
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {secIds.length === 0 ? (
+                                  <div className="border border-dashed border-[#E5E3DC] dark:border-[#2B2D31] rounded-lg px-2 py-1.5 text-center">
+                                    <span className="text-[10px] text-neutral-400">
+                                      {isViewingSharedPlan ? 'Offen' : 'Gericht hierher ziehen'}
                                     </span>
                                   </div>
-                                  {!isViewingSharedPlan && (
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        const updated = cycle.days.map((d) =>
-                                          d.dayIndex === cd.dayIndex
-                                            ? { ...d, recipeIds: d.recipeIds.filter((id) => id !== rid) }
-                                            : d
-                                        );
-                                        persistCookbook({ cycle: { ...cycle, days: updated } });
-                                      }}
-                                      className="p-0.5 rounded text-neutral-400 hover:text-red-500 cursor-pointer shrink-0"
-                                      title="Entfernen"
-                                    >
-                                      <X className="w-3 h-3" />
-                                    </button>
-                                  )}
-                                </div>
-                              );
-                            })
-                          )}
+                                ) : (
+                                  secIds.map((rid) => {
+                                    const r = getRecipeById(rid);
+                                    if (!r) return null;
+                                    const isScaled = dayPortions !== r.portions;
+                                    const isDroppedCard =
+                                      recentDropFlash?.targetKey === `${cd.dayIndex}__${sec.id}__${rid}`;
+                                    return (
+                                      <div
+                                        key={rid}
+                                        onClick={() => openRecipeOverlay(r, dayPortions)}
+                                        style={
+                                          isDroppedCard
+                                            ? { borderColor: accentColor, backgroundColor: `${accentColor}16` }
+                                            : undefined
+                                        }
+                                        className={`p-1.5 rounded-lg bg-white dark:bg-[#282A2F] border border-[#E5E3DC]/80 dark:border-[#363940] text-[11px] font-medium flex items-center justify-between gap-1.5 cursor-pointer hover:border-neutral-400 transition-all duration-300 ${
+                                          isDroppedCard
+                                            ? 'ring-2 scale-[1.03] shadow-md animate-in zoom-in-95 duration-200'
+                                            : ''
+                                        }`}
+                                      >
+                                        {r.images?.[0] && (
+                                          <img
+                                            src={r.images[0]}
+                                            alt={r.title}
+                                            className="w-6 h-6 rounded-md object-cover shrink-0"
+                                          />
+                                        )}
+                                        <div className="min-w-0 flex-1">
+                                          <span className="truncate block font-semibold">{r.title}</span>
+                                          <span className="text-[9px] text-neutral-400 tabular-nums">
+                                            {dayPortions} Port.{isScaled ? ` (Basis: ${r.portions})` : ''}
+                                          </span>
+                                        </div>
+                                        {isDroppedCard && (
+                                          <span
+                                            style={{ backgroundColor: accentColor }}
+                                            className="w-4 h-4 rounded-full text-white flex items-center justify-center shrink-0 animate-bounce"
+                                          >
+                                            <Check className="w-2.5 h-2.5" />
+                                          </span>
+                                        )}
+                                        {!isViewingSharedPlan && (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleRemoveFromCycleDay(cd.dayIndex, rid, sec.id);
+                                            }}
+                                            className="p-0.5 rounded text-neutral-400 hover:text-red-500 cursor-pointer shrink-0"
+                                            title="Entfernen"
+                                          >
+                                            <X className="w-3 h-3" />
+                                          </button>
+                                        )}
+                                      </div>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
 
                         {!isViewingSharedPlan && (
@@ -1658,7 +2604,11 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                               onClick={() => {
                                 setCyclePickerSearch('');
                                 setCyclePickerCategory('all');
-                                setCyclePickerDayIndex(cd.dayIndex);
+                                setPickerTarget({
+                                  mode: 'cycle',
+                                  dayIndex: cd.dayIndex,
+                                  sectionId: mealSections[0]?.id || 'mittag',
+                                });
                               }}
                               style={{ borderColor: `${accentColor}44`, color: accentColor }}
                               className="lg:hidden w-full min-h-[40px] px-3 py-1.5 rounded-xl border bg-[#F4F3EF] dark:bg-[#25272C] hover:bg-amber-500/10 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.98] transition-all"
@@ -1667,18 +2617,22 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                               <span>Gericht hinzufügen</span>
                             </button>
 
-                            {/* Desktop: Quick dropdown */}
+                            {/* Desktop: Quick dropdown into first section */}
                             <select
                               onChange={(e) => {
                                 if (!e.target.value) return;
-                                handleAssignRecipeToCycleDay(cd.dayIndex, e.target.value);
+                                handleAssignRecipeToCycleDay(
+                                  cd.dayIndex,
+                                  e.target.value,
+                                  mealSections[0]?.id || 'mittag'
+                                );
                                 e.target.value = '';
                               }}
                               defaultValue=""
                               className="hidden lg:block w-full text-[10px] p-1 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-700 dark:text-neutral-300 outline-hidden cursor-pointer"
                             >
                               <option value="" disabled>
-                                + Gericht hinzufügen...
+                                + Gericht hinzufügen ({mealSections[0]?.label || 'Mittag'})...
                               </option>
                               {allCombinedRecipes.map((r) => (
                                 <option key={r.id} value={r.id}>
@@ -1701,7 +2655,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
           {/* TAB 3: KATALOG (Tellergerichte | Zutaten + Duplikatenmanager) */}
           {/* ======================================================== */}
           {activeTab === 'recipes' && (
-            <div className="flex-1 p-4 md:p-6 pb-24 lg:pb-6 overflow-y-auto space-y-4">
+            <div className="flex-1 p-4 md:p-6 pb-24 lg:pb-6 overflow-y-auto overscroll-y-contain space-y-4">
               <div className="max-w-5xl mx-auto space-y-4">
                 {/* Katalog Sub-Switcher: Tellergerichte vs. Zutaten */}
                 <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -1993,12 +2947,23 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                 {recipe.title}
                               </h4>
                               <p className="text-xs text-neutral-500 line-clamp-2">{recipe.description}</p>
+                              {recipe.mealTypes && recipe.mealTypes.length > 0 && (
+                                <div className="flex flex-wrap gap-1 pt-0.5">
+                                  {recipe.mealTypes.map((mt) => (
+                                    <span
+                                      key={mt}
+                                      className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-600 dark:text-neutral-300"
+                                    >
+                                      {mt}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                             </div>
 
                             <div className="pt-3 mt-3 border-t border-[#E5E3DC] dark:border-[#2B2D31] flex items-center justify-between text-xs text-neutral-400 gap-2">
                               <span className="tabular-nums truncate">
                                 {recipe.ingredients.length} Komponenten · {recipe.portions} Port.
-                                {recipe.excludeFromShoppingList ? ' · Ohne Einkaufsliste' : ''}
                               </span>
                               <div className="flex items-center gap-1.5">
                                 {onShareRecipe && (
@@ -2053,150 +3018,70 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 )}
 
                 {/* ======================================================== */}
-                {/* SUB-TAB 2: ZUTATEN + EINKAUFSLISTE OPT-OUT + DUPLIKATE   */}
+                {/* SUB-TAB 2: ZUTATEN + EINKAUFSLISTE OPT-OUT + DUPLIKATE-BUTTON */}
                 {/* ======================================================== */}
                 {catalogSubTab === 'ingredients' && (
                   <div className="space-y-4">
-                    {/* Duplikatenmanager Panel */}
-                    <div className="p-4 rounded-2xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] space-y-3 shadow-2xs">
-                      <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <div className="flex items-center gap-2">
-                          <div
-                            style={{ backgroundColor: `${accentColor}1A`, color: accentColor }}
-                            className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
-                          >
-                            {duplicatePairs.length > 0 ? (
-                              <AlertTriangle className="w-4 h-4" />
-                            ) : (
-                              <CheckCircle2 className="w-4 h-4" />
-                            )}
-                          </div>
-                          <div>
-                            <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
-                              Duplikatenmanager ({duplicatePairs.length})
-                            </h3>
-                            <p className="text-[11px] text-neutral-500">
-                              Vergleiche ähnliche Zutaten aus deinen Tellergerichten, wähle den Master oder behalte beide getrennt.
-                            </p>
-                          </div>
+                    {/* Compact Toolbar: Duplikate-Manager + Standalone Zutat anlegen (+) */}
+                    <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] flex items-center justify-between gap-3 flex-wrap shadow-2xs">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div
+                          style={{ backgroundColor: `${accentColor}1A`, color: accentColor }}
+                          className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
+                        >
+                          {duplicatePairs.length > 0 ? (
+                            <AlertTriangle className="w-4 h-4" />
+                          ) : (
+                            <CheckCircle2 className="w-4 h-4" />
+                          )}
                         </div>
-
-                        {dismissedDuplicates.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => persistCookbook({ dismissedDuplicates: [] })}
-                            className="text-[11px] font-semibold text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 flex items-center gap-1 cursor-pointer"
-                          >
-                            <RotateCcw className="w-3 h-3" />
-                            <span>Ignorierte ({dismissedDuplicates.length}) erneut prüfen</span>
-                          </button>
-                        )}
+                        <div className="min-w-0">
+                          <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 block">
+                            {duplicatePairs.length > 0
+                              ? `${duplicatePairs.length} mögliche Zutaten-Duplikate erkannt`
+                              : 'Keine offenen Zutaten-Duplikate'}
+                          </span>
+                          <span className="text-[11px] text-neutral-500 block">
+                            Zutaten anlegen oder Einkaufsliste pro Zutat steuern.
+                          </span>
+                        </div>
                       </div>
 
-                      {duplicatePairs.length === 0 ? (
-                        <div className="p-3 rounded-xl bg-[#F4F3EF]/80 dark:bg-[#25272C] text-xs text-neutral-500">
-                          Keine offenen Zutaten-Duplikate erkannt — deine Zutatenliste ist sauber.
-                        </div>
-                      ) : (
-                        <div className="space-y-3">
-                          {duplicatePairs.map((pair) => {
-                            const selectedSide =
-                              duplicateMasterChoices[pair.pairKey] ||
-                              (pair.right.recipeCount > pair.left.recipeCount ? 'right' : 'left');
-                            const masterItem = selectedSide === 'left' ? pair.left : pair.right;
-                            return (
-                              <div
-                                key={pair.pairKey}
-                                className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#191B1F] space-y-3"
-                              >
-                                <div className="flex items-center justify-between gap-2 text-[11px]">
-                                  <span className="font-semibold" style={{ color: accentColor }}>
-                                    {pair.reason}
-                                  </span>
-                                  <span className="text-neutral-400">Master anklicken zum Übernehmen</span>
-                                </div>
+                      <div className="flex items-center gap-2 flex-wrap shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewIngredientName('');
+                            setNewIngredientUnit(availableUnits[0] || 'Gramm');
+                            setNewIngredientExcludeShopping(false);
+                            setNewIngredientError(null);
+                            setShowAddIngredientModal(true);
+                          }}
+                          style={{ backgroundColor: accentColor }}
+                          className="px-3.5 py-2 rounded-xl text-xs font-bold text-white flex items-center gap-1.5 cursor-pointer shadow-xs hover:opacity-95 active:scale-95 transition-all"
+                          title="Zutat manuell ohne Gericht anlegen"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Zutat</span>
+                        </button>
 
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                                  {(
-                                    [
-                                      { side: 'left' as const, item: pair.left },
-                                      { side: 'right' as const, item: pair.right },
-                                    ]
-                                  ).map(({ side, item }) => {
-                                    const isMaster = selectedSide === side;
-                                    return (
-                                      <button
-                                        key={item.key}
-                                        type="button"
-                                        onClick={() =>
-                                          setDuplicateMasterChoices((prev) => ({
-                                            ...prev,
-                                            [pair.pairKey]: side,
-                                          }))
-                                        }
-                                        style={
-                                          isMaster
-                                            ? { borderColor: accentColor, backgroundColor: `${accentColor}12` }
-                                            : undefined
-                                        }
-                                        className={`p-3 rounded-xl border text-left transition-all cursor-pointer space-y-1 ${
-                                          isMaster
-                                            ? 'border-2 shadow-2xs'
-                                            : 'border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#222429] hover:border-neutral-400'
-                                        }`}
-                                      >
-                                        <div className="flex items-center justify-between gap-2">
-                                          <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 truncate">
-                                            {item.displayName}
-                                          </span>
-                                          <span
-                                            style={isMaster ? { backgroundColor: accentColor } : undefined}
-                                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
-                                              isMaster
-                                                ? 'text-white'
-                                                : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-500'
-                                            }`}
-                                          >
-                                            {isMaster ? 'Master' : 'Als Master wählen'}
-                                          </span>
-                                        </div>
-                                        <span className="text-[11px] text-neutral-500 block truncate">
-                                          In {item.recipeCount} {item.recipeCount === 1 ? 'Gericht' : 'Gerichten'}:{' '}
-                                          {item.recipeTitles.join(', ')}
-                                        </span>
-                                        {item.sampleAmounts.length > 0 && (
-                                          <span className="text-[10px] text-neutral-400 block truncate">
-                                            Mengen: {item.sampleAmounts.join(', ')}
-                                          </span>
-                                        )}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-
-                                <div className="flex items-center justify-end gap-2 flex-wrap pt-1">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleKeepBothDuplicates(pair.pairKey)}
-                                    className="px-3 py-1.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#222429] hover:border-neutral-400 text-xs font-semibold text-neutral-700 dark:text-neutral-300 cursor-pointer"
-                                  >
-                                    Beide behalten
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleMergeDuplicatePair(pair)}
-                                    style={{ backgroundColor: accentColor }}
-                                    className="px-3.5 py-1.5 rounded-xl text-white text-xs font-bold flex items-center gap-1.5 shadow-2xs hover:opacity-95 cursor-pointer active:scale-95"
-                                  >
-                                    <GitMerge className="w-3.5 h-3.5" />
-                                    <span>Zu „{masterItem.displayName}“ mergen</span>
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
+                        <button
+                          type="button"
+                          onClick={() => setShowDuplicatesModal(true)}
+                          className="px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-700 dark:text-neutral-200 hover:border-neutral-400"
+                        >
+                          <GitMerge className="w-3.5 h-3.5" />
+                          <span>Duplikate-Manager</span>
+                          {duplicatePairs.length > 0 && (
+                            <span
+                              style={{ backgroundColor: accentColor }}
+                              className="px-1.5 py-0.5 rounded-full text-white text-[10px] font-extrabold tabular-nums"
+                            >
+                              {duplicatePairs.length}
+                            </span>
+                          )}
+                        </button>
+                      </div>
                     </div>
 
                     {/* Ingredients Search & Filter Bar */}
@@ -2239,8 +3124,25 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
 
                     {/* Collected Ingredients List with Per-Ingredient Einkaufsliste Switch */}
                     {filteredIngredients.length === 0 ? (
-                      <div className="p-8 text-center rounded-2xl border border-dashed border-[#E5E3DC] dark:border-[#2B2D31] text-xs text-neutral-500">
-                        Keine Zutaten gefunden. Zutaten werden automatisch aus deinen Tellergerichten gesammelt.
+                      <div className="p-8 text-center rounded-2xl border border-dashed border-[#E5E3DC] dark:border-[#2B2D31] text-xs text-neutral-500 space-y-2.5">
+                        <p>
+                          Keine Zutaten gefunden. Du kannst Zutaten hier direkt anlegen oder aus Tellergerichten übernehmen.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewIngredientName('');
+                            setNewIngredientUnit(availableUnits[0] || 'Gramm');
+                            setNewIngredientExcludeShopping(false);
+                            setNewIngredientError(null);
+                            setShowAddIngredientModal(true);
+                          }}
+                          style={{ backgroundColor: accentColor }}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-white font-semibold cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Erste Zutat anlegen</span>
+                        </button>
                       </div>
                     ) : (
                       <div className="rounded-2xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] divide-y divide-[#E5E3DC]/70 dark:divide-[#2B2D31] overflow-hidden shadow-2xs">
@@ -2252,7 +3154,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                               className="px-4 py-3 flex items-center justify-between gap-3 hover:bg-[#FBFBFA] dark:hover:bg-[#23252A] transition-colors"
                             >
                               <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <span
                                     className={`text-sm font-semibold truncate ${
                                       isShoppingOn
@@ -2262,17 +3164,39 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                   >
                                     {ing.displayName}
                                   </span>
+                                  {ing.defaultUnit && (
+                                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-600 dark:text-neutral-300 border border-[#E5E3DC] dark:border-[#2F3136] shrink-0">
+                                      {ing.defaultUnit}
+                                    </span>
+                                  )}
                                   <span className="text-[11px] text-neutral-400 tabular-nums shrink-0">
-                                    {ing.recipeCount}× verwendet
+                                    {ing.recipeCount === 0
+                                      ? '0× verwendet · Manuell'
+                                      : `${ing.recipeCount}× verwendet`}
                                   </span>
                                 </div>
                                 <span className="text-[11px] text-neutral-500 block truncate mt-0.5">
-                                  {ing.recipeTitles.join(' · ')}
-                                  {ing.sampleAmounts.length > 0 ? ` (${ing.sampleAmounts.slice(0, 3).join(', ')})` : ''}
+                                  {ing.recipeTitles.length > 0
+                                    ? `${ing.recipeTitles.join(' · ')}${
+                                        ing.sampleAmounts.length > 0
+                                          ? ` (${ing.sampleAmounts.slice(0, 3).join(', ')})`
+                                          : ''
+                                      }`
+                                    : 'Bereit zur Auswahl in neuen Tellergerichten'}
                                 </span>
                               </div>
 
-                              <div className="flex items-center gap-2.5 shrink-0">
+                              <div className="flex items-center gap-2 shrink-0">
+                                {ing.recipeCount === 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteUnusedIngredient(ing.key)}
+                                    className="p-1.5 rounded-lg text-neutral-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
+                                    title="Manuelle Zutat entfernen"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
                                 <span className="text-[11px] font-medium text-neutral-500 hidden sm:inline">
                                   {isShoppingOn ? 'Auf Einkaufsliste' : 'Ohne Einkaufsliste'}
                                 </span>
@@ -2309,7 +3233,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
           {/* TAB 4: EINKAUFSLISTE (Wochen-Forecast der Verbrauchsgüter) */}
           {/* ======================================================== */}
           {activeTab === 'shopping' && (
-            <div className="flex-1 p-4 md:p-6 pb-24 lg:pb-6 overflow-y-auto">
+            <div className="flex-1 p-4 md:p-6 pb-24 lg:pb-6 overflow-y-auto overscroll-y-contain">
               <div className="max-w-4xl mx-auto space-y-4">
                 {/* Week Switcher & Summary Card */}
                 <div className="p-4 rounded-2xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -2365,26 +3289,13 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                   </div>
                 </div>
 
-                {/* Notice if dishes or ingredients were skipped */}
-                {(shoppingSummary.excludedRecipeTitles.length > 0 ||
-                  shoppingSummary.excludedIngredientNames.length > 0) && (
-                  <div className="px-4 py-2.5 rounded-xl bg-[#F4F3EF] dark:bg-[#222429] border border-[#E5E3DC] dark:border-[#2F3136] text-xs text-neutral-600 dark:text-neutral-300 space-y-1">
-                    {shoppingSummary.excludedRecipeTitles.length > 0 && (
-                      <div>
-                        Gerichte ohne Einkaufsliste:{' '}
-                        <strong className="font-semibold text-neutral-900 dark:text-neutral-100">
-                          {shoppingSummary.excludedRecipeTitles.join(', ')}
-                        </strong>
-                      </div>
-                    )}
-                    {shoppingSummary.excludedIngredientNames.length > 0 && (
-                      <div>
-                        Deaktivierte Zutaten (Katalog):{' '}
-                        <strong className="font-semibold text-neutral-900 dark:text-neutral-100">
-                          {shoppingSummary.excludedIngredientNames.join(', ')}
-                        </strong>
-                      </div>
-                    )}
+                {/* Notice if ingredients were deactivated in Katalog -> Zutaten */}
+                {shoppingSummary.excludedIngredientNames.length > 0 && (
+                  <div className="px-4 py-2.5 rounded-xl bg-[#F4F3EF] dark:bg-[#222429] border border-[#E5E3DC] dark:border-[#2F3136] text-xs text-neutral-600 dark:text-neutral-300">
+                    Deaktivierte Zutaten (Katalog → Zutaten):{' '}
+                    <strong className="font-semibold text-neutral-900 dark:text-neutral-100">
+                      {shoppingSummary.excludedIngredientNames.join(', ')}
+                    </strong>
                   </div>
                 )}
 
@@ -2395,7 +3306,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       Für diese Woche stehen noch keine Verbrauchsgüter im Essenskalender.
                     </p>
                     <p className="text-[11px] text-neutral-400">
-                      Plane Gerichte mit Komponenten im Essenskalender oder prüfe, ob bei den Gerichten „Keine Einkaufsliste“ aktiviert ist.
+                      Plane Gerichte mit Komponenten im Essenskalender oder prüfe unter Katalog → Zutaten, ob Zutaten deaktiviert sind.
                     </p>
                   </div>
                 ) : (
@@ -2577,45 +3488,21 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
           {/* Scrollable Animated Monday -> Sunday Showcase */}
           <div
             ref={presentationScrollRef}
-            className="flex-1 overflow-y-auto scroll-smooth snap-y snap-proximity px-4 md:px-8 py-6 space-y-8"
+            className="flex-1 overflow-y-auto overscroll-y-contain scroll-smooth snap-y snap-proximity px-4 md:px-8 py-6 space-y-8"
           >
             <div className="max-w-5xl mx-auto space-y-8 pb-12">
               {calendarDays.map((day, idx) => {
                 const fullWeekday = day.dateObj.toLocaleDateString('de-DE', { weekday: 'long' });
-                const dayRecipes = day.recipeIds
-                  .map((rid) => getRecipeById(rid))
-                  .filter((r): r is Recipe => !!r);
-
-                // Assign Mittagessen & Abendessen slots cleanly
-                let lunchRecipe: Recipe | null = null;
-                let dinnerRecipe: Recipe | null = null;
-                const remaining: Recipe[] = [];
-
-                dayRecipes.forEach((r) => {
-                  const cat = (r.category || '').toLowerCase();
-                  if (!dinnerRecipe && (cat.includes('abend') || cat.includes('dinner'))) {
-                    dinnerRecipe = r;
-                  } else if (!lunchRecipe && (cat.includes('mittag') || cat.includes('lunch'))) {
-                    lunchRecipe = r;
-                  } else {
-                    remaining.push(r);
-                  }
-                });
-                remaining.forEach((r) => {
-                  if (!lunchRecipe) lunchRecipe = r;
-                  else if (!dinnerRecipe) dinnerRecipe = r;
-                });
-
-                const extraRecipes = dayRecipes.filter(
-                  (r) => r.id !== lunchRecipe?.id && r.id !== dinnerRecipe?.id
-                );
+                const weekdayColor = weekdayColors[day.isoWeekday] || accentColor;
 
                 const renderSlotCard = (
                   slotLabel: string,
                   SlotIcon: React.ComponentType<{ className?: string }>,
-                  recipe: Recipe | null
+                  recipe: Recipe | null,
+                  keySuffix: string
                 ) => (
                   <div
+                    key={keySuffix}
                     onClick={() => recipe && openRecipeOverlay(recipe, day.portions)}
                     className={`group relative rounded-3xl overflow-hidden border border-black/10 dark:border-white/10 shadow-md transition-all duration-300 ${
                       recipe
@@ -2698,6 +3585,10 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                   >
                     <div className="flex items-baseline justify-between gap-2 px-1">
                       <div className="flex items-baseline gap-2.5">
+                        <span
+                          style={{ backgroundColor: weekdayColor }}
+                          className="w-3 h-3 rounded-full inline-block shrink-0 self-center"
+                        />
                         <h3 className="text-2xl sm:text-3xl font-extrabold tracking-tight capitalize">
                           {fullWeekday}
                         </h3>
@@ -2716,15 +3607,26 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {renderSlotCard('Mittagessen', Sun, lunchRecipe)}
-                      {renderSlotCard('Abendessen', Moon, dinnerRecipe)}
+                      {mealSections.map((sec) => {
+                        const secLabelLower = sec.label.toLowerCase();
+                        const SlotIcon =
+                          secLabelLower.includes('abend') || secLabelLower.includes('nacht')
+                            ? Moon
+                            : secLabelLower.includes('mittag') || secLabelLower.includes('früh')
+                            ? Sun
+                            : Utensils;
+                        const slotIds = day.slots[sec.id] || [];
+                        const slotRecipes = slotIds
+                          .map((rid) => getRecipeById(rid))
+                          .filter((r): r is Recipe => !!r);
+                        if (slotRecipes.length === 0) {
+                          return renderSlotCard(sec.label, SlotIcon, null, `${sec.id}_empty`);
+                        }
+                        return slotRecipes.map((r, rIdx) =>
+                          renderSlotCard(sec.label, SlotIcon, r, `${sec.id}_${r.id}_${rIdx}`)
+                        );
+                      })}
                     </div>
-
-                    {extraRecipes.length > 0 && (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                        {extraRecipes.map((extra) => renderSlotCard(extra.category || 'Extra', Utensils, extra))}
-                      </div>
-                    )}
                   </section>
                 );
               })}
@@ -2749,29 +3651,37 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       )}
 
       {/* ======================================================== */}
-      {/* OVERLAY: TOP-ANCHORED LIGHT KATALOG FOR MOBILE CYCLE PICKER */}
+      {/* OVERLAY: TOP-ANCHORED LIGHT KATALOG PICKER (Calendar & Cycle Sections) */}
       {/* ======================================================== */}
-      {cyclePickerDayIndex !== null && (
+      {pickerTarget !== null && (
         <div
-          onClick={() => setCyclePickerDayIndex(null)}
+          onClick={() => setPickerTarget(null)}
           className="fixed inset-0 bg-black/55 z-[115] flex items-start justify-center p-3 pt-14 sm:pt-16 backdrop-blur-xs animate-in fade-in duration-150"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-[#1E2024] w-full max-w-md max-h-[76dvh] rounded-3xl shadow-2xl border border-[#E5E3DC] dark:border-[#2B2D31] flex flex-col overflow-hidden animate-in slide-in-from-top-3 duration-150"
+            className="bg-white dark:bg-[#1E2024] w-full max-w-md max-h-[78dvh] rounded-3xl shadow-2xl border border-[#E5E3DC] dark:border-[#2B2D31] flex flex-col overflow-hidden animate-in slide-in-from-top-3 duration-150"
           >
             <div className="px-4 py-3 border-b border-[#E5E3DC] dark:border-[#2B2D31] flex items-center justify-between gap-2 shrink-0">
               <div className="min-w-0">
                 <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 truncate">
-                  Light Katalog · {cycle.days.find((d) => d.dayIndex === cyclePickerDayIndex)?.label || `Tag ${cyclePickerDayIndex + 1}`}
+                  {pickerTarget.mode === 'cycle'
+                    ? `Light Katalog · ${
+                        cycle.days.find((d) => d.dayIndex === pickerTarget.dayIndex)?.label ||
+                        `Tag ${pickerTarget.dayIndex + 1}`
+                      }`
+                    : (() => {
+                        const dObj = calendarDays.find((d) => d.date === pickerTarget.dateIso);
+                        return `Light Katalog · ${dObj ? `${dObj.weekday} ${dObj.dayMonth}` : pickerTarget.dateIso}`;
+                      })()}
                 </h3>
                 <p className="text-[11px] text-neutral-500">
-                  Tippe ein Gericht an, um es hinzuzufügen oder zu entfernen
+                  Abschnitt wählen & Gericht antippen
                 </p>
               </div>
               <button
                 type="button"
-                onClick={() => setCyclePickerDayIndex(null)}
+                onClick={() => setPickerTarget(null)}
                 className="w-8 h-8 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-500 flex items-center justify-center cursor-pointer shrink-0"
                 aria-label="Schließen"
               >
@@ -2779,7 +3689,33 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
               </button>
             </div>
 
+            {/* Section Tabs + Search & Category Filter */}
             <div className="p-3 border-b border-[#E5E3DC] dark:border-[#2B2D31] space-y-2 shrink-0">
+              {mealSections.length > 0 && (
+                <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                  {mealSections.map((sec) => {
+                    const isSecActive = pickerTarget.sectionId === sec.id;
+                    return (
+                      <button
+                        key={sec.id}
+                        type="button"
+                        onClick={() =>
+                          setPickerTarget((prev) => (prev ? { ...prev, sectionId: sec.id } : null))
+                        }
+                        style={isSecActive ? { backgroundColor: accentColor, color: '#fff' } : undefined}
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-bold whitespace-nowrap shrink-0 cursor-pointer transition-all ${
+                          isSecActive
+                            ? 'shadow-2xs'
+                            : 'bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-600 dark:text-neutral-300'
+                        }`}
+                      >
+                        {sec.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
               <div className="relative">
                 <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
@@ -2823,8 +3759,15 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
 
             <div className="flex-1 overflow-y-auto p-3 space-y-2">
               {(() => {
-                const targetDay = cycle.days.find((d) => d.dayIndex === cyclePickerDayIndex);
-                const assignedIds = targetDay?.recipeIds || [];
+                let assignedIds: string[] = [];
+                if (pickerTarget.mode === 'cycle') {
+                  const targetDay = cycle.days.find((d) => d.dayIndex === pickerTarget.dayIndex);
+                  const slots = buildNormalizedSlots(targetDay?.recipeIds, targetDay?.slots, mealSections);
+                  assignedIds = slots[pickerTarget.sectionId] || [];
+                } else {
+                  const targetDay = calendarDays.find((d) => d.date === pickerTarget.dateIso);
+                  assignedIds = targetDay?.slots?.[pickerTarget.sectionId] || [];
+                }
                 const q = cyclePickerSearch.toLowerCase().trim();
                 const list = allCombinedRecipes.filter((r) => {
                   const matchCat = cyclePickerCategory === 'all' || r.category === cyclePickerCategory;
@@ -2849,7 +3792,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                     <button
                       key={r.id}
                       type="button"
-                      onClick={() => handleToggleRecipeInCycleDay(cyclePickerDayIndex, r.id)}
+                      onClick={() => handleToggleRecipeInTarget(pickerTarget, r.id)}
                       style={
                         isAssigned
                           ? { borderColor: accentColor, backgroundColor: `${accentColor}14` }
@@ -2902,11 +3845,188 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
             <div className="px-4 py-2.5 border-t border-[#E5E3DC] dark:border-[#2B2D31] bg-[#F4F3EF] dark:bg-[#1A1C1F] flex justify-end shrink-0">
               <button
                 type="button"
-                onClick={() => setCyclePickerDayIndex(null)}
+                onClick={() => setPickerTarget(null)}
                 style={{ backgroundColor: accentColor }}
                 className="px-4 py-1.5 rounded-full text-white text-xs font-bold cursor-pointer"
               >
                 Fertig
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL OVERLAY: DUPLIKATE-MANAGER (Zutaten-Bereinigung)   */}
+      {/* ======================================================== */}
+      {showDuplicatesModal && (
+        <div
+          onClick={() => setShowDuplicatesModal(false)}
+          className="fixed inset-0 bg-black/60 z-[135] flex items-center justify-center p-3 sm:p-4 backdrop-blur-xs animate-in fade-in duration-150"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-[#1E2024] w-full max-w-2xl max-h-[85dvh] rounded-3xl shadow-2xl border border-[#E5E3DC] dark:border-[#2B2D31] flex flex-col overflow-hidden animate-in zoom-in-95 duration-150"
+          >
+            <div className="px-5 py-3.5 border-b border-[#E5E3DC] dark:border-[#2B2D31] flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div
+                  style={{ backgroundColor: `${accentColor}1A`, color: accentColor }}
+                  className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
+                >
+                  <GitMerge className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 truncate">
+                    Duplikate-Manager ({duplicatePairs.length})
+                  </h3>
+                  <p className="text-[11px] text-neutral-500 truncate">
+                    Ähnliche Zutaten vergleichen, Master auswählen oder beide behalten
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                {dismissedDuplicates.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => persistCookbook({ dismissedDuplicates: [] })}
+                    className="text-[11px] font-semibold text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 flex items-center gap-1 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span className="hidden sm:inline">Ignorierte ({dismissedDuplicates.length})</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowDuplicatesModal(false)}
+                  className="w-8 h-8 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-500 flex items-center justify-center cursor-pointer"
+                  aria-label="Schließen"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {duplicatePairs.length === 0 ? (
+                <div className="p-6 rounded-2xl bg-[#F4F3EF]/80 dark:bg-[#25272C] text-center space-y-1.5">
+                  <CheckCircle2 className="w-7 h-7 mx-auto text-emerald-500" />
+                  <p className="text-xs font-semibold text-neutral-700 dark:text-neutral-200">
+                    Keine offenen Zutaten-Duplikate erkannt
+                  </p>
+                  <p className="text-[11px] text-neutral-500">
+                    Deine Zutatenliste im Katalog ist sauber zusammengeführt.
+                  </p>
+                </div>
+              ) : (
+                duplicatePairs.map((pair) => {
+                  const selectedSide =
+                    duplicateMasterChoices[pair.pairKey] ||
+                    (pair.right.recipeCount > pair.left.recipeCount ? 'right' : 'left');
+                  const masterItem = selectedSide === 'left' ? pair.left : pair.right;
+                  return (
+                    <div
+                      key={pair.pairKey}
+                      className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#191B1F] space-y-3"
+                    >
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="font-semibold" style={{ color: accentColor }}>
+                          {pair.reason}
+                        </span>
+                        <span className="text-neutral-400">Master anklicken zum Übernehmen</span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        {(
+                          [
+                            { side: 'left' as const, item: pair.left },
+                            { side: 'right' as const, item: pair.right },
+                          ]
+                        ).map(({ side, item }) => {
+                          const isMaster = selectedSide === side;
+                          return (
+                            <button
+                              key={item.key}
+                              type="button"
+                              onClick={() =>
+                                setDuplicateMasterChoices((prev) => ({
+                                  ...prev,
+                                  [pair.pairKey]: side,
+                                }))
+                              }
+                              style={
+                                isMaster
+                                  ? { borderColor: accentColor, backgroundColor: `${accentColor}12` }
+                                  : undefined
+                              }
+                              className={`p-3 rounded-xl border text-left transition-all cursor-pointer space-y-1 ${
+                                isMaster
+                                  ? 'border-2 shadow-2xs'
+                                  : 'border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#222429] hover:border-neutral-400'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 truncate">
+                                  {item.displayName}
+                                </span>
+                                <span
+                                  style={isMaster ? { backgroundColor: accentColor } : undefined}
+                                  className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
+                                    isMaster
+                                      ? 'text-white'
+                                      : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-500'
+                                  }`}
+                                >
+                                  {isMaster ? 'Master' : 'Als Master wählen'}
+                                </span>
+                              </div>
+                              <span className="text-[11px] text-neutral-500 block truncate">
+                                In {item.recipeCount} {item.recipeCount === 1 ? 'Gericht' : 'Gerichten'}:{' '}
+                                {item.recipeTitles.join(', ')}
+                              </span>
+                              {item.sampleAmounts.length > 0 && (
+                                <span className="text-[10px] text-neutral-400 block truncate">
+                                  Mengen: {item.sampleAmounts.join(', ')}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2 flex-wrap pt-1">
+                        <button
+                          type="button"
+                          onClick={() => handleKeepBothDuplicates(pair.pairKey)}
+                          className="px-3 py-1.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#222429] hover:border-neutral-400 text-xs font-semibold text-neutral-700 dark:text-neutral-300 cursor-pointer"
+                        >
+                          Beide behalten
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleMergeDuplicatePair(pair)}
+                          style={{ backgroundColor: accentColor }}
+                          className="px-3.5 py-1.5 rounded-xl text-white text-xs font-bold flex items-center gap-1.5 shadow-2xs hover:opacity-95 cursor-pointer active:scale-95"
+                        >
+                          <GitMerge className="w-3.5 h-3.5" />
+                          <span>Zu „{masterItem.displayName}“ mergen</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="px-5 py-3 border-t border-[#E5E3DC] dark:border-[#2B2D31] bg-[#F4F3EF] dark:bg-[#1A1C1F] flex justify-end shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowDuplicatesModal(false)}
+                style={{ backgroundColor: accentColor }}
+                className="px-4 py-1.5 rounded-full text-white text-xs font-bold cursor-pointer"
+              >
+                Schließen
               </button>
             </div>
           </div>
@@ -2995,18 +4115,17 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                     </span>
                   )}
 
-                  {selectedIsOwn && (
-                    <button
-                      type="button"
-                      onClick={() => handleToggleExcludeFromShoppingList(selectedRecipe)}
-                      className={`text-[11px] font-semibold px-2 py-0.5 rounded-md border transition-colors cursor-pointer ${
-                        selectedRecipe.excludeFromShoppingList
-                          ? 'border-neutral-300 dark:border-neutral-600 text-neutral-500 bg-neutral-100 dark:bg-neutral-800'
-                          : 'border-emerald-200 dark:border-emerald-900/50 text-emerald-700 dark:text-emerald-400 bg-emerald-50/70 dark:bg-emerald-950/30'
-                      }`}
-                    >
-                      {selectedRecipe.excludeFromShoppingList ? 'Ohne Einkaufsliste' : 'In Einkaufsliste'}
-                    </button>
+                  {selectedRecipe.mealTypes && selectedRecipe.mealTypes.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1">
+                      {selectedRecipe.mealTypes.map((mt) => (
+                        <span
+                          key={mt}
+                          className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-700 dark:text-neutral-300 border border-[#E5E3DC] dark:border-[#2F3136]"
+                        >
+                          {mt}
+                        </span>
+                      ))}
+                    </div>
                   )}
                 </div>
               </div>
@@ -3303,12 +4422,121 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       )}
 
       {/* ======================================================== */}
-      {/* MODAL: REZEPT ERSTELLEN / BEARBEITEN (KOMPONENTEN & EINKAUFSLISTE SWITCH) */}
+      {/* MODAL: NEUE ZUTAT MANUELL ANLEGEN (KATALOG -> ZUTATEN)   */}
+      {/* ======================================================== */}
+      {showAddIngredientModal && (
+        <div
+          onClick={() => setShowAddIngredientModal(false)}
+          className="fixed inset-0 bg-black/60 z-[148] flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in duration-150"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-[#1E2024] w-full max-w-md rounded-3xl p-5 shadow-2xl border border-[#E5E3DC] dark:border-[#2B2D31] space-y-4 animate-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-[#E5E3DC] dark:border-[#2B2D31]">
+              <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
+                <Plus className="w-4 h-4" style={{ color: accentColor }} />
+                <span>Neue Zutat anlegen</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowAddIngredientModal(false)}
+                className="text-neutral-400 hover:text-neutral-700 cursor-pointer"
+                aria-label="Schließen"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateStandaloneIngredient} className="space-y-3.5 text-xs">
+              <div>
+                <label className="font-semibold block mb-1">Name der Zutat</label>
+                <input
+                  type="text"
+                  autoFocus
+                  value={newIngredientName}
+                  onChange={(e) => {
+                    setNewIngredientName(e.target.value);
+                    setNewIngredientError(null);
+                  }}
+                  placeholder="z. B. Kokosmilch, Olivenöl, Dinkelmehl..."
+                  className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden"
+                />
+                {newIngredientError && (
+                  <p className="text-[11px] text-red-500 mt-1 font-medium">{newIngredientError}</p>
+                )}
+              </div>
+
+              <div>
+                <label className="font-semibold block mb-1">Standard-Einheit (Vorauswahl in Rezepten)</label>
+                <select
+                  value={newIngredientUnit}
+                  onChange={(e) => setNewIngredientUnit(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden cursor-pointer"
+                >
+                  <option value="">Keine Vorgabe</option>
+                  {availableUnits.map((u) => (
+                    <option key={u} value={u}>
+                      {u}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="p-3 rounded-2xl border border-[#E5E3DC] dark:border-[#2B2D31] bg-[#F4F3EF]/80 dark:bg-[#25272C] flex items-center justify-between gap-3">
+                <div>
+                  <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
+                    Auf Einkaufsliste aufnehmen
+                  </span>
+                  <span className="text-[11px] text-neutral-500 block">
+                    Deaktivieren z. B. für Vorrat wie Salz oder Pfeffer.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={!newIngredientExcludeShopping}
+                  onClick={() => setNewIngredientExcludeShopping((v) => !v)}
+                  style={!newIngredientExcludeShopping ? { backgroundColor: accentColor } : undefined}
+                  className={`w-11 h-6 rounded-full transition-colors flex items-center px-1 cursor-pointer shrink-0 ${
+                    !newIngredientExcludeShopping
+                      ? 'justify-end'
+                      : 'bg-neutral-300 dark:bg-neutral-700 justify-start'
+                  }`}
+                >
+                  <span className="w-4 h-4 rounded-full bg-white shadow-xs" />
+                </button>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddIngredientModal(false)}
+                  className="px-3.5 py-2 rounded-full border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-600 dark:text-neutral-400 cursor-pointer"
+                >
+                  Abbrechen
+                </button>
+                <button
+                  type="submit"
+                  style={{ backgroundColor: accentColor }}
+                  className="px-4 py-2 rounded-full text-white font-bold shadow-xs cursor-pointer"
+                >
+                  Zutat speichern
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL: REZEPT ERSTELLEN / BEARBEITEN (MIT TOP-TABS & SMARTER ZUTATENSUCHE) */}
       {/* ======================================================== */}
       {isRecipeModalOpen && (
-        <div className="fixed inset-0 bg-black/60 z-[145] flex items-center justify-center p-4 backdrop-blur-xs">
-          <div className="bg-white dark:bg-[#1E2024] w-full max-w-lg rounded-3xl p-5 shadow-2xl border border-[#E5E3DC] dark:border-[#2B2D31] space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-2 border-b border-[#E5E3DC] dark:border-[#2B2D31]">
+        <div className="fixed inset-0 bg-black/60 z-[145] flex items-center justify-center p-3 sm:p-4 backdrop-blur-xs">
+          <div className="bg-white dark:bg-[#1E2024] w-full max-w-lg rounded-3xl shadow-2xl border border-[#E5E3DC] dark:border-[#2B2D31] flex flex-col max-h-[90dvh] overflow-hidden animate-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="px-5 pt-4 pb-2.5 border-b border-[#E5E3DC] dark:border-[#2B2D31] flex items-center justify-between shrink-0">
               <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
                 {editingRecipe ? (
                   <Edit3 className="w-4 h-4" style={{ color: accentColor }} />
@@ -3323,17 +4551,61 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                   setIsRecipeModalOpen(false);
                   setEditingRecipe(null);
                 }}
-                className="text-neutral-400 hover:text-neutral-700 cursor-pointer"
+                className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer p-1"
+                aria-label="Schließen"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
+            {/* Clean Top Navigation Tabs */}
+            <div className="px-5 py-2.5 bg-[#F7F6F2] dark:bg-[#181A1E] border-b border-[#E5E3DC] dark:border-[#2B2D31] flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0">
+              {[
+                { id: 'recipe' as const, label: 'Rezept', badge: formComponents.filter((c) => c.name.trim()).length },
+                { id: 'category' as const, label: 'Kategorie & Zeit' },
+                { id: 'availability' as const, label: 'Verfügbarkeit', badge: formMealTypes.length },
+              ].map((t) => {
+                const isActive = recipeFormTab === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setRecipeFormTab(t.id)}
+                    style={isActive ? { backgroundColor: accentColor, color: '#fff' } : undefined}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap flex items-center gap-1.5 transition-all cursor-pointer shrink-0 ${
+                      isActive
+                        ? 'shadow-xs'
+                        : 'text-neutral-600 dark:text-neutral-300 bg-white dark:bg-[#23252A] border border-[#E5E3DC] dark:border-[#2F3136]'
+                    }`}
+                  >
+                    <span>{t.label}</span>
+                    {typeof t.badge === 'number' && t.badge > 0 && (
+                      <span
+                        className={`text-[10px] font-extrabold px-1.5 py-0.2 rounded-full tabular-nums ${
+                          isActive
+                            ? 'bg-white/25 text-white'
+                            : 'bg-[#F4F3EF] dark:bg-[#2C2E34] text-neutral-600 dark:text-neutral-300'
+                        }`}
+                      >
+                        {t.badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                const form = e.target as any;
-                const chosenCat = (form.customCategory?.value?.trim() || form.category.value).trim();
+                const titleVal = formTitle.trim();
+                if (!titleVal) {
+                  setRecipeFormTab('recipe');
+                  setFormValidationError('Bitte einen Namen für das Tellergericht eingeben.');
+                  return;
+                }
+
+                const chosenCat = (formCustomCategory.trim() || formCategory).trim();
                 if (chosenCat && !categories.includes(chosenCat)) {
                   persistCookbook({ categories: [...categories, chosenCat] });
                 }
@@ -3360,27 +4632,34 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       })
                   : formComponents
                       .filter((c) => c.name.trim())
-                      .map((c, i) => ({
-                        id: c.id || `comp_${Date.now()}_${i}`,
-                        name: c.name.trim(),
-                        amount: c.amount.trim(),
-                      }));
+                      .map((c, i) => {
+                        const qty = c.amount.trim();
+                        const combinedAmount = qty
+                          ? [qty, c.unit.trim()].filter(Boolean).join(' ')
+                          : '';
+                        return {
+                          id: c.id || `comp_${Date.now()}_${i}`,
+                          name: c.name.trim(),
+                          amount: combinedAmount,
+                        };
+                      });
 
                 const recId = editingRecipe ? editingRecipe.id : `r_${Date.now()}`;
-                const titleVal = form.title.value.trim();
                 const newRec: Recipe = {
                   id: recId,
                   title: titleVal,
                   category: chosenCat || 'Mittagessen',
-                  prepTimeMinutes: parseInt(form.prepTime.value, 10) || 20,
-                  portions: Math.max(1, parseInt(form.portions.value, 10) || 2),
-                  description: form.description.value.trim(),
-                  instructions: form.instructions.value.split('\n').filter((l: string) => l.trim()),
+                  prepTimeMinutes: Math.max(1, parseInt(formPrepTime, 10) || 20),
+                  portions: Math.max(1, parseInt(formPortions, 10) || 2),
+                  description: formDescription.trim(),
+                  instructions: formInstructions.split('\n').filter((l: string) => l.trim()),
                   ingredients: parsedComponents,
                   tags: editingRecipe ? editingRecipe.tags : ['selbstgemacht'],
                   images: editingRecipe?.images || [],
-                  mediaDir: editingRecipe?.mediaDir || getClientMediaDir({ ...editingRecipe, id: recId, title: titleVal } as Recipe),
-                  excludeFromShoppingList: formExcludeFromShoppingList,
+                  mediaDir:
+                    editingRecipe?.mediaDir ||
+                    getClientMediaDir({ ...editingRecipe, id: recId, title: titleVal } as Recipe),
+                  mealTypes: formMealTypes,
                 };
 
                 const nextRecipes = editingRecipe
@@ -3390,240 +4669,479 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 setIsRecipeModalOpen(false);
                 setEditingRecipe(null);
               }}
-              className="space-y-3 text-xs"
+              className="flex-1 flex flex-col overflow-hidden text-xs"
             >
-              <div>
-                <label className="font-semibold block mb-1">Name des Gerichts</label>
-                <input
-                  name="title"
-                  required
-                  defaultValue={editingRecipe?.title || ''}
-                  placeholder="z. B. Ofen-Lachs mit Dillkartoffeln"
-                  className="w-full p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden"
-                />
-              </div>
+              <div className="flex-1 overflow-y-auto overscroll-y-contain p-5 space-y-4">
+                {formValidationError && (
+                  <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-xs font-semibold">
+                    {formValidationError}
+                  </div>
+                )}
 
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="font-semibold block mb-1">Essenskategorie</label>
-                  <select
-                    name="category"
-                    defaultValue={editingRecipe?.category || categories[0] || 'Mittagessen'}
-                    className="w-full p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C]"
-                  >
-                    {categories.map((cat) => (
-                      <option key={cat} value={cat}>
-                        {cat}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="font-semibold block mb-1">Dauer (Min)</label>
-                  <input
-                    name="prepTime"
-                    type="number"
-                    min={1}
-                    defaultValue={editingRecipe?.prepTimeMinutes || 25}
-                    className="w-full p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C]"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold block mb-1">Basis-Portionen</label>
-                  <input
-                    name="portions"
-                    type="number"
-                    min={1}
-                    defaultValue={editingRecipe?.portions || defaultCyclePortions || 2}
-                    className="w-full p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C]"
-                  />
-                </div>
-              </div>
+                {/* TAB 1: REZEPT (Titel, Smart Zutaten-Auswahl, Komponenten mit Menge + Einheit, Beschreibung, Zubereitung) */}
+                {recipeFormTab === 'recipe' && (
+                  <div className="space-y-4">
+                    <div>
+                      <label className="font-semibold block mb-1">Name des Gerichts</label>
+                      <input
+                        type="text"
+                        value={formTitle}
+                        onChange={(e) => {
+                          setFormTitle(e.target.value);
+                          if (formValidationError) setFormValidationError(null);
+                        }}
+                        placeholder="z. B. Ofen-Lachs mit Dillkartoffeln"
+                        className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden"
+                      />
+                    </div>
 
-              <div>
-                <label className="font-semibold block mb-1">Oder neue Kategorie anlegen (optional)</label>
-                <input
-                  name="customCategory"
-                  placeholder="z. B. Sommergerichte, Suppen, Meal-Prep..."
-                  className="w-full p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C]"
-                />
-              </div>
-
-              {/* Switch: "Keine Einkaufsliste" */}
-              <div className="p-3 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF]/80 dark:bg-[#25272C] flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
-                    Keine Einkaufsliste
-                  </span>
-                  <span className="text-[11px] text-neutral-500 block">
-                    Beim Wochen-Einkauf automatisch überspringen
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={formExcludeFromShoppingList}
-                  onClick={() => setFormExcludeFromShoppingList((v) => !v)}
-                  style={formExcludeFromShoppingList ? { backgroundColor: accentColor } : undefined}
-                  className={`w-11 h-6 rounded-full p-0.5 transition-colors cursor-pointer shrink-0 ${
-                    formExcludeFromShoppingList ? '' : 'bg-neutral-300 dark:bg-neutral-600'
-                  }`}
-                >
-                  <span
-                    className={`block w-5 h-5 rounded-full bg-white shadow-xs transition-transform ${
-                      formExcludeFromShoppingList ? 'translate-x-5' : 'translate-x-0'
-                    }`}
-                  />
-                </button>
-              </div>
-
-              <div>
-                <label className="font-semibold block mb-1">Kurzbeschreibung</label>
-                <input
-                  name="description"
-                  defaultValue={editingRecipe?.description || ''}
-                  placeholder="Kurze Zusammenfassung..."
-                  className="w-full p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C]"
-                />
-              </div>
-
-              {/* Structured Komponenten & Mengen Editor */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <label className="font-semibold">
-                    Komponenten & Mengen (automatisch skalierbar)
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!bulkComponentsMode) {
-                        setBulkComponentsText(
-                          formComponents
-                            .filter((c) => c.name.trim())
-                            .map((c) => (c.amount.trim() ? `${c.name} | ${c.amount}` : c.name))
-                            .join('\n')
-                        );
-                      } else {
-                        const rows = bulkComponentsText
-                          .split('\n')
-                          .filter((l) => l.trim())
-                          .map((l, idx) => {
-                            const pIdx = l.indexOf('|');
-                            return pIdx !== -1
-                              ? {
-                                  id: `comp_${Date.now()}_${idx}`,
-                                  name: l.slice(0, pIdx).trim(),
-                                  amount: l.slice(pIdx + 1).trim(),
-                                }
-                              : { id: `comp_${Date.now()}_${idx}`, name: l.trim(), amount: '' };
-                          });
-                        setFormComponents(rows.length ? rows : [{ id: `comp_${Date.now()}_0`, name: '', amount: '' }]);
-                      }
-                      setBulkComponentsMode((v) => !v);
-                    }}
-                    style={{ color: accentColor }}
-                    className="text-[11px] font-semibold hover:underline cursor-pointer"
-                  >
-                    {bulkComponentsMode ? 'Einzelzeilen' : 'Als Text einfügen'}
-                  </button>
-                </div>
-
-                {bulkComponentsMode ? (
-                  <textarea
-                    rows={4}
-                    value={bulkComponentsText}
-                    onChange={(e) => setBulkComponentsText(e.target.value)}
-                    placeholder="Lachsfilet | 200g&#10;Kartoffeln | 500g&#10;Frischer Dill | 1 Bund"
-                    className="w-full p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C]"
-                  />
-                ) : (
-                  <div className="space-y-1.5">
-                    {formComponents.map((comp, idx) => (
-                      <div key={comp.id} className="flex items-center gap-1.5">
-                        <input
-                          type="text"
-                          value={comp.name}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setFormComponents((prev) =>
-                              prev.map((c, i) => (i === idx ? { ...c, name: val } : c))
-                            );
-                          }}
-                          placeholder="Komponente (z. B. Kartoffeln)"
-                          className="flex-1 min-w-0 p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden"
-                        />
-                        <input
-                          type="text"
-                          value={comp.amount}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setFormComponents((prev) =>
-                              prev.map((c, i) => (i === idx ? { ...c, amount: val } : c))
-                            );
-                          }}
-                          placeholder="Menge (500g)"
-                          className="w-24 sm:w-28 p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden"
-                        />
+                    {/* Smart Komponenten & Mengen Editor */}
+                    <div className="space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="font-semibold">
+                          Komponenten & Mengen (skalierbar auf {formPortions || 2} Port.)
+                        </label>
                         <button
                           type="button"
-                          onClick={() =>
-                            setFormComponents((prev) =>
-                              prev.length > 1
-                                ? prev.filter((_, i) => i !== idx)
-                                : [{ id: `comp_${Date.now()}_0`, name: '', amount: '' }]
-                            )
-                          }
-                          className="p-2 rounded-xl text-neutral-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer shrink-0"
-                          title="Komponente entfernen"
+                          onClick={() => {
+                            if (!bulkComponentsMode) {
+                              setBulkComponentsText(
+                                formComponents
+                                  .filter((c) => c.name.trim())
+                                  .map((c) => {
+                                    const combined = [c.amount.trim(), c.unit.trim()].filter(Boolean).join(' ');
+                                    return combined ? `${c.name} | ${combined}` : c.name;
+                                  })
+                                  .join('\n')
+                              );
+                            } else {
+                              const rows = bulkComponentsText
+                                .split('\n')
+                                .filter((l) => l.trim())
+                                .map((l, idx) => {
+                                  const pIdx = l.indexOf('|');
+                                  if (pIdx !== -1) {
+                                    const rawAmt = l.slice(pIdx + 1).trim();
+                                    const split = splitAmountValueAndUnit(rawAmt, availableUnits);
+                                    return {
+                                      id: `comp_${Date.now()}_${idx}`,
+                                      name: l.slice(0, pIdx).trim(),
+                                      amount: split.amount,
+                                      unit: split.unit,
+                                    };
+                                  }
+                                  return {
+                                    id: `comp_${Date.now()}_${idx}`,
+                                    name: l.trim(),
+                                    amount: '',
+                                    unit: '',
+                                  };
+                                });
+                              setFormComponents(rows);
+                            }
+                            setBulkComponentsMode((v) => !v);
+                          }}
+                          style={{ color: accentColor }}
+                          className="text-[11px] font-semibold hover:underline cursor-pointer"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          {bulkComponentsMode ? 'Einzelzeilen' : 'Als Text einfügen'}
                         </button>
                       </div>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setFormComponents((prev) => [
-                          ...prev,
-                          { id: `comp_${Date.now()}_${prev.length}`, name: '', amount: '' },
-                        ])
-                      }
-                      style={{ color: accentColor }}
-                      className="flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg hover:bg-amber-500/10 cursor-pointer"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Komponente hinzufügen</span>
-                    </button>
+
+                      {bulkComponentsMode ? (
+                        <textarea
+                          rows={5}
+                          value={bulkComponentsText}
+                          onChange={(e) => setBulkComponentsText(e.target.value)}
+                          placeholder="Lachsfilet | 200 Gramm&#10;Kartoffeln | 500 Gramm&#10;Sahne | 1 Becher"
+                          className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden"
+                        />
+                      ) : (
+                        <div className="space-y-2.5">
+                          {/* Fast Existing Ingredient Picker */}
+                          <div className="relative">
+                            <div className="relative">
+                              <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                              <input
+                                type="text"
+                                value={ingredientPickerQuery}
+                                onFocus={() => setShowIngredientDropdown(true)}
+                                onChange={(e) => {
+                                  setIngredientPickerQuery(e.target.value);
+                                  setShowIngredientDropdown(true);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Escape') setShowIngredientDropdown(false);
+                                }}
+                                placeholder="Bestehende Zutat suchen & hinzufügen (oder neu tippen)..."
+                                className="w-full text-xs pl-8 pr-8 py-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden"
+                              />
+                              {(ingredientPickerQuery || showIngredientDropdown) && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIngredientPickerQuery('');
+                                    setShowIngredientDropdown(false);
+                                  }}
+                                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-700 cursor-pointer"
+                                  title="Auswahl schließen"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+
+                            {showIngredientDropdown && (() => {
+                              const rawQ = ingredientPickerQuery.trim();
+                              const normQ = normalizeIngredientKey(rawQ);
+                              const lowerQ = rawQ.toLowerCase();
+                              const matchingExisting = collectedIngredients
+                                .filter(
+                                  (ing) =>
+                                    !lowerQ ||
+                                    ing.displayName.toLowerCase().includes(lowerQ) ||
+                                    ing.key.includes(normQ)
+                                )
+                                .sort((a, b) => {
+                                  const aStarts = lowerQ && a.displayName.toLowerCase().startsWith(lowerQ) ? 0 : 1;
+                                  const bStarts = lowerQ && b.displayName.toLowerCase().startsWith(lowerQ) ? 0 : 1;
+                                  if (aStarts !== bStarts) return aStarts - bStarts;
+                                  return b.recipeCount - a.recipeCount;
+                                })
+                                .slice(0, 12);
+
+                              const hasExactMatch =
+                                normQ.length > 0 &&
+                                collectedIngredients.some((ing) => ing.key === normQ);
+
+                              return (
+                                <div className="mt-1.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#23252A] shadow-lg overflow-hidden max-h-52 overflow-y-auto overscroll-y-contain divide-y divide-[#E5E3DC]/60 dark:divide-[#2F3136]">
+                                  {matchingExisting.map((ing) => {
+                                    const alreadyInRecipe = formComponents.some(
+                                      (fc) => normalizeIngredientKey(fc.name) === ing.key
+                                    );
+                                    return (
+                                      <button
+                                        key={ing.key}
+                                        type="button"
+                                        onClick={() => {
+                                          setFormComponents((prev) => [
+                                            ...prev,
+                                            {
+                                              id: `comp_${Date.now()}_${prev.length}`,
+                                              name: ing.displayName,
+                                              amount: '',
+                                              unit: ing.defaultUnit || availableUnits[0] || '',
+                                            },
+                                          ]);
+                                          setIngredientPickerQuery('');
+                                          setShowIngredientDropdown(false);
+                                        }}
+                                        className="w-full px-3 py-2 flex items-center justify-between gap-2 text-left hover:bg-[#F4F3EF] dark:hover:bg-[#2B2D33] transition-colors cursor-pointer"
+                                      >
+                                        <div className="min-w-0 flex-1">
+                                          <span className="font-semibold text-neutral-900 dark:text-neutral-100 block truncate">
+                                            {ing.displayName}
+                                          </span>
+                                          <span className="text-[10px] text-neutral-400 block truncate">
+                                            {ing.recipeCount > 0
+                                              ? `${ing.recipeCount}× in Gerichten`
+                                              : 'Vorhandene Zutat'}
+                                            {ing.defaultUnit ? ` · ${ing.defaultUnit}` : ''}
+                                          </span>
+                                        </div>
+                                        <span
+                                          style={
+                                            alreadyInRecipe
+                                              ? undefined
+                                              : { backgroundColor: `${accentColor}1A`, color: accentColor }
+                                          }
+                                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
+                                            alreadyInRecipe
+                                              ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-400'
+                                              : ''
+                                          }`}
+                                        >
+                                          {alreadyInRecipe ? 'Bereits drin (+)' : '+ Wählen'}
+                                        </span>
+                                      </button>
+                                    );
+                                  })}
+
+                                  {rawQ.length > 0 && !hasExactMatch && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const newKey = normalizeIngredientKey(rawQ);
+                                        const defaultUnit = availableUnits[0] || 'Gramm';
+                                        if (newKey && !ingredientMeta[newKey]) {
+                                          const nextMeta: Record<string, IngredientMeta> = {
+                                            ...ingredientMeta,
+                                            [newKey]: {
+                                              key: newKey,
+                                              displayName: rawQ,
+                                              defaultUnit,
+                                              excludeFromShoppingList: false,
+                                              isCustom: true,
+                                            },
+                                          };
+                                          persistCookbook({ ingredientMeta: nextMeta });
+                                        }
+                                        setFormComponents((prev) => [
+                                          ...prev,
+                                          {
+                                            id: `comp_${Date.now()}_${prev.length}`,
+                                            name: rawQ,
+                                            amount: '',
+                                            unit: defaultUnit,
+                                          },
+                                        ]);
+                                        setIngredientPickerQuery('');
+                                        setShowIngredientDropdown(false);
+                                      }}
+                                      style={{ color: accentColor }}
+                                      className="w-full px-3 py-2.5 flex items-center gap-2 text-left font-bold bg-[#FAF9F5] dark:bg-[#1E2024] hover:bg-amber-500/10 cursor-pointer"
+                                    >
+                                      <Plus className="w-3.5 h-3.5 shrink-0" />
+                                      <span className="truncate">
+                                        „{rawQ}“ als neue Zutat anlegen & hinzufügen
+                                      </span>
+                                    </button>
+                                  )}
+
+                                  {matchingExisting.length === 0 && rawQ.length === 0 && (
+                                    <div className="px-3 py-2.5 text-[11px] text-neutral-400">
+                                      Noch keine Zutaten gespeichert – tippe einen Namen ein, um eine neue Zutat anzulegen.
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
+                          </div>
+
+                          {/* Added Component Rows with Quantity + Unit Select */}
+                          {formComponents.length === 0 ? (
+                            <div className="p-3 rounded-xl border border-dashed border-[#E5E3DC] dark:border-[#2F3136] text-[11px] text-neutral-400 text-center">
+                              Wähle oben eine bestehende Zutat oder tippe einen neuen Namen ein.
+                            </div>
+                          ) : (
+                            <div className="space-y-1.5">
+                              {formComponents.map((comp, idx) => (
+                                <div key={comp.id} className="flex items-center gap-1.5">
+                                  <input
+                                    type="text"
+                                    value={comp.name}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setFormComponents((prev) =>
+                                        prev.map((c, i) => (i === idx ? { ...c, name: val } : c))
+                                      );
+                                    }}
+                                    placeholder="Zutat"
+                                    className="flex-1 min-w-0 p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden font-medium"
+                                  />
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    value={comp.amount}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setFormComponents((prev) =>
+                                        prev.map((c, i) => (i === idx ? { ...c, amount: val } : c))
+                                      );
+                                    }}
+                                    placeholder="Menge"
+                                    className="w-16 sm:w-20 p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden text-right tabular-nums"
+                                  />
+                                  <select
+                                    value={comp.unit}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setFormComponents((prev) =>
+                                        prev.map((c, i) => (i === idx ? { ...c, unit: val } : c))
+                                      );
+                                    }}
+                                    className="w-24 sm:w-28 p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden cursor-pointer shrink-0"
+                                    title="Einheit wählen"
+                                  >
+                                    <option value="">Einheit…</option>
+                                    {Array.from(
+                                      new Set(
+                                        comp.unit && !availableUnits.includes(comp.unit)
+                                          ? [comp.unit, ...availableUnits]
+                                          : availableUnits
+                                      )
+                                    ).map((u) => (
+                                      <option key={u} value={u}>
+                                        {u}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setFormComponents((prev) => prev.filter((_, i) => i !== idx))
+                                    }
+                                    className="p-2 rounded-xl text-neutral-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer shrink-0"
+                                    title="Komponente entfernen"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="font-semibold block mb-1">Kurzbeschreibung</label>
+                      <input
+                        type="text"
+                        value={formDescription}
+                        onChange={(e) => setFormDescription(e.target.value)}
+                        placeholder="Kurze Zusammenfassung..."
+                        className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="font-semibold block mb-1">Zubereitungsschritte (einer pro Zeile)</label>
+                      <textarea
+                        rows={4}
+                        value={formInstructions}
+                        onChange={(e) => setFormInstructions(e.target.value)}
+                        placeholder="1. Kartoffeln schälen und kochen.&#10;2. Lachs mit Zitronensaft würzen.&#10;3. Im Ofen bei 180°C 15 Minuten garen."
+                        className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 2: KATEGORIE & ZEIT */}
+                {recipeFormTab === 'category' && (
+                  <div className="space-y-4">
+                    <div>
+                      <label className="font-semibold block mb-1">Essenskategorie</label>
+                      <select
+                        value={formCategory}
+                        onChange={(e) => setFormCategory(e.target.value)}
+                        className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden cursor-pointer"
+                      >
+                        {categories.map((cat) => (
+                          <option key={cat} value={cat}>
+                            {cat}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="font-semibold block mb-1">Oder neue Kategorie anlegen (optional)</label>
+                      <input
+                        type="text"
+                        value={formCustomCategory}
+                        onChange={(e) => setFormCustomCategory(e.target.value)}
+                        placeholder="z. B. Sommergerichte, Suppen, Meal-Prep..."
+                        className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="font-semibold block mb-1">Dauer (Min)</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={formPrepTime}
+                          onChange={(e) => setFormPrepTime(e.target.value)}
+                          className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden tabular-nums"
+                        />
+                      </div>
+                      <div>
+                        <label className="font-semibold block mb-1">Portionen</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={formPortions}
+                          onChange={(e) => setFormPortions(e.target.value)}
+                          className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden tabular-nums"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 3: VERFÜGBARKEIT (Mahlzeiten-Eignung Mehrfachauswahl) */}
+                {recipeFormTab === 'availability' && (
+                  <div className="space-y-3">
+                    <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF]/80 dark:bg-[#25272C] space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-neutral-900 dark:text-neutral-100">
+                          Mahlzeiten-Eignung (Mehrfachauswahl)
+                        </span>
+                        <span className="text-[11px] text-neutral-500">
+                          {formMealTypes.length === 0 ? 'Keine festgelegt' : `${formMealTypes.length} gewählt`}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-neutral-500">
+                        Wähle aus, zu welchen Tageszeiten oder Abschnitten dieses Gericht passt.
+                      </p>
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        {Array.from(
+                          new Set([
+                            ...MEAL_TYPE_OPTIONS,
+                            ...mealSections.map((s) => s.label),
+                          ])
+                        ).map((mt) => {
+                          const isSelected = formMealTypes.includes(mt);
+                          return (
+                            <button
+                              key={mt}
+                              type="button"
+                              onClick={() =>
+                                setFormMealTypes((prev) =>
+                                  isSelected ? prev.filter((x) => x !== mt) : [...prev, mt]
+                                )
+                              }
+                              style={
+                                isSelected
+                                  ? { backgroundColor: accentColor, borderColor: accentColor, color: '#fff' }
+                                  : undefined
+                              }
+                              className={`px-3 py-1.5 rounded-full border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-all ${
+                                isSelected
+                                  ? 'shadow-2xs'
+                                  : 'border-[#E5E3DC] dark:border-[#363940] bg-white dark:bg-[#1E2024] text-neutral-700 dark:text-neutral-300'
+                              }`}
+                            >
+                              {isSelected && <Check className="w-3.5 h-3.5" />}
+                              <span>{mt}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
 
-              <div>
-                <label className="font-semibold block mb-1">Zubereitungsschritte (einer pro Zeile)</label>
-                <textarea
-                  name="instructions"
-                  rows={4}
-                  defaultValue={editingRecipe?.instructions.join('\n') || ''}
-                  placeholder="1. Kartoffeln schälen und kochen.&#10;2. Lachs mit Zitronensaft würzen.&#10;3. Im Ofen bei 180°C 15 Minuten garen."
-                  className="w-full p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C]"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
+              <div className="px-5 py-3 border-t border-[#E5E3DC] dark:border-[#2B2D31] bg-[#F7F6F2] dark:bg-[#181A1E] flex justify-end gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => {
                     setIsRecipeModalOpen(false);
                     setEditingRecipe(null);
                   }}
-                  className="px-3 py-1.5 rounded-full border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-600 dark:text-neutral-400 cursor-pointer"
+                  className="px-3.5 py-2 rounded-full border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-600 dark:text-neutral-400 cursor-pointer font-medium"
                 >
                   Abbrechen
                 </button>
                 <button
                   type="submit"
                   style={{ backgroundColor: accentColor }}
-                  className="px-4 py-1.5 rounded-full text-white font-bold shadow-xs cursor-pointer"
+                  className="px-4 py-2 rounded-full text-white font-bold shadow-xs cursor-pointer hover:opacity-95"
                 >
                   Speichern
                 </button>
@@ -3633,20 +5151,22 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
         </div>
       )}
 
-      {/* Mobile & Tablet Floating Action Navigation (Kalender, Zyklus, Tellergerichte, Einkaufsliste, Wochenshow, Neu) */}
-      {isMobileNavExpanded && activeTab !== 'presentation' && (
+      {/* Mobile & Tablet Floating Action Navigation (Kalender, Zyklus, Katalog, Einkaufsliste, Wochenshow, Neu) */}
+      {isMobileNavExpanded && activeTab !== 'presentation' && hasLibrary && (
         <div
           onClick={() => setIsMobileNavExpanded(false)}
           className="fixed inset-0 bg-black/25 dark:bg-black/50 backdrop-blur-2xs z-40 lg:hidden animate-in fade-in duration-150"
         />
       )}
 
-      {activeTab !== 'presentation' && (
+      {activeTab !== 'presentation' && hasLibrary && (
         <div className="lg:hidden select-none">
           {isMobileNavExpanded ? (
             <div
               style={{ borderColor: accentColor }}
-              className="fixed bottom-5 right-2 sm:right-4 z-50 h-14 px-1.5 sm:px-2 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center gap-0.5 sm:gap-1 text-neutral-800 dark:text-neutral-200 animate-in fade-in zoom-in-95 duration-200 max-w-[calc(100vw-16px)]"
+              className={`fixed ${
+                mobileBarPosition === 'bottom' ? 'bottom-[4.75rem]' : 'bottom-5'
+              } left-3 right-3 sm:left-auto sm:right-4 sm:min-w-[400px] sm:max-w-[calc(100vw-2rem)] z-50 h-14 px-2 sm:px-3 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center justify-between gap-1 sm:gap-1.5 text-neutral-800 dark:text-neutral-200 animate-in fade-in zoom-in-95 duration-200`}
             >
               <button
                 type="button"
@@ -3655,7 +5175,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                   setIsMobileNavExpanded(false);
                 }}
                 style={activeTab === 'calendar' ? { backgroundColor: accentColor } : undefined}
-                className={`w-8.5 h-8.5 sm:w-9.5 sm:h-9.5 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 ${
+                className={`flex-1 sm:flex-initial h-10 sm:px-3 rounded-full flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 ${
                   activeTab === 'calendar'
                     ? 'text-white shadow-xs'
                     : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
@@ -3663,26 +5183,30 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 title="Essenskalender"
                 aria-label="Essenskalender"
               >
-                <CalendarIcon className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                <CalendarIcon className="w-4.5 h-4.5 shrink-0" />
+                <span className="hidden md:inline text-xs font-semibold whitespace-nowrap">Kalender</span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveTab('cycle');
-                  setIsMobileNavExpanded(false);
-                }}
-                style={activeTab === 'cycle' ? { backgroundColor: accentColor } : undefined}
-                className={`w-8.5 h-8.5 sm:w-9.5 sm:h-9.5 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 ${
-                  activeTab === 'cycle'
-                    ? 'text-white shadow-xs'
-                    : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
-                }`}
-                title={`Zyklus (${displayedCycle.cycleLengthDays} Tage)`}
-                aria-label="Zyklus"
-              >
-                <Repeat className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-              </button>
+              {enableCycle && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('cycle');
+                    setIsMobileNavExpanded(false);
+                  }}
+                  style={activeTab === 'cycle' ? { backgroundColor: accentColor } : undefined}
+                  className={`flex-1 sm:flex-initial h-10 sm:px-3 rounded-full flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 ${
+                    activeTab === 'cycle'
+                      ? 'text-white shadow-xs'
+                      : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
+                  }`}
+                  title={`Zyklus (${displayedCycle.cycleLengthDays} Tage)`}
+                  aria-label="Zyklus"
+                >
+                  <Repeat className="w-4.5 h-4.5 shrink-0" />
+                  <span className="hidden md:inline text-xs font-semibold whitespace-nowrap">Zyklus</span>
+                </button>
+              )}
 
               <button
                 type="button"
@@ -3691,7 +5215,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                   setIsMobileNavExpanded(false);
                 }}
                 style={activeTab === 'recipes' ? { backgroundColor: accentColor } : undefined}
-                className={`w-8.5 h-8.5 sm:w-9.5 sm:h-9.5 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 ${
+                className={`flex-1 sm:flex-initial h-10 sm:px-3 rounded-full flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 ${
                   activeTab === 'recipes'
                     ? 'text-white shadow-xs'
                     : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
@@ -3699,7 +5223,8 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 title={`Katalog (${recipes.length} Gerichte / ${collectedIngredients.length} Zutaten)`}
                 aria-label="Katalog"
               >
-                <BookOpen className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                <BookOpen className="w-4.5 h-4.5 shrink-0" />
+                <span className="hidden md:inline text-xs font-semibold whitespace-nowrap">Katalog</span>
               </button>
 
               {effectiveShoppingEnabled && (
@@ -3710,7 +5235,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                     setIsMobileNavExpanded(false);
                   }}
                   style={activeTab === 'shopping' ? { backgroundColor: accentColor } : undefined}
-                  className={`w-8.5 h-8.5 sm:w-9.5 sm:h-9.5 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 ${
+                  className={`flex-1 sm:flex-initial h-10 sm:px-3 rounded-full flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 ${
                     activeTab === 'shopping'
                       ? 'text-white shadow-xs'
                       : 'text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800'
@@ -3718,7 +5243,8 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                   title="Einkaufsliste (Wochen-Forecast)"
                   aria-label="Einkaufsliste"
                 >
-                  <ShoppingCart className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                  <ShoppingCart className="w-4.5 h-4.5 shrink-0" />
+                  <span className="hidden md:inline text-xs font-semibold whitespace-nowrap">Einkauf</span>
                 </button>
               )}
 
@@ -3728,11 +5254,12 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                   setActiveTab('presentation');
                   setIsMobileNavExpanded(false);
                 }}
-                className="w-8.5 h-8.5 sm:w-9.5 sm:h-9.5 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800"
+                className="flex-1 sm:flex-initial h-10 sm:px-3 rounded-full flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 text-neutral-700 dark:text-neutral-300 hover:bg-amber-500/15 dark:hover:bg-neutral-800"
                 title="Wochenshow (Präsentationsmodus)"
                 aria-label="Wochenshow"
               >
-                <Sparkles className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                <Sparkles className="w-4.5 h-4.5 shrink-0" />
+                <span className="hidden md:inline text-xs font-semibold whitespace-nowrap">Show</span>
               </button>
 
               <div className="w-px h-5 bg-[#E5E3DC] dark:bg-[#2F3136] mx-0.5 shrink-0" />
@@ -3745,22 +5272,22 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                   setIsRecipeModalOpen(true);
                 }}
                 style={{ backgroundColor: accentColor }}
-                className="flex items-center gap-1 h-8.5 sm:h-9.5 px-2.5 sm:px-3 rounded-full text-xs font-semibold text-white transition-all cursor-pointer active:scale-95 shrink-0 shadow-xs hover:opacity-95"
+                className="flex items-center justify-center gap-1.5 h-10 px-3 sm:px-3.5 rounded-full text-xs font-semibold text-white transition-all cursor-pointer active:scale-95 shrink-0 shadow-xs hover:opacity-95"
                 title="Neues Tellergericht hinzufügen"
                 aria-label="Neu"
               >
-                <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                <Plus className="w-4 h-4 shrink-0" />
                 <span className="whitespace-nowrap">Neu</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setIsMobileNavExpanded(false)}
-                className="w-8.5 h-8.5 sm:w-9.5 sm:h-9.5 rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 flex items-center justify-center cursor-pointer shadow-2xs active:scale-95 shrink-0"
+                className="w-9.5 h-9.5 rounded-full bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 flex items-center justify-center cursor-pointer shadow-2xs active:scale-95 shrink-0"
                 aria-label="Navigation schließen"
                 title="Navigation schließen"
               >
-                <X className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                <X className="w-4.5 h-4.5" />
               </button>
             </div>
           ) : (
@@ -3768,9 +5295,11 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
               type="button"
               onClick={() => setIsMobileNavExpanded(true)}
               style={{ borderColor: accentColor, color: accentColor }}
-              className="fixed bottom-5 right-4 z-40 w-13 h-13 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center justify-center transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
-              title="Kochbuch-Navigation öffnen"
-              aria-label="Kochbuch-Navigation umschalten"
+              className={`fixed ${
+                mobileBarPosition === 'bottom' ? 'bottom-[4.75rem]' : 'bottom-5'
+              } right-4 z-40 w-13 h-13 rounded-full bg-[#FFFDF9] dark:bg-[#1E1F23] shadow-2xl border-2 flex items-center justify-center transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer`}
+              title="Essensplan-Navigation öffnen"
+              aria-label="Essensplan-Navigation umschalten"
             >
               {activeTab === 'calendar' && <CalendarIcon className="w-5 h-5" />}
               {activeTab === 'cycle' && <Repeat className="w-5 h-5" />}
