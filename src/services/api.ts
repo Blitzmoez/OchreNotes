@@ -12,6 +12,7 @@ import {
   SuiteProfileSettings,
   EnabledModules,
   WikiArticle,
+  WikiVisibility,
   Recipe,
   MealCycle,
   MealCalendarOverride,
@@ -24,6 +25,14 @@ import {
   MealPlanLibrary,
   MealPlanInvitation,
   OfflineQueueItem,
+  OpenGraphPreview,
+  SmarthomeBrokerConfig,
+  SmarthomeDiscoveredBroker,
+  SmarthomeDbSource,
+  SmarthomeTile,
+  SmarthomeLiveValue,
+  SmarthomeState,
+  ProjectItem,
 } from '../types';
 
 const OFFLINE_QUEUE_KEY = 'ochrenotes_offline_queue';
@@ -715,32 +724,40 @@ class ApiService {
     }
   }
 
-  async saveWikiArticle(username: string, article: WikiArticle, oldSlug?: string): Promise<WikiArticle> {
+  async saveWikiArticle(
+    username: string,
+    article: WikiArticle,
+    oldSlug?: string,
+    oldVisibility?: WikiVisibility
+  ): Promise<WikiArticle> {
     const res = await fetch('/api/wiki/articles', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, article, oldSlug }),
+      body: JSON.stringify({ username, article, oldSlug, oldVisibility }),
     });
     if (!res.ok) throw new Error('Fehler beim Speichern des Wiki-Artikels');
     return await res.json();
   }
 
-  async deleteWikiArticle(username: string, slug: string): Promise<boolean> {
-    const res = await fetch(`/api/wiki/articles?username=${encodeURIComponent(username)}&slug=${encodeURIComponent(slug)}`, {
-      method: 'DELETE',
-    });
+  async deleteWikiArticle(username: string, slug: string, visibility?: WikiVisibility): Promise<boolean> {
+    const visParam = visibility ? `&visibility=${encodeURIComponent(visibility)}` : '';
+    const res = await fetch(
+      `/api/wiki/articles?username=${encodeURIComponent(username)}&slug=${encodeURIComponent(slug)}${visParam}`,
+      { method: 'DELETE' }
+    );
     return res.ok;
   }
 
   async uploadWikiMedia(
     username: string,
     filename: string,
-    dataUrl: string
+    dataUrl: string,
+    visibility: WikiVisibility = 'public'
   ): Promise<{ url: string; filename: string; mediaKind: 'image' | 'video' }> {
     const res = await fetch('/api/wiki/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, filename, dataUrl }),
+      body: JSON.stringify({ username, filename, dataUrl, visibility }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -749,8 +766,13 @@ class ApiService {
     return await res.json();
   }
 
-  async uploadWikiImage(username: string, filename: string, dataUrl: string): Promise<{ url: string; filename: string }> {
-    return this.uploadWikiMedia(username, filename, dataUrl);
+  async uploadWikiImage(
+    username: string,
+    filename: string,
+    dataUrl: string,
+    visibility: WikiVisibility = 'public'
+  ): Promise<{ url: string; filename: string }> {
+    return this.uploadWikiMedia(username, filename, dataUrl, visibility);
   }
 
   async shareWikiArticle(fromUsername: string, toUsername: string, slug: string): Promise<{ success: boolean; targetSlug?: string }> {
@@ -964,6 +986,144 @@ class ApiService {
       body: JSON.stringify({ username, profile, backup: backupData }),
     });
     return await res.json();
+  }
+
+  // OpenGraph Link Preview
+  async fetchOpenGraph(url: string): Promise<OpenGraphPreview> {
+    const res = await fetch(`/api/og-preview?url=${encodeURIComponent(url)}`);
+    if (!res.ok) throw new Error('Vorschau nicht verfügbar');
+    return await res.json();
+  }
+
+  // Projects API
+  async fetchProjects(username: string): Promise<ProjectItem[]> {
+    try {
+      const res = await fetch(`/api/projects?username=${encodeURIComponent(username)}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      localStorage.setItem(`ochre_projects_cache_${username}`, JSON.stringify(data));
+      return data;
+    } catch {
+      const cached = localStorage.getItem(`ochre_projects_cache_${username}`);
+      return cached ? JSON.parse(cached) : [];
+    }
+  }
+
+  async saveProject(username: string, project: ProjectItem): Promise<ProjectItem> {
+    const res = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...project, ownerUsername: project.ownerUsername || username }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Projekt konnte nicht gespeichert werden');
+    }
+    const data = await res.json();
+    return data.project || data;
+  }
+
+  async deleteProject(username: string, projectId: string): Promise<boolean> {
+    const res = await fetch(
+      `/api/projects?username=${encodeURIComponent(username)}&id=${encodeURIComponent(projectId)}`,
+      { method: 'DELETE' }
+    );
+    return res.ok;
+  }
+
+  // Smarthome MQTT & Telemetry API
+  async fetchSmarthomeState(username: string): Promise<SmarthomeState> {
+    try {
+      const res = await fetch(`/api/smarthome/state?username=${encodeURIComponent(username)}`);
+      if (!res.ok) throw new Error('Fehler beim Laden');
+      const data = await res.json();
+      return {
+        brokers: Array.isArray(data.brokers) ? data.brokers : [],
+        dbSources: Array.isArray(data.dbSources) ? data.dbSources : [],
+        tiles: Array.isArray(data.tiles) ? data.tiles : [],
+        values: data.values || {},
+      };
+    } catch {
+      return { brokers: [], dbSources: [], tiles: [], values: {} };
+    }
+  }
+
+  async discoverSmarthomeBrokers(): Promise<SmarthomeDiscoveredBroker[]> {
+    const res = await fetch('/api/smarthome/discover', { method: 'POST' });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.discovered || data.found || [];
+  }
+
+  async saveSmarthomeBroker(broker: SmarthomeBrokerConfig): Promise<SmarthomeBrokerConfig> {
+    const res = await fetch('/api/smarthome/brokers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(broker),
+    });
+    if (!res.ok) throw new Error('Broker konnte nicht gespeichert werden');
+    const data = await res.json();
+    return data.broker || data;
+  }
+
+  async deleteSmarthomeBroker(brokerId: string): Promise<boolean> {
+    const res = await fetch(`/api/smarthome/brokers?id=${encodeURIComponent(brokerId)}`, { method: 'DELETE' });
+    return res.ok;
+  }
+
+  async saveSmarthomeDbSource(source: SmarthomeDbSource): Promise<SmarthomeDbSource> {
+    const res = await fetch('/api/smarthome/db-sources', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(source),
+    });
+    if (!res.ok) throw new Error('Datenbank-Quelle konnte nicht gespeichert werden');
+    const data = await res.json();
+    return data.source || data;
+  }
+
+  async deleteSmarthomeDbSource(sourceId: string): Promise<boolean> {
+    const res = await fetch(`/api/smarthome/db-sources?id=${encodeURIComponent(sourceId)}`, { method: 'DELETE' });
+    return res.ok;
+  }
+
+  async pollSmarthomeDbSource(sourceId?: string): Promise<{ success: boolean; values?: Record<string, SmarthomeLiveValue> }> {
+    const res = await fetch('/api/smarthome/db-sources/poll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceId }),
+    });
+    if (!res.ok) return { success: false };
+    return await res.json();
+  }
+
+  async saveSmarthomeTile(tile: SmarthomeTile): Promise<SmarthomeTile> {
+    const res = await fetch('/api/smarthome/tiles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(tile),
+    });
+    if (!res.ok) throw new Error('Kachel konnte nicht gespeichert werden');
+    const data = await res.json();
+    return data.tile || data;
+  }
+
+  async deleteSmarthomeTile(tileId: string): Promise<boolean> {
+    const res = await fetch(`/api/smarthome/tiles?id=${encodeURIComponent(tileId)}`, {
+      method: 'DELETE',
+    });
+    return res.ok;
+  }
+
+  async adoptSmarthomePreset(username: string, presetId: string): Promise<SmarthomeTile> {
+    const res = await fetch('/api/smarthome/tiles/adopt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, presetId }),
+    });
+    if (!res.ok) throw new Error('Vorgabe konnte nicht übernommen werden');
+    const data = await res.json();
+    return data.tile || data;
   }
 }
 

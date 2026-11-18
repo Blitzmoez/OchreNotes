@@ -38,6 +38,9 @@ import {
   Smartphone,
   Mail,
   Globe,
+  Cpu,
+  FolderKanban,
+  RefreshCw,
 } from 'lucide-react';
 import {
   User,
@@ -68,6 +71,8 @@ import {
 } from '../../services/profileDefaults';
 import {
   getNotificationPermission,
+  querySyncedNotificationPermission,
+  isEmbeddedInIframe,
   loadNotificationSettings,
   saveNotificationSettings,
   requestNotificationPermission,
@@ -252,10 +257,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         setActiveSettingsTab(initialSettingsTab);
       }
       setNotifPerm(getNotificationPermission());
+      querySyncedNotificationPermission().then(setNotifPerm).catch(() => {});
       setNotifSettings(loadNotificationSettings(currentUser.username));
       setLibraryStatus(null);
     }
   }, [isOpen, initialModuleContext, initialSettingsTab, currentUser.username]);
+
+  // Sync notification permissions live via Permissions API and window focus
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    let statusObj: PermissionStatus | null = null;
+    const refreshPerm = () => {
+      querySyncedNotificationPermission().then((p) => {
+        if (!cancelled) setNotifPerm(p);
+      });
+    };
+    if (typeof navigator !== 'undefined' && navigator.permissions?.query) {
+      navigator.permissions
+        .query({ name: 'notifications' as PermissionName })
+        .then((res) => {
+          if (cancelled) return;
+          statusObj = res;
+          refreshPerm();
+          res.onchange = refreshPerm;
+        })
+        .catch(() => {});
+    }
+    window.addEventListener('focus', refreshPerm);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', refreshPerm);
+      if (statusObj) statusObj.onchange = null;
+    };
+  }, [isOpen]);
 
   useEffect(() => {
     const activeBtn = mainTabBarRef.current?.querySelector('[data-active-tab="true"]') as HTMLElement | null;
@@ -422,12 +457,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const activeProfile = profileSettings[profileSettings.activeProfileId] || profileSettings.profile1;
-  const activeColors = {
+  const activeColors: Record<SuiteModuleId, string> = {
     dashboard: profileSettings.profile1.colors.dashboard || '#A67C21',
     notes: activeProfile.colors.notes,
     wiki: profileSettings.profile1.colors.wiki,
     recipes: profileSettings.profile1.colors.recipes,
     finance: profileSettings.profile1.colors.finance,
+    smarthome: profileSettings.profile1.colors.smarthome || '#78716C',
+    projects: profileSettings.profile1.colors.projects || '#8E6126',
   };
   const editedProfile = profileSettings[editingProfileTab] || profileSettings.profile1;
 
@@ -454,7 +491,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     });
   };
 
-  const updateSuiteModuleColor = (mod: 'dashboard' | 'wiki' | 'recipes' | 'finance', hex: string) => {
+  const updateSuiteModuleColor = (
+    mod: 'dashboard' | 'wiki' | 'recipes' | 'finance' | 'smarthome' | 'projects',
+    hex: string
+  ) => {
     onUpdateProfileSettings({
       ...profileSettings,
       profile1: {
@@ -988,186 +1028,158 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {/* ============================================================== */}
           {/* TAB 2: MODULE AN- & ABSCHALTEN                                */}
           {/* ============================================================== */}
-          {activeSettingsTab === 'modules' && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100">
-                    Module an- &amp; abschalten
-                  </h3>
-                  <p className="text-[11px] text-neutral-500">
-                    Blende Bereiche aus, die du nicht nutzt. Detail-Konfigurationen findest du im Tab „Modul-Einstellungen“.
-                  </p>
-                </div>
-              </div>
+          {activeSettingsTab === 'modules' && (() => {
+            const activeModCount = (Object.values(enabledModules) as boolean[]).filter(Boolean).length;
+            const moduleCards: Array<{
+              id: SuiteModuleId;
+              title: string;
+              desc: string;
+              color: string;
+              icon: React.ComponentType<{ className?: string }>;
+            }> = [
+              {
+                id: 'dashboard',
+                title: 'Dashboard (Übersicht, Suche & Kacheln)',
+                desc: 'Globale Suche über alle Module, Aufgaben, Einkaufs-Forecast & Finanzen',
+                color: activeColors.dashboard,
+                icon: LayoutDashboard,
+              },
+              {
+                id: 'notes',
+                title: 'Notes (Obsidian Markdown & Aufgaben)',
+                desc: 'Wissens-Hub mit Privat/Business-Profilen, OpenGraph-Links & Wissensgraph',
+                color: activeColors.notes,
+                icon: BookOpen,
+              },
+              {
+                id: 'wiki',
+                title: 'Wiki (Open-Standard Markdown)',
+                desc: 'Öffentliches & privates Wissen mit Bausteinen, Medien & A4-Export',
+                color: activeColors.wiki,
+                icon: BookMarked,
+              },
+              {
+                id: 'recipes',
+                title: 'Essensplan & Rezepte',
+                desc: 'Eigener Rezeptkatalog, Kalender, Zyklus & gemeinsame Bibliotheken',
+                color: activeColors.recipes,
+                icon: Utensils,
+              },
+              {
+                id: 'finance',
+                title: 'Finanzen & Kreditoren',
+                desc: 'Bank CSV-Upload, Kreditorenverwaltung, Barzahlungen & Statistiken',
+                color: activeColors.finance,
+                icon: DollarSign,
+              },
+              {
+                id: 'projects',
+                title: 'Projekte (Kanban & Timeline)',
+                desc: 'Aufgabenboards, Gantt-Timeline, externe Zuständige & Notiz/Wiki-Links',
+                color: activeColors.projects,
+                icon: FolderKanban,
+              },
+              {
+                id: 'smarthome',
+                title: 'Smarthome Viewer (MQTT & Sensoren)',
+                desc: 'Echtzeit MQTT-Streams, Broker-Erkennung, HTTP/DB-Quellen & Admin-Vorlagen',
+                color: activeColors.smarthome,
+                icon: Cpu,
+              },
+            ];
 
-              <div className="space-y-2.5">
-                {/* Dashboard */}
-                <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div
-                      style={{ backgroundColor: activeColors.dashboard }}
-                      className="w-9 h-9 rounded-xl text-white flex items-center justify-center shrink-0 shadow-xs"
-                    >
-                      <LayoutDashboard className="w-4.5 h-4.5" />
-                    </div>
-                    <div>
-                      <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
-                        Dashboard (Übersicht &amp; Kacheln)
-                      </span>
-                      <span className="text-[11px] text-neutral-500">
-                        Swipbare Kachel-Übersicht für Aufgaben, Einkaufs-Forecast &amp; Finanzen
-                      </span>
-                    </div>
+            return (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div>
+                    <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100">
+                      Module an- &amp; abschalten
+                    </h3>
+                    <p className="text-[11px] text-neutral-500">
+                      Jedes Modul lässt sich flexibel aktivieren oder deaktivieren (mindestens 1 Modul bleibt aktiv).
+                    </p>
                   </div>
+                  <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-600 dark:text-neutral-300 tabular-nums">
+                    {activeModCount} / {moduleCards.length} aktiv
+                  </span>
+                </div>
+
+                <div className="space-y-2.5">
+                  {moduleCards.map((mod) => {
+                    const Icon = mod.icon;
+                    const isEnabled = !!enabledModules[mod.id];
+                    const isLastActive = isEnabled && activeModCount <= 1;
+                    return (
+                      <div
+                        key={mod.id}
+                        className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] flex items-center justify-between gap-3"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div
+                            style={{ backgroundColor: mod.color }}
+                            className="w-9 h-9 rounded-xl text-white flex items-center justify-center shrink-0 shadow-xs"
+                          >
+                            <Icon className="w-4.5 h-4.5" />
+                          </div>
+                          <div className="min-w-0">
+                            <span className="font-bold text-neutral-900 dark:text-neutral-100 block truncate">
+                              {mod.title}
+                            </span>
+                            <span className="text-[11px] text-neutral-500 block leading-snug">
+                              {mod.desc}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {isLastActive && (
+                            <span className="text-[10px] text-neutral-400 font-semibold hidden sm:inline">
+                              Mind. 1 Modul
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            disabled={isLastActive}
+                            onClick={() => onToggleModule(mod.id)}
+                            style={isEnabled ? { backgroundColor: mod.color } : undefined}
+                            title={
+                              isLastActive
+                                ? 'Mindestens ein Modul muss aktiv bleiben'
+                                : isEnabled
+                                ? 'Modul deaktivieren'
+                                : 'Modul aktivieren'
+                            }
+                            className={`w-11 h-6 rounded-full transition-colors flex items-center px-1 shrink-0 ${
+                              isLastActive ? 'opacity-65 cursor-not-allowed' : 'cursor-pointer'
+                            } ${isEnabled ? 'justify-end' : 'bg-neutral-300 dark:bg-neutral-700 justify-start'}`}
+                          >
+                            <span className="w-4 h-4 rounded-full bg-white shadow-xs" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="pt-2 flex justify-end">
                   <button
-                    onClick={() => onToggleModule('dashboard')}
-                    style={enabledModules.dashboard ? { backgroundColor: activeColors.dashboard } : undefined}
-                    className={`w-11 h-6 rounded-full transition-colors flex items-center px-1 cursor-pointer shrink-0 ${
-                      enabledModules.dashboard ? 'justify-end' : 'bg-neutral-300 dark:bg-neutral-700 justify-start'
-                    }`}
+                    type="button"
+                    onClick={() => setActiveSettingsTab('moduleSettings')}
+                    className="flex items-center gap-1.5 text-xs font-semibold text-[var(--ochre-accent)] hover:underline cursor-pointer"
                   >
-                    <span className="w-4 h-4 rounded-full bg-white shadow-xs" />
-                  </button>
-                </div>
-
-                {/* Notes */}
-                <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div
-                      style={{ backgroundColor: activeColors.notes }}
-                      className="w-9 h-9 rounded-xl text-white flex items-center justify-center shrink-0 shadow-xs"
-                    >
-                      <BookOpen className="w-4.5 h-4.5" />
-                    </div>
-                    <div>
-                      <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
-                        Notes (Obsidian Markdown &amp; Aufgaben)
-                      </span>
-                      <span className="text-[11px] text-neutral-500">
-                        Zentraler Wissens-Hub mit Privat/Business-Trennung, Tasks &amp; Graph
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-[10px] text-neutral-400 font-semibold">Basis</span>
-                    <button
-                      disabled
-                      style={{ backgroundColor: activeColors.notes }}
-                      className="w-11 h-6 rounded-full opacity-80 cursor-not-allowed flex items-center justify-end px-1"
-                    >
-                      <span className="w-4 h-4 rounded-full bg-white shadow-xs" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Wiki */}
-                <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div
-                      style={{ backgroundColor: activeColors.wiki }}
-                      className="w-9 h-9 rounded-xl text-white flex items-center justify-center shrink-0 shadow-xs"
-                    >
-                      <BookMarked className="w-4.5 h-4.5" />
-                    </div>
-                    <div>
-                      <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
-                        Wiki (Open-Standard Markdown)
-                      </span>
-                      <span className="text-[11px] text-neutral-500">
-                        Anleitungen mit Foto-Upload, Code-Ablage &amp; A4-Druck
-                      </span>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => onToggleModule('wiki')}
-                    style={enabledModules.wiki ? { backgroundColor: activeColors.wiki } : undefined}
-                    className={`w-11 h-6 rounded-full transition-colors flex items-center px-1 cursor-pointer shrink-0 ${
-                      enabledModules.wiki ? 'justify-end' : 'bg-neutral-300 dark:bg-neutral-700 justify-start'
-                    }`}
-                  >
-                    <span className="w-4 h-4 rounded-full bg-white shadow-xs" />
-                  </button>
-                </div>
-
-                {/* Essensplan */}
-                <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div
-                      style={{ backgroundColor: activeColors.recipes }}
-                      className="w-9 h-9 rounded-xl text-white flex items-center justify-center shrink-0 shadow-xs"
-                    >
-                      <Utensils className="w-4.5 h-4.5" />
-                    </div>
-                    <div>
-                      <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
-                        Essensplan &amp; Gerichte
-                      </span>
-                      <span className="text-[11px] text-neutral-500">
-                        Eigener Tellergerichtskatalog, Kalender, Zyklus &amp; gemeinsame Bibliotheken
-                      </span>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => onToggleModule('recipes')}
-                    style={enabledModules.recipes ? { backgroundColor: activeColors.recipes } : undefined}
-                    className={`w-11 h-6 rounded-full transition-colors flex items-center px-1 cursor-pointer shrink-0 ${
-                      enabledModules.recipes ? 'justify-end' : 'bg-neutral-300 dark:bg-neutral-700 justify-start'
-                    }`}
-                  >
-                    <span className="w-4 h-4 rounded-full bg-white shadow-xs" />
-                  </button>
-                </div>
-
-                {/* Finanzen */}
-                <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div
-                      style={{ backgroundColor: activeColors.finance }}
-                      className="w-9 h-9 rounded-xl text-white flex items-center justify-center shrink-0 shadow-xs"
-                    >
-                      <DollarSign className="w-4.5 h-4.5" />
-                    </div>
-                    <div>
-                      <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
-                        Finanzen &amp; CSV Analyse
-                      </span>
-                      <span className="text-[11px] text-neutral-500">
-                        Bank CSV-Upload, Kreditor-Erkennung &amp; Bartransaktionen
-                      </span>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => onToggleModule('finance')}
-                    style={enabledModules.finance ? { backgroundColor: activeColors.finance } : undefined}
-                    className={`w-11 h-6 rounded-full transition-colors flex items-center px-1 cursor-pointer shrink-0 ${
-                      enabledModules.finance ? 'justify-end' : 'bg-neutral-300 dark:bg-neutral-700 justify-start'
-                    }`}
-                  >
-                    <span className="w-4 h-4 rounded-full bg-white shadow-xs" />
+                    <SlidersHorizontal className="w-3.5 h-3.5" />
+                    <span>Zu den Modul-Einstellungen wechseln →</span>
                   </button>
                 </div>
               </div>
-
-              <div className="pt-2 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => setActiveSettingsTab('moduleSettings')}
-                  className="flex items-center gap-1.5 text-xs font-semibold text-[var(--ochre-accent)] hover:underline cursor-pointer"
-                >
-                  <SlidersHorizontal className="w-3.5 h-3.5" />
-                  <span>Zu den Modul-Einstellungen wechseln →</span>
-                </button>
-              </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* ============================================================== */}
           {/* TAB 3: MODUL-EINSTELLUNGEN (Per-Module Organized Settings)     */}
           {/* ============================================================== */}
           {activeSettingsTab === 'moduleSettings' && (
             <div className="space-y-4">
-              {/* Sub-navigation per module */}
+              {/* Sub-navigation per module (skalierbar horizontal swipebar) */}
               <div
                 ref={modTabBarRef}
                 className="flex items-center gap-1.5 p-1 rounded-xl bg-[#F4F3EF] dark:bg-[#18191B] border border-[#E5E3DC] dark:border-[#2F3136] overflow-x-auto no-scrollbar touch-pan-x overscroll-x-contain snap-x"
@@ -1179,6 +1191,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     { id: 'wiki', label: 'Wiki', icon: BookMarked, color: activeColors.wiki },
                     { id: 'recipes', label: 'Essensplan', icon: Utensils, color: activeColors.recipes },
                     { id: 'finance', label: 'Finanzen', icon: DollarSign, color: activeColors.finance },
+                    { id: 'projects', label: 'Projekte', icon: FolderKanban, color: activeColors.projects },
+                    { id: 'smarthome', label: 'Smarthome', icon: Cpu, color: activeColors.smarthome },
                   ] as const
                 ).map((item) => {
                   const Icon = item.icon;
@@ -1190,7 +1204,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       type="button"
                       onClick={() => setSelectedModuleSettingsTab(item.id)}
                       style={isSelected ? { backgroundColor: item.color } : undefined}
-                      className={`snap-center shrink-0 min-w-[92px] sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                      className={`snap-center shrink-0 min-w-[88px] flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
                         isSelected
                           ? 'text-white shadow-xs'
                           : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
@@ -1290,6 +1304,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           ? activeColors.wiki
                           : widget.module === 'finance'
                           ? activeColors.finance
+                          : widget.module === 'smarthome'
+                          ? activeColors.smarthome
+                          : widget.module === 'projects'
+                          ? activeColors.projects
                           : activeColors.dashboard;
 
                       return (
@@ -1559,8 +1577,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
 
                     <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <span className="text-[11px] text-neutral-500">
-                        Browser-Status:{' '}
+                      <span className="text-[11px] text-neutral-500 flex items-center gap-1.5">
+                        <span>Browser-Status:</span>
                         <strong className="text-neutral-800 dark:text-neutral-200">
                           {notifPerm === 'granted'
                             ? 'Erlaubt'
@@ -1568,28 +1586,48 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             ? 'Blockiert'
                             : notifPerm === 'unsupported'
                             ? 'Nicht unterstützt'
-                            : 'Nicht erteilt'}
+                            : 'Noch nicht angefragt'}
                         </strong>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            querySyncedNotificationPermission().then((p) => {
+                              setNotifPerm(p);
+                              setNotifFeedback(`Browser-Status aktualisiert: ${p === 'granted' ? 'Erlaubt' : p}`);
+                            });
+                          }}
+                          className="p-1 rounded hover:bg-neutral-200/70 dark:hover:bg-neutral-700/70 text-neutral-500 cursor-pointer"
+                          title="Browser-Status neu prüfen"
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                        </button>
                       </span>
 
                       <button
                         type="button"
                         onClick={async () => {
-                          let perm = notifPerm;
+                          let perm = await querySyncedNotificationPermission();
+                          setNotifPerm(perm);
                           if (perm === 'default') {
                             perm = await requestNotificationPermission();
                             setNotifPerm(perm);
                           }
                           if (perm !== 'granted') {
-                            setNotifFeedback('Bitte zuerst Browser-Benachrichtigungen erlauben.');
+                            setNotifFeedback(
+                              isEmbeddedInIframe()
+                                ? 'Browser-Berechtigung fehlt oder iFrame blockiert – bitte App direkt / im Vollbild öffnen.'
+                                : 'Bitte zuerst Browser-Benachrichtigungen erlauben.'
+                            );
                             return;
                           }
-                          const ok = await sendPushNotification(
-                            'Ochre Aufgaben Test-Push',
+                          const res = await sendPushNotification(
+                            'Ochre Suite Test-Push',
                             'Mobile & Desktop Push-Erinnerungen funktionieren einwandfrei!'
                           );
                           setNotifFeedback(
-                            ok ? 'Test-Push erfolgreich gesendet!' : 'Test-Push konnte nicht zugestellt werden.'
+                            res.ok
+                              ? `Test-Push erfolgreich gesendet (${res.via === 'sw' ? 'Service Worker' : 'Browser'}).`
+                              : res.reason || 'Test-Push konnte nicht zugestellt werden.'
                           );
                         }}
                         className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[var(--ochre-accent)] text-[11px] font-semibold cursor-pointer"
@@ -1598,6 +1636,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <span>Test-Push senden</span>
                       </button>
                     </div>
+
+                    {isEmbeddedInIframe() && (
+                      <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                        Hinweis: In einer eingebetteten Vorschau (iFrame) unterdrücken manche Browser native Notifications – installiere die App als PWA oder öffne sie im eigenen Tab.
+                      </p>
+                    )}
 
                     {notifFeedback && (
                       <p className="text-[11px] text-[var(--ochre-accent)] font-medium">
@@ -1617,7 +1661,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <span>Open-Standard Wiki-Speicherung</span>
                     </div>
                     <p className="text-[11px] text-neutral-500 leading-relaxed">
-                      Alle Wiki-Artikel werden als portables Standard-Markdown (YAML-Frontmatter + Fotos in <span className="font-mono">Wiki/assets/</span> + Code-Ablage) im Verzeichnis <span className="font-mono">User/{currentUser.username}/Wiki/</span> gespeichert.
+                      Öffentliche Wiki-Artikel (Standard) werden zentral in <span className="font-mono">Wiki/Public/</span> gespeichert, private Artikel in <span className="font-mono">Wiki/{currentUser.username}/</span> – offen im Markdown-Standard direkt neben den Notizen.
                     </p>
                   </div>
 
@@ -1639,7 +1683,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <span>Open-Standard Essensplan &amp; Medien</span>
                     </div>
                     <p className="text-[11px] text-neutral-500 leading-relaxed">
-                      Tellergerichte werden im offenen Markdown-Standard in <span className="font-mono">Cookbook/Rezepte/</span> und Gerichtsfotos je Rezept in <span className="font-mono">Cookbook/Media/</span> gespeichert.
+                      Rezepte werden im offenen Markdown-Standard in <span className="font-mono">Cookbook/Rezepte/</span> und Gerichtsfotos je Rezept in <span className="font-mono">Cookbook/Media/</span> gespeichert.
                     </p>
                   </div>
 
@@ -2277,9 +2321,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <div className="p-2.5 rounded-xl bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] space-y-2">
                           <div className="flex items-center justify-between gap-2">
                             <div>
-                              <span className="font-semibold block">Tellergerichtskatalog freigeben</span>
+                              <span className="font-semibold block">Rezeptkatalog freigeben</span>
                               <span className="text-[11px] text-neutral-500">
-                                Andere können deine Tellergerichte in ihrem Essensplan sehen &amp; einplanen.
+                                Andere können deine Rezepte in ihrem Essensplan sehen &amp; einplanen.
                               </span>
                             </div>
                             <button
@@ -2507,6 +2551,50 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     (hex) => updateSuiteModuleColor('finance', hex),
                     () => resetModuleColorsToOchre('finance'),
                     'Finanzen Akzentfarbe (Ocker-Palette)'
+                  )}
+                </div>
+              )}
+
+              {/* --- MODULE: PROJEKTE --- */}
+              {selectedModuleSettingsTab === 'projects' && (
+                <div className="space-y-4">
+                  <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] space-y-1">
+                    <div className="flex items-center gap-2 font-bold text-neutral-900 dark:text-neutral-100">
+                      <FolderKanban className="w-4 h-4" style={{ color: activeColors.projects }} />
+                      <span>Projekte (Kanban, Timeline &amp; Dokumente)</span>
+                    </div>
+                    <p className="text-[11px] text-neutral-500 leading-relaxed">
+                      Projekte werden als offenes JSON in <span className="font-mono">Projects/</span> gespeichert. Verknüpfte Notizen und Wiki-Artikel bleiben bidirektional verbunden, Aufgaben lassen sich beliebigen Team-Mitgliedern oder externen Namen zuweisen.
+                    </p>
+                  </div>
+
+                  {renderColorPickerBlock(
+                    activeColors.projects,
+                    (hex) => updateSuiteModuleColor('projects', hex),
+                    () => resetModuleColorsToOchre('projects'),
+                    'Projekte Akzentfarbe (Ocker-Palette)'
+                  )}
+                </div>
+              )}
+
+              {/* --- MODULE: SMARTHOME --- */}
+              {selectedModuleSettingsTab === 'smarthome' && (
+                <div className="space-y-4">
+                  <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] space-y-1">
+                    <div className="flex items-center gap-2 font-bold text-neutral-900 dark:text-neutral-100">
+                      <Cpu className="w-4 h-4" style={{ color: activeColors.smarthome }} />
+                      <span>Smarthome Viewer &amp; MQTT / HTTP-Quellen</span>
+                    </div>
+                    <p className="text-[11px] text-neutral-500 leading-relaxed">
+                      Konfiguriere MQTT-Broker, HTTP/JSON-Telemetrie-Quellen und Kacheln direkt im Smarthome-Modul. Als Administrator kannst du Kacheln als „Admin-Vorgabe“ markieren, sodass Standardnutzer diese mit 1 Klick übernehmen können.
+                    </p>
+                  </div>
+
+                  {renderColorPickerBlock(
+                    activeColors.smarthome,
+                    (hex) => updateSuiteModuleColor('smarthome', hex),
+                    () => resetModuleColorsToOchre('smarthome'),
+                    'Smarthome Akzentfarbe (Ocker-Palette)'
                   )}
                 </div>
               )}

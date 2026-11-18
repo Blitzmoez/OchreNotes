@@ -26,6 +26,10 @@ import {
   Upload,
   ExternalLink,
   Layers,
+  Globe,
+  Lock,
+  Printer,
+  Briefcase,
 } from 'lucide-react';
 import {
   WikiArticle,
@@ -33,8 +37,12 @@ import {
   WikiBlockType,
   WikiCodeSnippet,
   WikiImage,
+  WikiVisibility,
+  NoteMetadata,
+  ProjectItem,
 } from '../../types';
 import { api } from '../../services/api';
+import { printWikiArticleA4 } from '../../services/printService';
 
 interface WikiViewProps {
   username: string;
@@ -42,6 +50,10 @@ interface WikiViewProps {
   mobileBarPosition?: 'top' | 'bottom';
   onActiveArticleChange?: (article: WikiArticle | null) => void;
   onNavigateToNote?: (title: string) => void;
+  notes?: NoteMetadata[];
+  projects?: ProjectItem[];
+  onNavigateToProject?: (projectId: string) => void;
+  initialSelectedSlug?: string | null;
 }
 
 const CODE_LANGUAGES = [
@@ -126,19 +138,37 @@ export const WikiView: React.FC<WikiViewProps> = ({
   mobileBarPosition = 'top',
   onActiveArticleChange,
   onNavigateToNote,
+  notes = [],
+  projects = [],
+  onNavigateToProject,
+  initialSelectedSlug = null,
 }) => {
   const [articles, setArticles] = useState<WikiArticle[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
+  const [selectedSlug, setSelectedSlug] = useState<string | null>(initialSelectedSlug || null);
   const [mode, setMode] = useState<'read' | 'edit'>('read');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [isMobileIndexOpen, setIsMobileIndexOpen] = useState(false);
 
+  // 1:1 Pixel-Launcher finger-tracked swipe for mobile Wiki index drawer
+  const [wikiDragX, setWikiDragX] = useState<number | null>(null);
+  const wikiSwipeRef = useRef<{
+    startX: number;
+    startY: number;
+    initialX: number;
+    currentX: number;
+    lastX: number;
+    lastTime: number;
+    isTracking: boolean;
+    lockedAxis: 'horizontal' | 'vertical' | null;
+  } | null>(null);
+
   // Draft state when editing or creating
   const [draft, setDraft] = useState<WikiArticle | null>(null);
   const [draftBlocks, setDraftBlocks] = useState<WikiBlock[]>([]);
   const [originalSlug, setOriginalSlug] = useState<string | undefined>(undefined);
+  const [originalVisibility, setOriginalVisibility] = useState<WikiVisibility | undefined>(undefined);
   const [tagsInput, setTagsInput] = useState('');
   const [saving, setSaving] = useState(false);
   const [uploadingBlockId, setUploadingBlockId] = useState<string | null>(null);
@@ -147,6 +177,10 @@ export const WikiView: React.FC<WikiViewProps> = ({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [zoomedImage, setZoomedImage] = useState<WikiImage | null>(null);
   const [confirmDeleteSlug, setConfirmDeleteSlug] = useState<string | null>(null);
+
+  // Link picker popover state inside text block editor
+  const [linkPickerBlockId, setLinkPickerBlockId] = useState<string | null>(null);
+  const [linkPickerSearch, setLinkPickerSearch] = useState('');
 
   // Collapsible blocks open/closed map in Reader mode
   const [collapsedMap, setCollapsedMap] = useState<Record<string, boolean>>({});
@@ -158,6 +192,14 @@ export const WikiView: React.FC<WikiViewProps> = ({
   const mediaFileInputRef = useRef<HTMLInputElement>(null);
   const mediaCameraInputRef = useRef<HTMLInputElement>(null);
   const activeUploadTargetRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (initialSelectedSlug) {
+      setSelectedSlug(initialSelectedSlug);
+      setMode('read');
+      setDraft(null);
+    }
+  }, [initialSelectedSlug]);
 
   const loadArticles = async (preferSlug?: string) => {
     setLoading(true);
@@ -178,8 +220,101 @@ export const WikiView: React.FC<WikiViewProps> = ({
   };
 
   useEffect(() => {
-    loadArticles();
+    loadArticles(initialSelectedSlug || undefined);
   }, [username]);
+
+  // 1:1 Finger-tracked Pixel Launcher drawer swipe on Mobile/Tablet
+  useEffect(() => {
+    const DRAWER_W = 288;
+    const onTouchStart = (e: TouchEvent) => {
+      if (window.innerWidth >= 1024 || e.touches.length !== 1) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.closest('[data-no-swipe="true"]') ||
+        target?.closest('header') ||
+        target?.closest('input') ||
+        target?.closest('select') ||
+        target?.closest('textarea')
+      ) {
+        wikiSwipeRef.current = null;
+        return;
+      }
+      const x = e.touches[0].clientX;
+      const y = e.touches[0].clientY;
+      if (!isMobileIndexOpen && x > Math.max(180, window.innerWidth * 0.55)) {
+        wikiSwipeRef.current = null;
+        return;
+      }
+      const initialX = isMobileIndexOpen ? 0 : -DRAWER_W;
+      wikiSwipeRef.current = {
+        startX: x,
+        startY: y,
+        initialX,
+        currentX: initialX,
+        lastX: x,
+        lastTime: performance.now(),
+        isTracking: false,
+        lockedAxis: null,
+      };
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      const s = wikiSwipeRef.current;
+      if (!s || e.touches.length !== 1) return;
+      const x = e.touches[0].clientX;
+      const y = e.touches[0].clientY;
+      const dx = x - s.startX;
+      const dy = y - s.startY;
+      if (!s.lockedAxis) {
+        if (Math.hypot(dx, dy) < 8) return;
+        const movingRight = dx > 0;
+        const valid = (!isMobileIndexOpen && movingRight) || (isMobileIndexOpen && !movingRight);
+        if (valid && Math.abs(dx) > Math.abs(dy) * 0.85) {
+          s.lockedAxis = 'horizontal';
+          s.isTracking = true;
+        } else {
+          s.lockedAxis = 'vertical';
+          wikiSwipeRef.current = null;
+          return;
+        }
+      }
+      if (s.lockedAxis === 'horizontal') {
+        if (e.cancelable) e.preventDefault();
+        const nextX = Math.max(-DRAWER_W, Math.min(0, s.initialX + dx));
+        s.lastX = x;
+        s.lastTime = performance.now();
+        s.currentX = nextX;
+        setWikiDragX(nextX);
+      }
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      const s = wikiSwipeRef.current;
+      wikiSwipeRef.current = null;
+      if (!s || !s.isTracking) {
+        setWikiDragX(null);
+        return;
+      }
+      const endX = e.changedTouches[0]?.clientX ?? s.lastX;
+      const dt = Math.max(16, performance.now() - s.lastTime);
+      const velocity = (endX - s.lastX) / dt;
+      const progress = (s.currentX + DRAWER_W) / DRAWER_W;
+      const shouldOpen = velocity > 0.3 || (velocity >= -0.3 && progress > 0.38);
+      setWikiDragX(null);
+      setIsMobileIndexOpen(shouldOpen);
+    };
+
+    window.addEventListener('touchstart', onTouchStart, { passive: true });
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onTouchEnd, { passive: true });
+    window.addEventListener('touchcancel', onTouchEnd, { passive: true });
+    return () => {
+      window.removeEventListener('touchstart', onTouchStart);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchcancel', onTouchEnd);
+    };
+  }, [isMobileIndexOpen]);
 
   const activeArticle = useMemo(
     () => articles.find((a) => a.slug === selectedSlug) || null,
@@ -281,6 +416,8 @@ export const WikiView: React.FC<WikiViewProps> = ({
       slug: '',
       title: '',
       category: selectedCategory !== 'all' ? selectedCategory : 'Anleitungen',
+      visibility: 'public',
+      author: username,
       tags: ['anleitung'],
       updatedAt: new Date().toISOString(),
       body: starterBlocks[0].content || '',
@@ -291,6 +428,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
     setDraft(newArt);
     setDraftBlocks(starterBlocks);
     setOriginalSlug(undefined);
+    setOriginalVisibility(undefined);
     setTagsInput(newArt.tags.join(', '));
     setMediaError(null);
     setMode('edit');
@@ -299,9 +437,11 @@ export const WikiView: React.FC<WikiViewProps> = ({
 
   const handleStartEdit = (article: WikiArticle) => {
     const cloned: WikiArticle = JSON.parse(JSON.stringify(article));
+    if (!cloned.visibility) cloned.visibility = 'public';
     setDraft(cloned);
     setDraftBlocks(ensureArticleBlocks(cloned));
     setOriginalSlug(article.slug);
+    setOriginalVisibility(article.visibility || 'public');
     setTagsInput(article.tags.join(', '));
     setMediaError(null);
     setMode('edit');
@@ -347,25 +487,32 @@ export const WikiView: React.FC<WikiViewProps> = ({
           defaultCollapsed: b.defaultCollapsed,
         }));
 
+      const vis: WikiVisibility = draft.visibility || 'public';
       const saved = await api.saveWikiArticle(
         username,
         {
           ...draft,
           title: draft.title.trim(),
           category: draft.category.trim() || 'Allgemein',
+          visibility: vis,
           tags: parsedTags,
           blocks: cleanBlocks,
           body: aggregatedBody,
           images: aggregatedImages,
           snippets: aggregatedSnippets,
         },
-        originalSlug
+        originalSlug,
+        originalVisibility
       );
 
       await loadArticles(saved.slug);
       setMode('read');
-      setSaveFeedback('Als Bausteine in Standard-Markdown gespeichert');
-      setTimeout(() => setSaveFeedback(null), 2500);
+      setSaveFeedback(
+        vis === 'public'
+          ? 'Im öffentlichen Wiki (Wiki/Public/) gespeichert'
+          : `Im privaten Wiki (${username}) gespeichert`
+      );
+      setTimeout(() => setSaveFeedback(null), 2800);
     } catch (err) {
       console.error(err);
     } finally {
@@ -373,8 +520,8 @@ export const WikiView: React.FC<WikiViewProps> = ({
     }
   };
 
-  const handleDeleteArticle = async (slug: string) => {
-    await api.deleteWikiArticle(username, slug);
+  const handleDeleteArticle = async (slug: string, vis?: WikiVisibility) => {
+    await api.deleteWikiArticle(username, slug, vis);
     setConfirmDeleteSlug(null);
     if (mode === 'edit' && originalSlug === slug) {
       setMode('read');
@@ -402,7 +549,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
         reader.onerror = reject;
         reader.readAsDataURL(file);
       });
-      const res = await api.uploadWikiMedia(username, file.name, dataUrl);
+      const res = await api.uploadWikiMedia(username, file.name, dataUrl, draft?.visibility || 'public');
       const cleanName = file.name.replace(/\.[^.]+$/, '');
       if (targetBlockId) {
         setDraftBlocks((prev) =>
@@ -873,20 +1020,42 @@ export const WikiView: React.FC<WikiViewProps> = ({
 
       {/* Main Split Body */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Mobile Backdrop for Index Drawer */}
-        {isMobileIndexOpen && (
+        {/* Mobile Backdrop for Index Drawer (live synced with 1:1 finger swipe) */}
+        {(isMobileIndexOpen || (wikiDragX !== null && wikiDragX > -285)) && (
           <div
-            onClick={() => setIsMobileIndexOpen(false)}
+            onClick={() => {
+              setWikiDragX(null);
+              setIsMobileIndexOpen(false);
+            }}
+            style={
+              wikiDragX !== null
+                ? {
+                    opacity: Math.max(0, Math.min(1, (wikiDragX + 288) / 288)),
+                    transition: 'none',
+                  }
+                : undefined
+            }
             className="fixed inset-0 bg-black/40 z-30 lg:hidden backdrop-blur-2xs"
           />
         )}
 
-        {/* Left Index Sidebar (Desktop static, Mobile slide-over) */}
+        {/* Left Index Sidebar (Desktop static, Mobile 1:1 swipe drawer) */}
         <aside
+          style={
+            wikiDragX !== null
+              ? { transform: `translateX(${wikiDragX}px)`, transition: 'none' }
+              : undefined
+          }
           className={`fixed lg:static ${
             mobileBarPosition === 'bottom' ? 'top-0 bottom-[3.75rem]' : 'top-14 bottom-0'
-          } lg:top-0 lg:bottom-0 left-0 z-40 w-72 bg-[#F4F3EF] dark:bg-[#1D1F23] border-r border-[#E5E3DC] dark:border-[#2F3136] flex flex-col transition-transform duration-200 ${
-            isMobileIndexOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+          } lg:top-0 lg:bottom-0 left-0 z-40 w-72 bg-[#F4F3EF] dark:bg-[#1D1F23] border-r border-[#E5E3DC] dark:border-[#2F3136] flex flex-col ${
+            wikiDragX === null ? 'transition-transform duration-200 ease-out' : ''
+          } ${
+            wikiDragX !== null
+              ? ''
+              : isMobileIndexOpen
+              ? 'translate-x-0'
+              : '-translate-x-full lg:translate-x-0'
           }`}
         >
           <div className="p-3 border-b border-[#E5E3DC] dark:border-[#2F3136] space-y-2">
@@ -949,6 +1118,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
               filteredArticles.map((art) => {
                 const isActive = art.slug === selectedSlug && mode === 'read';
                 const blockCount = ensureArticleBlocks(art).length;
+                const isPrivate = art.visibility === 'private';
                 return (
                   <button
                     key={art.slug}
@@ -966,12 +1136,23 @@ export const WikiView: React.FC<WikiViewProps> = ({
                     }`}
                   >
                     <div className="min-w-0 flex-1">
-                      <span
-                        className="text-xs block truncate"
-                        style={isActive ? { color: accentColor } : undefined}
-                      >
-                        {art.title}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {isPrivate ? (
+                          <span title="Privat" className="inline-flex shrink-0">
+                            <Lock className="w-3 h-3 text-neutral-400" />
+                          </span>
+                        ) : (
+                          <span title="Öffentlich (Shared)" className="inline-flex shrink-0">
+                            <Globe className="w-3 h-3" style={{ color: accentColor }} />
+                          </span>
+                        )}
+                        <span
+                          className="text-xs block truncate"
+                          style={isActive ? { color: accentColor } : undefined}
+                        >
+                          {art.title}
+                        </span>
+                      </div>
                       <span className="text-[11px] text-neutral-500 dark:text-neutral-400 block truncate mt-0.5">
                         {art.category} · {blockCount} Bausteine
                       </span>
@@ -983,12 +1164,12 @@ export const WikiView: React.FC<WikiViewProps> = ({
             )}
           </div>
 
-          <div className="p-2.5 px-3 border-t border-[#E5E3DC] dark:border-[#2F3136] text-[11px] text-neutral-500 flex items-center justify-between">
-            <span className="flex items-center gap-1.5">
-              <FolderOpen className="w-3.5 h-3.5" />
-              User/{username}/Wiki
+          <div className="p-2.5 px-3 border-t border-[#E5E3DC] dark:border-[#2F3136] text-[11px] text-neutral-500 flex items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5 truncate">
+              <FolderOpen className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Wiki/Public &amp; Privat</span>
             </span>
-            <span className="tabular-nums">{articles.length} .md</span>
+            <span className="tabular-nums shrink-0">{articles.length} .md</span>
           </div>
         </aside>
 
@@ -1034,6 +1215,63 @@ export const WikiView: React.FC<WikiViewProps> = ({
                         placeholder="z. B. Server & Docker"
                         className="w-full text-sm px-3 py-2 rounded-lg bg-[#FAF9F5] dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden"
                       />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+                      Sichtbarkeit &amp; Ablageort
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setDraft({ ...draft, visibility: 'public' })}
+                        style={
+                          (draft.visibility || 'public') === 'public'
+                            ? { borderColor: accentColor, backgroundColor: `${accentColor}12` }
+                            : undefined
+                        }
+                        className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-center gap-2 ${
+                          (draft.visibility || 'public') === 'public'
+                            ? 'border-2'
+                            : 'border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#161719]'
+                        }`}
+                      >
+                        <Globe className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
+                        <div className="min-w-0">
+                          <span className="text-xs font-bold block text-neutral-900 dark:text-neutral-100">
+                            Öffentlich
+                          </span>
+                          <span className="text-[10px] text-neutral-500 block truncate">
+                            Wiki/Public/ · Alle Suite-Nutzer
+                          </span>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setDraft({ ...draft, visibility: 'private' })}
+                        style={
+                          draft.visibility === 'private'
+                            ? { borderColor: accentColor, backgroundColor: `${accentColor}12` }
+                            : undefined
+                        }
+                        className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-center gap-2 ${
+                          draft.visibility === 'private'
+                            ? 'border-2'
+                            : 'border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#161719]'
+                        }`}
+                      >
+                        <Lock className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
+                        <div className="min-w-0">
+                          <span className="text-xs font-bold block text-neutral-900 dark:text-neutral-100">
+                            Privat
+                          </span>
+                          <span className="text-[10px] text-neutral-500 block truncate">
+                            User/{username}/Wiki · Nur für dich
+                          </span>
+                        </div>
+                      </button>
                     </div>
                   </div>
 
@@ -1151,7 +1389,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
 
                         {/* BLOCK BODY BY TYPE */}
                         {blk.type === 'text' && (
-                          <div className="space-y-1.5">
+                          <div className="space-y-1.5 relative">
                             <textarea
                               rows={6}
                               value={blk.content || ''}
@@ -1169,10 +1407,85 @@ export const WikiView: React.FC<WikiViewProps> = ({
                               placeholder="Klassisches Markdown (# Überschrift, Listen, **Fett**) und [[Wikilinks]]..."
                               className="w-full text-sm p-3 rounded-xl bg-[#FAF9F5] dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] outline-hidden leading-relaxed select-text"
                             />
-                            <p className="text-[11px] text-neutral-400">
-                              Unterstützt Markdown (Überschriften, Listen, Links) &amp; interne Verknüpfungen wie{' '}
-                              <span className="font-mono text-neutral-600 dark:text-neutral-300">[[Seitenname]]</span>.
-                            </p>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-[11px] text-neutral-400">
+                                Unterstützt Markdown &amp; Wikilinks{' '}
+                                <span className="font-mono text-neutral-600 dark:text-neutral-300">[[Seite oder Notiz]]</span>.
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLinkPickerSearch('');
+                                  setLinkPickerBlockId((prev) => (prev === blk.id ? null : blk.id));
+                                }}
+                                style={{ color: accentColor }}
+                                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#F4F3EF] dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[11px] font-semibold cursor-pointer"
+                              >
+                                <Link2 className="w-3 h-3" />
+                                <span>+ Notiz / Wiki verknüpfen</span>
+                              </button>
+                            </div>
+
+                            {linkPickerBlockId === blk.id && (
+                              <div className="p-2.5 rounded-xl bg-[#FBFBFA] dark:bg-[#18191D] border border-[#E5E3DC] dark:border-[#2F3136] shadow-lg space-y-2">
+                                <div className="flex items-center gap-1.5">
+                                  <Search className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    value={linkPickerSearch}
+                                    onChange={(e) => setLinkPickerSearch(e.target.value)}
+                                    placeholder="Notiz oder Wiki-Artikel suchen..."
+                                    className="flex-1 text-xs bg-transparent outline-hidden"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => setLinkPickerBlockId(null)}
+                                    className="text-neutral-400 hover:text-neutral-700 cursor-pointer"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                                <div className="max-h-40 overflow-y-auto space-y-1">
+                                  {articles
+                                    .filter((a) => !linkPickerSearch.trim() || a.title.toLowerCase().includes(linkPickerSearch.toLowerCase()))
+                                    .slice(0, 6)
+                                    .map((a) => (
+                                      <button
+                                        key={`w_${a.slug}`}
+                                        type="button"
+                                        onClick={() => {
+                                          const sep = blk.content && !blk.content.endsWith(' ') && !blk.content.endsWith('\n') ? ' ' : '';
+                                          updateBlock(blk.id, { content: `${blk.content || ''}${sep}[[${a.title}]]` });
+                                          setLinkPickerBlockId(null);
+                                        }}
+                                        className="w-full text-left px-2 py-1 rounded-lg hover:bg-amber-500/10 text-xs flex items-center justify-between gap-2 cursor-pointer"
+                                      >
+                                        <span className="truncate font-medium">[[{a.title}]]</span>
+                                        <span className="text-[10px] text-neutral-400 shrink-0">Wiki</span>
+                                      </button>
+                                    ))}
+                                  {notes
+                                    .filter((n) => !linkPickerSearch.trim() || n.title.toLowerCase().includes(linkPickerSearch.toLowerCase()))
+                                    .slice(0, 6)
+                                    .map((n) => (
+                                      <button
+                                        key={`n_${n.path}`}
+                                        type="button"
+                                        onClick={() => {
+                                          const sep = blk.content && !blk.content.endsWith(' ') && !blk.content.endsWith('\n') ? ' ' : '';
+                                          updateBlock(blk.id, { content: `${blk.content || ''}${sep}[[${n.title}]]` });
+                                          setLinkPickerBlockId(null);
+                                        }}
+                                        className="w-full text-left px-2 py-1 rounded-lg hover:bg-amber-500/10 text-xs flex items-center justify-between gap-2 cursor-pointer"
+                                      >
+                                        <span className="truncate font-medium">[[{n.title}]]</span>
+                                        <span className="text-[10px] text-neutral-400 shrink-0">Notiz</span>
+                                      </button>
+                                    ))}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
 
@@ -1387,6 +1700,28 @@ export const WikiView: React.FC<WikiViewProps> = ({
                       {activeArticle.category}
                     </span>
                     <span aria-hidden="true">·</span>
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[#F4F3EF] dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136]"
+                    >
+                      {activeArticle.visibility === 'private' ? (
+                        <>
+                          <Lock className="w-3 h-3" />
+                          <span>Privat</span>
+                        </>
+                      ) : (
+                        <>
+                          <Globe className="w-3 h-3" style={{ color: accentColor }} />
+                          <span>Öffentlich</span>
+                        </>
+                      )}
+                    </span>
+                    {activeArticle.author && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span>Von {activeArticle.author}</span>
+                      </>
+                    )}
+                    <span aria-hidden="true">·</span>
                     <span>
                       Aktualisiert: {new Date(activeArticle.updatedAt).toLocaleDateString('de-DE')}
                     </span>
@@ -1405,7 +1740,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
                       {activeArticle.title}
                     </h1>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
                       <button
                         type="button"
                         onClick={() => handleStartEdit(activeArticle)}
@@ -1414,6 +1749,16 @@ export const WikiView: React.FC<WikiViewProps> = ({
                       >
                         <Edit3 className="w-3.5 h-3.5" />
                         <span>Bearbeiten</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => printWikiArticleA4(activeArticle)}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#23252A] text-xs font-semibold text-neutral-700 dark:text-neutral-200 hover:border-[var(--wiki-accent)] cursor-pointer"
+                        title="Wiki-Artikel als A4 PDF / Druck exportieren"
+                      >
+                        <Printer className="w-3.5 h-3.5 text-[var(--wiki-accent)]" />
+                        <span>Als A4 PDF</span>
                       </button>
 
                       <button
@@ -1429,7 +1774,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
                       {confirmDeleteSlug === activeArticle.slug ? (
                         <button
                           type="button"
-                          onClick={() => handleDeleteArticle(activeArticle.slug)}
+                          onClick={() => handleDeleteArticle(activeArticle.slug, activeArticle.visibility)}
                           className="px-3 py-2 rounded-lg bg-red-600 text-white text-xs font-semibold cursor-pointer"
                         >
                           Löschen?
@@ -1449,6 +1794,29 @@ export const WikiView: React.FC<WikiViewProps> = ({
                       )}
                     </div>
                   </div>
+
+                  {/* Linked Projects Pill Bar */}
+                  {projects.filter((p) => p.linkedWikiSlugs.includes(activeArticle.slug)).length > 0 && (
+                    <div className="pt-2 flex flex-wrap items-center gap-1.5">
+                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-neutral-500 mr-1">
+                        <Briefcase className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                        <span>Verknüpfte Projekte:</span>
+                      </span>
+                      {projects
+                        .filter((p) => p.linkedWikiSlugs.includes(activeArticle.slug))
+                        .map((proj) => (
+                          <button
+                            key={proj.id}
+                            type="button"
+                            onClick={() => onNavigateToProject?.(proj.id)}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-[11px] font-semibold text-[var(--wiki-accent)] cursor-pointer transition-colors"
+                          >
+                            <span>{proj.title}</span>
+                            <ExternalLink className="w-3 h-3 opacity-75" />
+                          </button>
+                        ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* Ordered Modular Blocks */}

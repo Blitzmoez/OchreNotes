@@ -233,12 +233,12 @@ export const GraphView: React.FC<GraphViewProps> = ({
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  const getCanvasCoords = (e: React.MouseEvent) => {
+  const getCanvasCoords = (clientXVal: number, clientYVal: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
-    const clientX = e.clientX - rect.left;
-    const clientY = e.clientY - rect.top;
+    const clientX = clientXVal - rect.left;
+    const clientY = clientYVal - rect.top;
 
     return {
       x: (clientX - transformRef.current.x) / transformRef.current.scale,
@@ -246,18 +246,28 @@ export const GraphView: React.FC<GraphViewProps> = ({
     };
   };
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    const coords = getCanvasCoords(e);
+  const activePointerIdRef = useRef<number | null>(null);
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) return;
+    activePointerIdRef.current = e.pointerId;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+
+    const coords = getCanvasCoords(e.clientX, e.clientY);
     const visibleNodes = showTags ? nodesRef.current : nodesRef.current.filter((n) => n.type !== 'tag');
+    const hitRadius = e.pointerType === 'touch' ? 22 : 14;
 
     const clicked = visibleNodes.find((n) => {
       const dx = (n.x || 0) - coords.x;
       const dy = (n.y || 0) - coords.y;
-      return Math.sqrt(dx * dx + dy * dy) < 14;
+      return Math.sqrt(dx * dx + dy * dy) < hitRadius;
     });
 
     if (clicked) {
       draggedNodeRef.current = clicked;
+      setHoveredNode(clicked);
       dragStartRef.current = { x: e.clientX, y: e.clientY };
     } else {
       isDraggingRef.current = true;
@@ -265,8 +275,9 @@ export const GraphView: React.FC<GraphViewProps> = ({
     }
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
-    const coords = getCanvasCoords(e);
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) return;
+    const coords = getCanvasCoords(e.clientX, e.clientY);
 
     if (draggedNodeRef.current) {
       draggedNodeRef.current.x = coords.x;
@@ -279,7 +290,7 @@ export const GraphView: React.FC<GraphViewProps> = ({
       transformRef.current.x += dx;
       transformRef.current.y += dy;
       dragStartRef.current = { x: e.clientX, y: e.clientY };
-    } else {
+    } else if (e.pointerType !== 'touch') {
       const visibleNodes = showTags ? nodesRef.current : nodesRef.current.filter((n) => n.type !== 'tag');
       const hovered = visibleNodes.find((n) => {
         const dx = (n.x || 0) - coords.x;
@@ -290,16 +301,32 @@ export const GraphView: React.FC<GraphViewProps> = ({
     }
   };
 
-  const handleMouseUp = (e: React.MouseEvent) => {
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) return;
+    activePointerIdRef.current = null;
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {}
+
     if (draggedNodeRef.current) {
       const node = draggedNodeRef.current;
       draggedNodeRef.current = null;
-      // Only navigate if it was a stationary click (movement <= 6px), not an intentional bubble drag
+      // Only navigate if it was a stationary click/tap (movement <= 8px), not an intentional drag
       const movedDist = Math.hypot(e.clientX - dragStartRef.current.x, e.clientY - dragStartRef.current.y);
-      if (movedDist <= 6 && node.type === 'note') {
+      if (movedDist <= 8 && node.type === 'note') {
         onSelectNote(node.id);
       }
     }
+    isDraggingRef.current = false;
+  };
+
+  const handlePointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activePointerIdRef.current === e.pointerId) {
+      activePointerIdRef.current = null;
+    }
+    draggedNodeRef.current = null;
     isDraggingRef.current = false;
   };
 
@@ -330,7 +357,7 @@ export const GraphView: React.FC<GraphViewProps> = ({
   };
 
   return (
-    <div className="flex-1 h-full flex flex-col bg-[#FBFBFA] dark:bg-[#18191B] relative select-none">
+    <div data-no-swipe="true" className="flex-1 h-full flex flex-col bg-[#FBFBFA] dark:bg-[#18191B] relative select-none">
       {/* Top Graph Controls Bar */}
       <div className="h-10 px-4 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between z-10 bg-[#FBFBFA]/80 dark:bg-[#18191B]/80 backdrop-blur-xs">
         <div className="flex items-center gap-2">
@@ -398,11 +425,12 @@ export const GraphView: React.FC<GraphViewProps> = ({
         )}
         <canvas
           ref={canvasRef}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
           onWheel={handleWheel}
-          className="w-full h-full cursor-grab active:cursor-grabbing block"
+          className="w-full h-full cursor-grab active:cursor-grabbing block touch-none"
         />
 
         {/* Floating Node Info Tooltip */}

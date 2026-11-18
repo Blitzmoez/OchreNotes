@@ -16,13 +16,39 @@ function notifiedKey(username: string, dateIso: string) {
   return `ochre_notified_tasks_${username}_${dateIso}`;
 }
 
+export function isEmbeddedInIframe(): boolean {
+  try {
+    return typeof window !== 'undefined' && window.self !== window.top;
+  } catch {
+    return true;
+  }
+}
+
 export function isNotificationSupported(): boolean {
   return typeof window !== 'undefined' && 'Notification' in window;
 }
 
 export function getNotificationPermission(): NotificationPermission | 'unsupported' {
   if (!isNotificationSupported()) return 'unsupported';
-  return Notification.permission;
+  try {
+    return window.Notification.permission;
+  } catch {
+    return 'unsupported';
+  }
+}
+
+export async function querySyncedNotificationPermission(): Promise<NotificationPermission | 'unsupported'> {
+  if (!isNotificationSupported()) return 'unsupported';
+  const direct = getNotificationPermission();
+  if (direct === 'granted') return 'granted';
+  try {
+    if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+      const status = await navigator.permissions.query({ name: 'notifications' as PermissionName });
+      if (status.state === 'granted') return 'granted';
+      if (status.state === 'denied' && direct === 'denied') return 'denied';
+    }
+  } catch {}
+  return direct;
 }
 
 export function loadNotificationSettings(username: string): TaskNotificationSettings {
@@ -43,11 +69,55 @@ export function saveNotificationSettings(username: string, settings: TaskNotific
 
 export async function requestNotificationPermission(): Promise<NotificationPermission | 'unsupported'> {
   if (!isNotificationSupported()) return 'unsupported';
-  if (Notification.permission === 'granted') return 'granted';
+
+  const current = await querySyncedNotificationPermission();
+  if (current === 'granted') return 'granted';
+
   try {
-    return await Notification.requestPermission();
+    // Support both modern Promise-based and legacy callback-based Notification.requestPermission
+    const result = await new Promise<NotificationPermission>((resolve) => {
+      let settled = false;
+      const done = (perm: NotificationPermission) => {
+        if (!settled) {
+          settled = true;
+          resolve(perm);
+        }
+      };
+      try {
+        const ret = window.Notification.requestPermission((perm) => done(perm));
+        if (ret && typeof ret.then === 'function') {
+          ret.then(done).catch(() => done(getNotificationPermission() === 'granted' ? 'granted' : 'denied'));
+        }
+      } catch {
+        done(getNotificationPermission() === 'granted' ? 'granted' : 'denied');
+      }
+      setTimeout(() => done(getNotificationPermission() === 'granted' ? 'granted' : 'default'), 4000);
+    });
+    if (result === 'granted') return 'granted';
+    return await querySyncedNotificationPermission();
   } catch {
-    return Notification.permission;
+    return await querySyncedNotificationPermission();
+  }
+}
+
+async function getActiveServiceWorkerRegistration(): Promise<ServiceWorkerRegistration | null> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return null;
+  try {
+    const existing = await navigator.serviceWorker.getRegistration();
+    if (existing?.active) return existing;
+
+    // Ensure registration exists (e.g. if SW hadn't registered yet)
+    try {
+      await navigator.serviceWorker.register('/sw.js');
+    } catch {}
+
+    const readyReg = await Promise.race<ServiceWorkerRegistration | null>([
+      navigator.serviceWorker.ready,
+      new Promise<ServiceWorkerRegistration | null>((resolve) => setTimeout(() => resolve(existing || null), 1500)),
+    ]);
+    return readyReg || null;
+  } catch {
+    return null;
   }
 }
 
@@ -56,42 +126,62 @@ export async function sendPushNotification(
   body: string,
   tag?: string,
   data?: Record<string, any>
-): Promise<boolean> {
-  if (!isNotificationSupported() || Notification.permission !== 'granted') {
-    return false;
+): Promise<{ ok: boolean; via?: 'sw' | 'notification'; reason?: string }> {
+  if (!isNotificationSupported()) {
+    return { ok: false, reason: 'Dieser Browser unterstützt keine Web-Benachrichtigungen.' };
+  }
+
+  const perm = await querySyncedNotificationPermission();
+  if (perm !== 'granted') {
+    if (isEmbeddedInIframe()) {
+      return {
+        ok: false,
+        reason: 'Browser blockiert Push innerhalb der eingebetteten Vorschau – bitte App im eigenen Tab oder als PWA öffnen.',
+      };
+    }
+    return {
+      ok: false,
+      reason:
+        perm === 'denied'
+          ? 'In den Browser-/Website-Einstellungen für diese Adresse blockiert.'
+          : 'Berechtigung noch nicht erteilt.',
+    };
   }
 
   const options: NotificationOptions = {
     body,
-    icon: '/icons/icon-192.svg',
-    badge: '/icons/icon-192.svg',
+    icon: '/icons/icon-192.png',
+    badge: '/icons/icon-192.png',
     tag: tag || `ochre_${Date.now()}`,
     data: { url: '/?view=tasks', ...(data || {}) },
   };
 
-  // Prefer ServiceWorkerRegistration.showNotification (required on Android/Mobile Chrome & PWA)
+  // 1. Prefer ServiceWorkerRegistration.showNotification (required on Android Chrome & installed PWAs)
   try {
-    if ('serviceWorker' in navigator) {
-      const reg = await navigator.serviceWorker.getRegistration();
-      if (reg && typeof reg.showNotification === 'function') {
-        await reg.showNotification(title, options);
-        return true;
-      }
+    const reg = await getActiveServiceWorkerRegistration();
+    if (reg && typeof reg.showNotification === 'function') {
+      await reg.showNotification(title, options);
+      return { ok: true, via: 'sw' };
     }
-  } catch {}
+  } catch (err) {
+    console.warn('SW showNotification failed, trying Window Notification fallback:', err);
+  }
 
-  // Fallback for desktop environments without an active SW registration
+  // 2. Desktop / Safari fallback via standard Notification constructor
   try {
-    const n = new Notification(title, options);
+    const n = new window.Notification(title, options);
     n.onclick = () => {
       try {
         window.focus();
       } catch {}
       n.close();
     };
-    return true;
-  } catch {
-    return false;
+    return { ok: true, via: 'notification' };
+  } catch (err: any) {
+    return {
+      ok: false,
+      reason: err?.message || 'System-Benachrichtigung konnte nicht erstellt werden.',
+    };
   }
 }
 
@@ -120,10 +210,8 @@ export async function checkAndNotifyDueTasks(params: {
 }): Promise<{ pushedCount: number; dueCount: number }> {
   const { username, activeProfile, enableSecondProfile, force = false } = params;
   const settings = loadNotificationSettings(username);
-  if (!force && (!settings.enabled || getNotificationPermission() !== 'granted')) {
-    return { pushedCount: 0, dueCount: 0 };
-  }
-  if (getNotificationPermission() !== 'granted') {
+  const perm = await querySyncedNotificationPermission();
+  if ((!force && !settings.enabled) || perm !== 'granted') {
     return { pushedCount: 0, dueCount: 0 };
   }
 
@@ -174,15 +262,14 @@ export async function checkAndNotifyDueTasks(params: {
   if (pending.length === 1) {
     const task = pending[0];
     const prefix = task.isOverdue ? 'Überfällige Aufgabe' : 'Heute fällig';
-    const ok = await sendPushNotification(
+    const res = await sendPushNotification(
       `${prefix}: ${task.title}`,
       `Notiz: ${task.noteTitle} · Fällig am ${task.dueDate}`,
       `ochre-task-${task.id}`,
       { noteTitle: task.noteTitle, taskId: task.id }
     );
-    if (ok) pushed = 1;
+    if (res.ok) pushed = 1;
   } else {
-    // Push up to 2 highlighted items + summary so mobile & desktop notification trays stay crisp
     const overdueCount = pending.filter((t) => t.isOverdue).length;
     const todayCount = pending.filter((t) => t.isDueToday).length;
     const previewLines = pending
@@ -193,13 +280,13 @@ export async function checkAndNotifyDueTasks(params: {
     const parts: string[] = [];
     if (todayCount > 0) parts.push(`${todayCount} heute`);
     if (overdueCount > 0) parts.push(`${overdueCount} überfällig`);
-    const ok = await sendPushNotification(
+    const res = await sendPushNotification(
       `${summaryTitle} (${parts.join(', ')})`,
       previewLines + (pending.length > 3 ? `\n+ ${pending.length - 3} weitere` : ''),
       `ochre-tasks-summary-${todayIso}`,
       { count: pending.length }
     );
-    if (ok) pushed = pending.length;
+    if (res.ok) pushed = pending.length;
   }
 
   if (pushed > 0) {
@@ -222,10 +309,11 @@ export async function notifySingleTask(task: TaskItem): Promise<boolean> {
     ? `Erinnerung (${task.dueDate})`
     : 'Aufgaben-Erinnerung';
 
-  return sendPushNotification(
+  const res = await sendPushNotification(
     `${label}: ${task.title}`,
     `Aus Notiz: ${task.noteTitle}`,
     `ochre-task-manual-${task.id}`,
     { noteTitle: task.noteTitle, taskId: task.id }
   );
+  return res.ok;
 }

@@ -31,6 +31,7 @@ interface SidebarProps {
   onSelectNote: (path: string, isShared?: boolean, sharedFrom?: string) => void;
   onCreateNote: (folder?: string) => void;
   onCreateQuickNote?: () => void;
+  onOpenUnifiedCreate?: () => void;
   onCreateFolder?: (folderPath: string) => Promise<boolean | void> | void;
   onDeleteNote: (path: string) => void;
   onDeleteFolder?: (folderPath: string) => Promise<boolean | void> | void;
@@ -50,6 +51,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectNote,
   onCreateNote,
   onCreateQuickNote,
+  onOpenUnifiedCreate,
   onCreateFolder,
   onDeleteNote,
   onDeleteFolder,
@@ -318,9 +320,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                setCreateMenuTargetFolder((prev) => (prev === '/' ? null : '/'));
-                setIsSubfolderMode(false);
-                setSubfolderInput('');
+                if (onOpenUnifiedCreate) {
+                  onOpenUnifiedCreate();
+                } else {
+                  setCreateMenuTargetFolder((prev) => (prev === '/' ? null : '/'));
+                  setIsSubfolderMode(false);
+                  setSubfolderInput('');
+                }
               }}
               className="w-8 h-8 rounded-full bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] text-[var(--ochre-accent)] hover:border-[var(--ochre-accent)] shadow-xs flex items-center justify-center transition-all cursor-pointer active:scale-95 shrink-0 touch-manipulation"
               title={`${t.newNote} / ${t.newFolder}`}
@@ -531,10 +537,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                     setConfirmDeletePath(note.path);
                                     setTimeout(() => setConfirmDeletePath(null), 3500);
                                   }}
-                                  className="p-1 rounded-full text-neutral-400 hover:text-red-600 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
+                                  className="p-1.5 rounded-full text-neutral-400 hover:text-red-600 opacity-75 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity touch-manipulation"
                                   title="Inbox-Notiz löschen"
                                 >
-                                  <Trash2 className="w-3 h-3" />
+                                  <Trash2 className="w-3.5 h-3.5" />
                                 </button>
                               )}
                             </div>
@@ -825,7 +831,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                     setConfirmDeletePath(note.path);
                                     setTimeout(() => setConfirmDeletePath(null), 3500);
                                   }}
-                                  className="opacity-0 group-hover:opacity-100 p-1 rounded-full text-neutral-400 hover:text-red-600 transition-opacity"
+                                  className="opacity-75 lg:opacity-0 lg:group-hover:opacity-100 p-1.5 rounded-full text-neutral-400 hover:text-red-600 transition-opacity touch-manipulation"
                                   title="Notiz löschen"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />

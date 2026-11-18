@@ -55,6 +55,8 @@ export const DEFAULT_ENABLED_MODULES: EnabledModules = {
   wiki: true,
   recipes: true,
   finance: true,
+  smarthome: true,
+  projects: true,
 };
 
 export const DEFAULT_PROFILE_SETTINGS: SuiteProfileSettings = {
@@ -70,6 +72,8 @@ export const DEFAULT_PROFILE_SETTINGS: SuiteProfileSettings = {
       wiki: '#B87333',
       recipes: '#C26D2D',
       finance: '#8E6126',
+      smarthome: '#6E7F4F',
+      projects: '#B45309',
     },
   },
   profile2: {
@@ -81,6 +85,8 @@ export const DEFAULT_PROFILE_SETTINGS: SuiteProfileSettings = {
       wiki: '#9E6B2B',
       recipes: '#B45309',
       finance: '#6D4C2F',
+      smarthome: '#5C6B42',
+      projects: '#8E6126',
     },
   },
 };
@@ -89,7 +95,7 @@ export const MAX_DASHBOARD_WIDGETS = 6;
 
 export interface DashboardWidgetDefinition {
   id: DashboardWidgetId;
-  module: 'notes' | 'recipes' | 'wiki' | 'finance' | 'system';
+  module: 'notes' | 'recipes' | 'wiki' | 'finance' | 'smarthome' | 'projects' | 'system';
   title: string;
   description: string;
 }
@@ -135,13 +141,25 @@ export const DASHBOARD_WIDGET_CATALOG: DashboardWidgetDefinition[] = [
     id: 'cookbook_catalog_stats',
     module: 'recipes',
     title: 'Essensplan Katalog & Zutaten-Stats',
-    description: 'Tellergerichte, gesammelte Zutaten, ausgeschlossene Posten & Duplikate.',
+    description: 'Rezepte, gesammelte Zutaten, ausgeschlossene Posten & Duplikate.',
   },
   {
     id: 'finance_recent_tx',
     module: 'finance',
     title: 'Letzte Buchungen (Finanzen)',
     description: 'Die 4 aktuellsten Bank- und Bartransaktionen im Überblick.',
+  },
+  {
+    id: 'smarthome_overview',
+    module: 'smarthome',
+    title: 'Smarthome Live-Werte',
+    description: 'Aktuelle MQTT & Datenbank-Kacheln direkt auf dem Dashboard.',
+  },
+  {
+    id: 'projects_open',
+    module: 'projects',
+    title: 'Aktive Projekte & Kanban',
+    description: 'Laufende Projekte, offene Kanban-Aufgaben und anstehende Deadlines.',
   },
   {
     id: 'system_health',
@@ -153,7 +171,7 @@ export const DASHBOARD_WIDGET_CATALOG: DashboardWidgetDefinition[] = [
     id: 'quick_actions',
     module: 'system',
     title: 'Modul-Schnellzugriffe',
-    description: 'Direkte Sprungbuttons zu Kalender, Wochenshow, Notizen & Aufgaben.',
+    description: 'Direkte Sprungbuttons zu Kalender, Wochenshow, Notizen & Modulen.',
   },
 ];
 
@@ -164,6 +182,7 @@ export const DEFAULT_DASHBOARD_SETTINGS: DashboardSettings = {
     'cookbook_shopping_open',
     'cookbook_today_meals',
     'finance_balance',
-    'notes_summary',
+    'projects_open',
+    'smarthome_overview',
   ],
 };

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { User, NoteMetadata, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId, WikiArticle, Recipe, CookbookTab, DashboardSettings } from './types';
+import { User, NoteMetadata, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId, WikiArticle, Recipe, CookbookTab, DashboardSettings, ProjectItem } from './types';
 import { api } from './services/api';
 import { DEFAULT_ENABLED_MODULES, DEFAULT_PROFILE_SETTINGS, DEFAULT_DASHBOARD_SETTINGS, MAX_DASHBOARD_WIDGETS, DASHBOARD_WIDGET_CATALOG } from './services/profileDefaults';
 import { Header } from './components/layout/Header';
@@ -9,13 +9,15 @@ import { DashboardView } from './components/dashboard/DashboardView';
 import { WikiView } from './components/wiki/WikiView';
 import { CookbookView, CookbookSnapshot } from './components/recipes/CookbookView';
 import { FinanceView } from './components/finance/FinanceView';
+import { SmarthomeView } from './components/smarthome/SmarthomeView';
+import { ProjectsView } from './components/projects/ProjectsView';
 import { ShareModal } from './components/modals/ShareModal';
 import { SystemLogsModal } from './components/modals/SystemLogsModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { LoginScreen } from './components/auth/LoginScreen';
 import { BookOpen, CheckSquare, Network, ChevronRight, ChevronLeft, X, Inbox, Plus, Folder, FolderPlus, FilePlus, Layers } from 'lucide-react';
-import { printNoteA4, printWikiArticleA4, printMealPlanA4 } from './services/printService';
-import { checkAndNotifyDueTasks } from './services/notificationService';
+import { printNoteA4, printWikiArticleA4, printMealPlanA4, printProjectA4 } from './services/printService';
+import { checkAndNotifyDueTasks, querySyncedNotificationPermission } from './services/notificationService';
 
 const mergeProfileSettings = (raw?: Partial<SuiteProfileSettings> | null): SuiteProfileSettings => {
   if (!raw) return DEFAULT_PROFILE_SETTINGS;
@@ -137,11 +139,15 @@ export default function App() {
     name: '',
   });
 
-  // Modals & Active Module Snapshots (Wiki, Cookbook)
+  // Modals & Active Module Snapshots (Wiki, Cookbook, Projects)
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [isSystemLogsModalOpen, setIsSystemLogsModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [activeWikiArticle, setActiveWikiArticle] = useState<WikiArticle | null>(null);
+  const [wikiArticlesForLinks, setWikiArticlesForLinks] = useState<WikiArticle[]>([]);
+  const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [selectedWikiSlug, setSelectedWikiSlug] = useState<string | null>(null);
   const [shareModalRecipe, setShareModalRecipe] = useState<Recipe | null>(null);
   const [cookbookRefreshKey, setCookbookRefreshKey] = useState<number>(0);
   const cookbookSnapshotRef = useRef<CookbookSnapshot | null>(null);
@@ -348,15 +354,20 @@ export default function App() {
   };
 
   const handleToggleModule = (moduleId: SuiteModuleId) => {
-    if (moduleId === 'notes') return; // Notes is always base
-    setEnabledModules(prev => {
+    setEnabledModules((prev) => {
+      const enabledKeys = (Object.keys(prev) as SuiteModuleId[]).filter((k) => prev[k]);
+      // Ensure at least 1 module remains enabled across the entire suite
+      if (prev[moduleId] && enabledKeys.length <= 1) {
+        return prev;
+      }
       const next = { ...prev, [moduleId]: !prev[moduleId] };
       localStorage.setItem('ochre_enabled_modules', JSON.stringify(next));
       if (currentUser) {
         api.saveProfileSettings(currentUser.username, profileSettings, next, dashboardSettings).catch(console.error);
       }
       if (activeSuiteModule === moduleId && !next[moduleId]) {
-        setActiveSuiteModule('notes');
+        const fallback = (Object.keys(next) as SuiteModuleId[]).find((k) => next[k]) || 'dashboard';
+        setActiveSuiteModule(fallback);
       }
       return next;
     });
@@ -378,8 +389,9 @@ export default function App() {
         const raw = localStorage.getItem(`ochre_last_route_${currentUser.username}`);
         if (raw) {
           const parsed = JSON.parse(raw);
-          if (parsed.module && (parsed.module === 'notes' || enabledModules[parsed.module as SuiteModuleId])) {
-            setActiveSuiteModule(parsed.module);
+          const restoredMod = parsed.module as SuiteModuleId | undefined;
+          if (restoredMod && enabledModules[restoredMod]) {
+            setActiveSuiteModule(restoredMod);
           }
           if (parsed.viewMode === 'editor' || parsed.viewMode === 'tasks' || parsed.viewMode === 'graph') {
             setViewMode(parsed.viewMode);
@@ -392,6 +404,12 @@ export default function App() {
             parsed.cookbookTab === 'presentation'
           ) {
             setCookbookTab(parsed.cookbookTab);
+          }
+          if (parsed.projectId) {
+            setSelectedProjectId(parsed.projectId);
+          }
+          if (parsed.wikiSlug) {
+            setSelectedWikiSlug(parsed.wikiSlug);
           }
           if (parsed.notePath) {
             pendingRestoreNoteRef.current = {
@@ -419,6 +437,8 @@ export default function App() {
           notePath: activeNotePath,
           isShared: activeIsShared,
           sharedFrom: activeSharedFrom,
+          projectId: selectedProjectId,
+          wikiSlug: selectedWikiSlug,
         })
       );
     } catch {}
@@ -430,9 +450,11 @@ export default function App() {
     activeNotePath,
     activeIsShared,
     activeSharedFrom,
+    selectedProjectId,
+    selectedWikiSlug,
   ]);
 
-  // Load saved profile settings & cookbook feature flags whenever currentUser changes
+  // Load saved profile settings, cookbook feature flags, projects & wiki index whenever currentUser changes
   useEffect(() => {
     if (!currentUser) return;
     let cancelled = false;
@@ -466,6 +488,14 @@ export default function App() {
       } else if (!cycleEnabled && cookbookTab === 'cycle') {
         setCookbookTab('calendar');
       }
+    }).catch(() => {});
+
+    api.fetchProjects(currentUser.username).then((list) => {
+      if (!cancelled) setProjects(list);
+    }).catch(() => {});
+
+    api.fetchWikiArticles(currentUser.username).then((arts) => {
+      if (!cancelled) setWikiArticlesForLinks(arts);
     }).catch(() => {});
 
     return () => {
@@ -519,7 +549,9 @@ export default function App() {
   // Periodic push notification check for tasks with due dates (Mobile PWA & Desktop)
   useEffect(() => {
     if (!currentUser) return;
-    const runCheck = () => {
+    const runCheck = async () => {
+      const perm = await querySyncedNotificationPermission();
+      if (perm !== 'granted') return;
       checkAndNotifyDueTasks({
         username: currentUser.username,
         activeProfile: activeProfileId,
@@ -765,7 +797,7 @@ export default function App() {
     setActiveNotePath(null);
   };
 
-  // A4 Print Handler (Module-aware: Notes, Wiki Article, Cookbook Weekly Plan)
+  // A4 Print Handler (Module-aware: Notes, Wiki Article, Cookbook Weekly Plan, Projects)
   const handlePrintA4 = () => {
     flushPendingSave();
     if (activeSuiteModule === 'wiki') {
@@ -787,7 +819,14 @@ export default function App() {
       }
       return;
     }
-    if (activeSuiteModule === 'finance') {
+    if (activeSuiteModule === 'projects') {
+      const targetProj = projects.find((p) => p.id === selectedProjectId) || projects[0];
+      if (targetProj) {
+        printProjectA4(targetProj, targetProj.color || profileSettings.profile1.colors.projects);
+      }
+      return;
+    }
+    if (activeSuiteModule === 'finance' || activeSuiteModule === 'smarthome' || activeSuiteModule === 'dashboard') {
       return;
     }
     printNoteA4(activeNoteTitle, activeNoteContentRef.current || activeNoteContent, activeProfile.colors.notes);
@@ -949,8 +988,8 @@ export default function App() {
         mobileBarPosition={profileSettings.mobileBarPosition || 'top'}
       />
 
-      {/* Main Container: Renders active Suite Module (Dashboard, Notes, Wiki, Recipes, Finance) */}
-      {activeSuiteModule === 'dashboard' && (
+      {/* Main Container: Renders active Suite Module */}
+      {activeSuiteModule === 'dashboard' && enabledModules.dashboard && (
         <div className="flex-1 flex overflow-hidden">
           <DashboardView
             currentUser={
@@ -972,7 +1011,7 @@ export default function App() {
             enableCookbookShoppingList={enableCookbookShoppingList}
             dashboardSettings={dashboardSettings}
             onNavigateToModule={(mod, options) => {
-              if (mod !== 'notes' && !enabledModules[mod]) return;
+              if (!enabledModules[mod]) return;
               flushPendingSave();
               setActiveSuiteModule(mod);
               if (options?.notesView) {
@@ -980,6 +1019,12 @@ export default function App() {
               }
               if (options?.notePath) {
                 openNote(options.notePath, false);
+              }
+              if (options?.wikiSlug) {
+                setSelectedWikiSlug(options.wikiSlug);
+              }
+              if (options?.projectId) {
+                setSelectedProjectId(options.projectId);
               }
               if (options?.cookbookTab) {
                 setCookbookTab(
@@ -999,22 +1044,32 @@ export default function App() {
         </div>
       )}
 
-      {activeSuiteModule === 'wiki' && (
+      {activeSuiteModule === 'wiki' && enabledModules.wiki && (
         <div className="flex-1 flex overflow-hidden">
           <WikiView
             username={currentUser?.username || 'michael'}
             accentColor={profileSettings.profile1.colors.wiki}
             mobileBarPosition={profileSettings.mobileBarPosition || 'top'}
-            onActiveArticleChange={setActiveWikiArticle}
+            notes={notes}
+            projects={projects}
+            initialSelectedSlug={selectedWikiSlug}
+            onActiveArticleChange={(art) => {
+              setActiveWikiArticle(art);
+              if (art?.slug) setSelectedWikiSlug(art.slug);
+            }}
             onNavigateToNote={(noteTitle) => {
               setActiveSuiteModule('notes');
               openNoteByTitle(noteTitle);
+            }}
+            onNavigateToProject={(pid) => {
+              setSelectedProjectId(pid);
+              setActiveSuiteModule('projects');
             }}
           />
         </div>
       )}
 
-      {activeSuiteModule === 'recipes' && (
+      {activeSuiteModule === 'recipes' && enabledModules.recipes && (
         <div className="flex-1 flex overflow-hidden">
           <CookbookView
             currentUser={
@@ -1051,7 +1106,7 @@ export default function App() {
         </div>
       )}
 
-      {activeSuiteModule === 'finance' && (
+      {activeSuiteModule === 'finance' && enabledModules.finance && (
         <div className="flex-1 flex overflow-hidden">
           <FinanceView
             accentColor={profileSettings.profile1.colors.finance}
@@ -1060,7 +1115,57 @@ export default function App() {
         </div>
       )}
 
-      {activeSuiteModule === 'notes' && (
+      {activeSuiteModule === 'smarthome' && enabledModules.smarthome && (
+        <div className="flex-1 flex overflow-hidden">
+          <SmarthomeView
+            currentUser={
+              currentUser || {
+                id: 'user_michael',
+                username: 'michael',
+                displayName: 'Michael',
+                avatar: '',
+                role: 'admin',
+              }
+            }
+            accentColor={profileSettings.profile1.colors.smarthome}
+            mobileBarPosition={profileSettings.mobileBarPosition || 'top'}
+          />
+        </div>
+      )}
+
+      {activeSuiteModule === 'projects' && enabledModules.projects && (
+        <div className="flex-1 flex overflow-hidden">
+          <ProjectsView
+            currentUser={
+              currentUser || {
+                id: 'user_michael',
+                username: 'michael',
+                displayName: 'Michael',
+                avatar: '',
+                role: 'admin',
+              }
+            }
+            allUsers={allUsers}
+            notes={notes}
+            wikiArticles={wikiArticlesForLinks}
+            projects={projects}
+            onProjectsChange={setProjects}
+            initialProjectId={selectedProjectId}
+            accentColor={profileSettings.profile1.colors.projects}
+            mobileBarPosition={profileSettings.mobileBarPosition || 'top'}
+            onNavigateToNote={(notePath) => {
+              setActiveSuiteModule('notes');
+              openNote(notePath, false);
+            }}
+            onNavigateToWiki={(slug) => {
+              setSelectedWikiSlug(slug);
+              setActiveSuiteModule('wiki');
+            }}
+          />
+        </div>
+      )}
+
+      {activeSuiteModule === 'notes' && enabledModules.notes && (
         <div className="flex-1 flex overflow-hidden relative">
           {/* Mobile Left Screen Edge Swipe Indicator & Vault Toggle Button */}
           <button
@@ -1103,6 +1208,11 @@ export default function App() {
             onSelectNote={openNote}
             onCreateNote={openNewNoteDialog}
             onCreateQuickNote={handleCreateQuickNote}
+            onOpenUnifiedCreate={() => {
+              setIsSlideOutCreatingFolder(false);
+              setSlideOutNewFolderName('');
+              setIsNewNoteSlideOutOpen(true);
+            }}
             onCreateFolder={handleCreateFolder}
             onDeleteNote={handleDeleteNote}
             onDeleteFolder={handleDeleteFolder}
@@ -1142,6 +1252,11 @@ export default function App() {
             onCreateFolder={handleCreateFolder}
             onSwitchToEditor={() => setViewMode('editor')}
             openLiteVaultSignal={openLiteVaultSignal}
+            projects={projects}
+            onNavigateToProject={(pid) => {
+              setSelectedProjectId(pid);
+              setActiveSuiteModule('projects');
+            }}
           />
         </div>
       )}
@@ -1273,11 +1388,11 @@ export default function App() {
         </div>
       )}
 
-      {/* Mobile & Tablet "Neu" Slide-Out (Lite Vault, Ordnerwahl + Ordner erstellen, Quick Write) */}
+      {/* Unified "Neu" Slide-Out (Lite Vault, Ordnerwahl + Ordner erstellen, Quick Write) for Mobile & Desktop */}
       {activeSuiteModule === 'notes' && isNewNoteSlideOutOpen && (
         <div
           onClick={() => setIsNewNoteSlideOutOpen(false)}
-          className="lg:hidden fixed inset-0 z-[105] bg-black/45 backdrop-blur-xs flex items-start justify-end px-3 pt-16 pb-4 animate-in fade-in duration-150"
+          className="fixed inset-0 z-[105] bg-black/45 backdrop-blur-xs flex items-start justify-end px-3 pt-16 pb-4 animate-in fade-in duration-150"
         >
           <div
             onClick={(e) => e.stopPropagation()}

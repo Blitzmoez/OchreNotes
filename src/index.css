@@ -128,6 +128,21 @@
   animation: ochre-drawer-close-up 0.2s cubic-bezier(0.4, 0, 1, 1) forwards;
 }
 
+@keyframes ochre-drawer-fade-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+}
+
+.animate-drawer-fade-out {
+  animation: ochre-drawer-fade-out 0.18s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
 /* DIN A4 Print Optimization */
 @media print {
   @page {

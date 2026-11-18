@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { PaneType, NoteMetadata, NoteProfileId } from '../../types';
+import { PaneType, NoteMetadata, NoteProfileId, ProjectItem } from '../../types';
 import { LiveEditorPane } from '../editor/LiveEditorPane';
 import { TasksDashboard } from '../tasks/TasksDashboard';
 import { GraphView } from '../graph/GraphView';
@@ -47,6 +47,8 @@ interface WorkspaceProps {
   onCreateFolder?: (folderPath: string) => Promise<boolean | void> | void;
   onSwitchToEditor?: () => void;
   openLiteVaultSignal?: number;
+  projects?: ProjectItem[];
+  onNavigateToProject?: (projectId: string) => void;
 }
 
 interface NoteTab {
@@ -83,6 +85,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   onCreateFolder,
   onSwitchToEditor,
   openLiteVaultSignal,
+  projects = [],
+  onNavigateToProject,
 }) => {
   // Screen width detection for mobile lite vault & tab mode
   const [isMobile, setIsMobile] = useState<boolean>(() => typeof window !== 'undefined' && window.innerWidth < 1024);
@@ -873,6 +877,10 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             }}
             showToolbar={showToolbar}
             onToggleToolbar={() => setShowToolbar(!showToolbar)}
+            linkedProjects={projects.filter((p) =>
+              p.linkedNotePaths.includes(activeTab?.path || activeNotePath || '')
+            )}
+            onNavigateToProject={onNavigateToProject}
             noteContext={{
               username,
               notePath: activeTab?.path || activeNotePath,
@@ -981,6 +989,10 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             }}
             showToolbar={showToolbar}
             onToggleToolbar={() => setShowToolbar(!showToolbar)}
+            linkedProjects={projects.filter((p) =>
+              activeNotePath ? p.linkedNotePaths.includes(activeNotePath) : false
+            )}
+            onNavigateToProject={onNavigateToProject}
             noteContext={{
               username,
               notePath: activeNotePath,

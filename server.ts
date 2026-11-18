@@ -2,6 +2,8 @@ import express from 'express';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
+import net from 'net';
+import mqtt, { type MqttClient } from 'mqtt';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -182,6 +184,74 @@ export function getUserVaultDir(username: string, profile: string = 'profile1'):
   return profile === 'profile2' ? dirs.profile2 : dirs.profile1;
 }
 
+export function ensureWikiDirectories(username?: string): {
+  wikiRoot: string;
+  publicDir: string;
+  publicAssets: string;
+  privateDir: string;
+  privateAssets: string;
+} {
+  const wikiRoot = path.join(VAULT_PATH, 'Wiki');
+  const publicDir = path.join(wikiRoot, 'Public');
+  const publicAssets = path.join(publicDir, 'assets');
+  const safeUser = path.basename(username || 'michael');
+  const privateDir = path.join(wikiRoot, safeUser);
+  const privateAssets = path.join(privateDir, 'assets');
+
+  for (const d of [wikiRoot, publicDir, publicAssets, privateDir, privateAssets]) {
+    if (!fs.existsSync(d)) {
+      fs.mkdirSync(d, { recursive: true, mode: 0o775 });
+    }
+  }
+
+  return { wikiRoot, publicDir, publicAssets, privateDir, privateAssets };
+}
+
+async function migrateLegacyWikiStorage() {
+  try {
+    const wikiDirs = ensureWikiDirectories('michael');
+    const usersBase = path.join(VAULT_PATH, 'User');
+    if (!fs.existsSync(usersBase)) return;
+
+    const userEntries = await fsp.readdir(usersBase, { withFileTypes: true });
+    for (const uEntry of userEntries) {
+      if (!uEntry.isDirectory()) continue;
+      const legacyWiki = path.join(usersBase, uEntry.name, 'Wiki');
+      if (!fs.existsSync(legacyWiki)) continue;
+
+      const legacyAssets = path.join(legacyWiki, 'assets');
+      if (fs.existsSync(legacyAssets)) {
+        const assetFiles = await fsp.readdir(legacyAssets).catch(() => []);
+        for (const af of assetFiles) {
+          const srcA = path.join(legacyAssets, af);
+          const dstA = path.join(wikiDirs.publicAssets, af);
+          if (fs.statSync(srcA).isFile() && !fs.existsSync(dstA)) {
+            await fsp.copyFile(srcA, dstA).catch(() => {});
+          }
+        }
+      }
+
+      const mdFiles = (await fsp.readdir(legacyWiki).catch(() => [])).filter((f) => f.endsWith('.md'));
+      for (const mf of mdFiles) {
+        const srcMd = path.join(legacyWiki, mf);
+        const dstMd = path.join(wikiDirs.publicDir, mf);
+        if (!fs.existsSync(dstMd)) {
+          let raw = await fsp.readFile(srcMd, 'utf-8');
+          raw = raw.split(`/api/wiki/assets/${encodeURIComponent(uEntry.name)}/`).join('/api/wiki/assets/public/');
+          raw = raw.split(`/api/wiki/assets/${uEntry.name}/`).join('/api/wiki/assets/public/');
+          if (/^---\r?\n/.test(raw) && !/^visibility:/m.test(raw)) {
+            raw = raw.replace(/^---\r?\n/, `---\nvisibility: "public"\nauthor: "${uEntry.name}"\n`);
+          }
+          await fsp.writeFile(dstMd, raw, 'utf-8');
+        }
+        await fsp.unlink(srcMd).catch(() => {});
+      }
+    }
+  } catch (err: any) {
+    log('warn', `Wiki-Migration Hinweis: ${err.message}`, 'WIKI');
+  }
+}
+
 async function initVaultDirectory() {
   try {
     if (!fs.existsSync(VAULT_PATH)) {
@@ -236,6 +306,9 @@ async function initVaultDirectory() {
       log('info', `Freigabe-Datenbank initialisiert.`, 'SHARING');
     }
 
+    // Migrate legacy User/*/Wiki/*.md into shared Wiki/Public/ safely
+    await migrateLegacyWikiStorage();
+
     // Seed sample notes for Michael and Sarah (and ensure Profil_1 / Profil_2 / Wiki exist)
     await seedUserVault('michael', true);
     await seedUserVault('sarah', false);
@@ -247,20 +320,23 @@ async function initVaultDirectory() {
 
 async function seedUserVault(username: string, isMichael: boolean) {
   const dirs = ensureUserProfileStructure(username);
+  const wikiDirs = ensureWikiDirectories(username);
   const userVault = dirs.profile1;
   const existingEntries = fs.readdirSync(userVault);
 
-  // Seed initial Wiki article if Wiki folder has no .md files yet
-  const wikiFiles = fs.readdirSync(dirs.wiki).filter((f) => f.endsWith('.md'));
-  if (wikiFiles.length === 0 && isMichael) {
+  // Seed initial Public Wiki article if Wiki/Public has no .md files yet
+  const publicWikiFiles = fs.readdirSync(wikiDirs.publicDir).filter((f) => f.endsWith('.md'));
+  if (publicWikiFiles.length === 0 && isMichael) {
     const sampleWiki = `---
 title: "Docker & NAS Backup Anleitung"
 category: "Server & Docker"
 tags: ["docker", "nas", "anleitung"]
+visibility: "public"
+author: "michael"
 updatedAt: "${new Date().toISOString()}"
 ---
 
-Diese Wiki-Seite wird nach dem **offenen Markdown-Standard** mit YAML-Frontmatter direkt im Ordner \`User/${username}/Wiki/\` gespeichert.
+Diese Wiki-Seite wird nach dem **offenen Markdown-Standard** mit YAML-Frontmatter direkt im Ordner \`Wiki/Public/\` gespeichert – zentral neben deinen Notizen.
 
 1. Öffne das Terminal auf deinem NAS oder Docker-Host.
 2. Prüfe die Berechtigungen für \`UID:GID 2000:100\`.
@@ -276,6 +352,7 @@ services:
     user: "2000:100"
     volumes:
       - /srv/NASDRIVE/Files/OchreSuite/User:/data/vault/User
+      - /srv/NASDRIVE/Files/OchreSuite/Wiki:/data/vault/Wiki
       - /srv/NASDRIVE/Files/OchreSuite/config:/data/config
 \`\`\`
 
@@ -285,7 +362,7 @@ chown -R 2000:100 /srv/NASDRIVE/Files/OchreSuite
 chmod -R 775 /srv/NASDRIVE/Files/OchreSuite
 \`\`\`
 `;
-    await fsp.writeFile(path.join(dirs.wiki, 'docker-nas-backup-anleitung.md'), sampleWiki, 'utf-8');
+    await fsp.writeFile(path.join(wikiDirs.publicDir, 'docker-nas-backup-anleitung.md'), sampleWiki, 'utf-8');
   }
 
   if (existingEntries.length > 0) return;
@@ -1790,10 +1867,18 @@ async function createServer() {
     return 'image';
   }
 
-  function parseWikiMarkdown(slug: string, raw: string) {
+  function parseWikiMarkdown(
+    slug: string,
+    raw: string,
+    defaultVisibility: 'public' | 'private' = 'public',
+    defaultAuthor = 'michael',
+    storagePath = ''
+  ) {
     let title = slug;
     let category = 'Allgemein';
     let tags: string[] = [];
+    let visibility: 'public' | 'private' = defaultVisibility;
+    let author = defaultAuthor;
     let updatedAt = new Date().toISOString();
     let content = raw;
 
@@ -1805,6 +1890,12 @@ async function createServer() {
       if (tMatch) title = tMatch[1].trim();
       const cMatch = fmBlock.match(/^category:\s*"?([^"\n]+)"?/m);
       if (cMatch) category = cMatch[1].trim();
+      const vMatch = fmBlock.match(/^visibility:\s*"?([^"\n]+)"?/m);
+      if (vMatch && (vMatch[1].trim() === 'private' || vMatch[1].trim() === 'public')) {
+        visibility = vMatch[1].trim() as 'public' | 'private';
+      }
+      const aMatch = fmBlock.match(/^author:\s*"?([^"\n]+)"?/m);
+      if (aMatch) author = aMatch[1].trim();
       const uMatch = fmBlock.match(/^updatedAt:\s*"?([^"\n]+)"?/m);
       if (uMatch) updatedAt = uMatch[1].trim();
       const tagsMatch = fmBlock.match(/^tags:\s*\[(.*)\]/m);
@@ -1998,6 +2089,9 @@ async function createServer() {
       title,
       category,
       tags,
+      visibility,
+      author,
+      storagePath,
       updatedAt,
       body: body.trim(),
       images,
@@ -2010,11 +2104,13 @@ async function createServer() {
   function serializeWikiMarkdown(article: any): string {
     const safeTitle = (article.title || 'Unbenannt').replace(/"/g, '\\"');
     const safeCategory = (article.category || 'Allgemein').replace(/"/g, '\\"');
+    const visibility: 'public' | 'private' = article.visibility === 'private' ? 'private' : 'public';
+    const safeAuthor = String(article.author || 'michael').replace(/"/g, '');
     const tagsArr = Array.isArray(article.tags) ? article.tags : [];
     const tagsYaml = `[${tagsArr.map((t: string) => `"${String(t).replace(/"/g, '')}"`).join(', ')}]`;
     const updatedAt = article.updatedAt || new Date().toISOString();
 
-    let md = `---\ntitle: "${safeTitle}"\ncategory: "${safeCategory}"\ntags: ${tagsYaml}\nupdatedAt: "${updatedAt}"\n---\n\n`;
+    let md = `---\ntitle: "${safeTitle}"\ncategory: "${safeCategory}"\ntags: ${tagsYaml}\nvisibility: "${visibility}"\nauthor: "${safeAuthor}"\nupdatedAt: "${updatedAt}"\n---\n\n`;
 
     if (Array.isArray(article.blocks) && article.blocks.length > 0) {
       for (const blk of article.blocks as ServerWikiBlock[]) {
@@ -2091,18 +2187,37 @@ async function createServer() {
   }
 
   app.get('/api/wiki/articles', async (req, res) => {
-    const username = (req.query.username as string) || 'michael';
+    const username = path.basename((req.query.username as string) || 'michael');
     try {
-      const dirs = ensureUserProfileStructure(username);
-      const files = await fsp.readdir(dirs.wiki);
-      const articles = [];
-      for (const f of files) {
-        if (f.endsWith('.md')) {
-          const slug = f.replace(/\.md$/, '');
-          const raw = await fsp.readFile(path.join(dirs.wiki, f), 'utf-8');
-          articles.push(parseWikiMarkdown(slug, raw));
-        }
+      const wikiDirs = ensureWikiDirectories(username);
+      const articles: any[] = [];
+      const seenSlugs = new Set<string>();
+
+      // 1. Public Wiki articles (Wiki/Public/*.md)
+      const publicFiles = (await fsp.readdir(wikiDirs.publicDir).catch(() => [])).filter((f) => f.endsWith('.md'));
+      for (const f of publicFiles) {
+        const slug = f.replace(/\.md$/, '');
+        const raw = await fsp.readFile(path.join(wikiDirs.publicDir, f), 'utf-8');
+        const parsed = parseWikiMarkdown(slug, raw, 'public', 'michael', `Wiki/Public/${f}`);
+        parsed.visibility = 'public';
+        parsed.storagePath = `Wiki/Public/${f}`;
+        articles.push(parsed);
+        seenSlugs.add(`public:${slug}`);
       }
+
+      // 2. Private Wiki articles (Wiki/<username>/*.md)
+      const privateFiles = (await fsp.readdir(wikiDirs.privateDir).catch(() => [])).filter((f) => f.endsWith('.md'));
+      for (const f of privateFiles) {
+        const slug = f.replace(/\.md$/, '');
+        const raw = await fsp.readFile(path.join(wikiDirs.privateDir, f), 'utf-8');
+        const parsed = parseWikiMarkdown(slug, raw, 'private', username, `Wiki/${username}/${f}`);
+        parsed.visibility = 'private';
+        parsed.author = parsed.author || username;
+        parsed.storagePath = `Wiki/${username}/${f}`;
+        articles.push(parsed);
+        seenSlugs.add(`private:${slug}`);
+      }
+
       articles.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
       res.json(articles);
     } catch (err: any) {
@@ -2112,35 +2227,78 @@ async function createServer() {
   });
 
   app.post('/api/wiki/articles', async (req, res) => {
-    const { username = 'michael', article, oldSlug } = req.body;
+    const { username = 'michael', article, oldSlug, oldVisibility } = req.body;
     if (!article || !article.title) {
       return res.status(400).json({ error: 'Artikel oder Titel fehlt' });
     }
     try {
-      const dirs = ensureUserProfileStructure(username);
+      const safeUser = path.basename(username);
+      const wikiDirs = ensureWikiDirectories(safeUser);
+      const visibility: 'public' | 'private' = article.visibility === 'private' ? 'private' : 'public';
+      const targetDir = visibility === 'public' ? wikiDirs.publicDir : wikiDirs.privateDir;
+      const targetAssetsDir = visibility === 'public' ? wikiDirs.publicAssets : wikiDirs.privateAssets;
+      const targetScope = visibility === 'public' ? 'public' : safeUser;
+
       const slugBase = (article.slug || article.title)
         .toLowerCase()
         .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
         .replace(/[^a-z0-9\-_]+/g, '-')
         .replace(/^-+|-+$/g, '') || `wiki-${Date.now()}`;
 
+      // Copy & rewrite asset URLs if switching between Public and Private scope
+      const fromScope = visibility === 'public' ? safeUser : 'public';
+      const fromAssetsDir = visibility === 'public' ? wikiDirs.privateAssets : wikiDirs.publicAssets;
+      const rewriteUrlScope = async (url?: string) => {
+        if (!url) return url;
+        const prefix = `/api/wiki/assets/${encodeURIComponent(fromScope)}/`;
+        if (url.startsWith(prefix)) {
+          const fname = decodeURIComponent(url.slice(prefix.length));
+          const srcA = path.join(fromAssetsDir, path.basename(fname));
+          const dstA = path.join(targetAssetsDir, path.basename(fname));
+          if (fs.existsSync(srcA) && !fs.existsSync(dstA)) {
+            await fsp.copyFile(srcA, dstA).catch(() => {});
+          }
+          return `/api/wiki/assets/${encodeURIComponent(targetScope)}/${encodeURIComponent(fname)}`;
+        }
+        return url;
+      };
+
+      const rewrittenBlocks = Array.isArray(article.blocks)
+        ? await Promise.all(
+            article.blocks.map(async (b: any) =>
+              b.type === 'media' && b.mediaUrl
+                ? { ...b, mediaUrl: await rewriteUrlScope(b.mediaUrl) }
+                : b
+            )
+          )
+        : article.blocks;
+
+      const storagePath = visibility === 'public' ? `Wiki/Public/${slugBase}.md` : `Wiki/${safeUser}/${slugBase}.md`;
       const updatedArticle = {
         ...article,
         slug: slugBase,
+        visibility,
+        author: article.author || safeUser,
+        storagePath,
+        blocks: rewrittenBlocks,
         updatedAt: new Date().toISOString(),
       };
       const mdContent = serializeWikiMarkdown(updatedArticle);
-      const targetPath = path.join(dirs.wiki, `${slugBase}.md`);
+      const targetPath = path.join(targetDir, `${slugBase}.md`);
       await fsp.writeFile(targetPath, mdContent, 'utf-8');
 
-      if (oldSlug && oldSlug !== slugBase) {
-        const oldPath = path.join(dirs.wiki, `${oldSlug}.md`);
-        if (fs.existsSync(oldPath)) {
+      // Remove old file if slug OR visibility changed
+      const prevSlug = oldSlug || slugBase;
+      const prevVis: 'public' | 'private' = oldVisibility === 'private' ? 'private' : oldVisibility === 'public' ? 'public' : visibility;
+      if (prevSlug !== slugBase || prevVis !== visibility) {
+        const prevDir = prevVis === 'public' ? wikiDirs.publicDir : wikiDirs.privateDir;
+        const oldPath = path.join(prevDir, `${path.basename(prevSlug)}.md`);
+        if (fs.existsSync(oldPath) && oldPath !== targetPath) {
           await fsp.unlink(oldPath).catch(() => {});
         }
       }
 
-      log('info', `Wiki-Artikel gespeichert (Markdown): '${username}/Wiki/${slugBase}.md'`, 'WIKI');
+      log('info', `Wiki-Artikel gespeichert (Markdown): '${storagePath}'`, 'WIKI');
       res.json({ ...updatedArticle, rawMarkdown: mdContent });
     } catch (err: any) {
       log('error', `Fehler beim Speichern des Wiki-Artikels: ${err.message}`, 'WIKI');
@@ -2149,15 +2307,24 @@ async function createServer() {
   });
 
   app.delete('/api/wiki/articles', async (req, res) => {
-    const username = (req.query.username as string) || 'michael';
+    const username = path.basename((req.query.username as string) || 'michael');
     const slug = req.query.slug as string;
+    const visibility = req.query.visibility as string | undefined;
     if (!slug) return res.status(400).json({ error: 'Slug fehlt' });
     try {
-      const dirs = ensureUserProfileStructure(username);
+      const wikiDirs = ensureWikiDirectories(username);
       const safeSlug = path.basename(slug);
-      const fullPath = path.join(dirs.wiki, `${safeSlug}.md`);
-      if (fs.existsSync(fullPath)) {
-        await fsp.unlink(fullPath);
+      const candidates =
+        visibility === 'private'
+          ? [path.join(wikiDirs.privateDir, `${safeSlug}.md`)]
+          : visibility === 'public'
+          ? [path.join(wikiDirs.publicDir, `${safeSlug}.md`)]
+          : [path.join(wikiDirs.privateDir, `${safeSlug}.md`), path.join(wikiDirs.publicDir, `${safeSlug}.md`)];
+
+      for (const fp of candidates) {
+        if (fs.existsSync(fp)) {
+          await fsp.unlink(fp);
+        }
       }
       res.json({ success: true });
     } catch (err: any) {
@@ -2166,7 +2333,7 @@ async function createServer() {
   });
 
   app.post('/api/wiki/upload', async (req, res) => {
-    const { username = 'michael', filename = 'media.png', dataUrl } = req.body;
+    const { username = 'michael', filename = 'media.png', dataUrl, visibility = 'public' } = req.body;
     if (!dataUrl || typeof dataUrl !== 'string') {
       return res.status(400).json({ error: 'Mediendaten fehlen' });
     }
@@ -2195,15 +2362,18 @@ async function createServer() {
         .slice(0, 40) || (mediaKind === 'video' ? 'video' : 'foto');
       const savedName = `${Date.now()}_${baseName}.${ext}`;
 
-      const dirs = ensureUserProfileStructure(username);
-      const assetsDir = path.join(dirs.wiki, 'assets');
+      const safeUser = path.basename(username);
+      const wikiDirs = ensureWikiDirectories(safeUser);
+      const isPrivate = visibility === 'private';
+      const assetsDir = isPrivate ? wikiDirs.privateAssets : wikiDirs.publicAssets;
+      const scope = isPrivate ? safeUser : 'public';
       if (!fs.existsSync(assetsDir)) await fsp.mkdir(assetsDir, { recursive: true });
 
       const buffer = Buffer.from(match[3], 'base64');
       await fsp.writeFile(path.join(assetsDir, savedName), buffer);
 
-      const url = `/api/wiki/assets/${encodeURIComponent(username)}/${encodeURIComponent(savedName)}`;
-      log('info', `Wiki-${mediaKind === 'video' ? 'Video' : 'Foto'} hochgeladen: ${savedName} (${buffer.length} Bytes)`, 'WIKI');
+      const url = `/api/wiki/assets/${encodeURIComponent(scope)}/${encodeURIComponent(savedName)}`;
+      log('info', `Wiki-${mediaKind === 'video' ? 'Video' : 'Foto'} hochgeladen (${scope}): ${savedName} (${buffer.length} Bytes)`, 'WIKI');
       res.json({ success: true, url, filename: savedName, mediaKind });
     } catch (err: any) {
       log('error', `Fehler beim Wiki-Medienupload: ${err.message}`, 'WIKI');
@@ -2211,13 +2381,23 @@ async function createServer() {
     }
   });
 
-  app.get('/api/wiki/assets/:username/:filename', async (req, res) => {
-    const { username, filename } = req.params;
+  app.get('/api/wiki/assets/:scope/:filename', async (req, res) => {
+    const { scope, filename } = req.params;
     try {
-      const dirs = ensureUserProfileStructure(path.basename(username));
+      const safeScope = path.basename(scope);
       const safeFile = path.basename(filename);
-      const fullPath = path.join(dirs.wiki, 'assets', safeFile);
-      if (!fs.existsSync(fullPath)) {
+      const wikiDirs = ensureWikiDirectories(safeScope === 'public' ? 'michael' : safeScope);
+
+      const candidates = [
+        safeScope === 'public'
+          ? path.join(wikiDirs.publicAssets, safeFile)
+          : path.join(wikiDirs.privateAssets, safeFile),
+        path.join(wikiDirs.publicAssets, safeFile),
+        path.join(VAULT_PATH, 'User', safeScope, 'Wiki', 'assets', safeFile),
+      ];
+
+      const fullPath = candidates.find((p) => fs.existsSync(p));
+      if (!fullPath) {
         return res.status(404).send('Asset not found');
       }
       res.sendFile(fullPath);
@@ -2226,26 +2406,34 @@ async function createServer() {
     }
   });
 
-  // Share a Wiki article in-app to another user's Wiki folder (copying .md + local photos & videos)
+  // Share / copy a Wiki article directly to another user's private Wiki folder
   app.post('/api/wiki/share', async (req, res) => {
-    const { fromUsername, toUsername, slug } = req.body;
+    const { fromUsername, toUsername, slug, visibility = 'public' } = req.body;
     if (!fromUsername || !toUsername || !slug) {
       return res.status(400).json({ error: 'fromUsername, toUsername oder slug fehlt' });
     }
     try {
-      const srcDirs = ensureUserProfileStructure(path.basename(fromUsername));
-      const destDirs = ensureUserProfileStructure(path.basename(toUsername));
+      const safeFrom = path.basename(fromUsername);
+      const safeTo = path.basename(toUsername);
+      const fromDirs = ensureWikiDirectories(safeFrom);
+      const toDirs = ensureWikiDirectories(safeTo);
       const safeSlug = path.basename(slug);
-      const srcFile = path.join(srcDirs.wiki, `${safeSlug}.md`);
-      if (!fs.existsSync(srcFile)) {
+
+      const candidates =
+        visibility === 'private'
+          ? [path.join(fromDirs.privateDir, `${safeSlug}.md`), path.join(fromDirs.publicDir, `${safeSlug}.md`)]
+          : [path.join(fromDirs.publicDir, `${safeSlug}.md`), path.join(fromDirs.privateDir, `${safeSlug}.md`)];
+      const srcFile = candidates.find((p) => fs.existsSync(p));
+      if (!srcFile) {
         return res.status(404).json({ error: 'Wiki-Artikel nicht gefunden' });
       }
+
       let raw = await fsp.readFile(srcFile, 'utf-8');
-      const assetPrefix = `/api/wiki/assets/${encodeURIComponent(fromUsername)}/`;
-      const destAssetPrefix = `/api/wiki/assets/${encodeURIComponent(toUsername)}/`;
-      // Copy referenced images/videos if stored in sender's Wiki/assets
-      const assetDirDest = path.join(destDirs.wiki, 'assets');
-      if (!fs.existsSync(assetDirDest)) await fsp.mkdir(assetDirDest, { recursive: true });
+      const srcScope = srcFile.startsWith(fromDirs.publicDir) ? 'public' : safeFrom;
+      const srcAssetsDir = srcScope === 'public' ? fromDirs.publicAssets : fromDirs.privateAssets;
+      const assetPrefix = `/api/wiki/assets/${encodeURIComponent(srcScope)}/`;
+      const destAssetPrefix = `/api/wiki/assets/${encodeURIComponent(safeTo)}/`;
+
       const regex = new RegExp(assetPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '([^)"\'\\s]+)', 'g');
       let match;
       const toCopy = new Set<string>();
@@ -2253,16 +2441,17 @@ async function createServer() {
         toCopy.add(decodeURIComponent(match[1]));
       }
       for (const imgName of toCopy) {
-        const srcImg = path.join(srcDirs.wiki, 'assets', path.basename(imgName));
-        const destImg = path.join(assetDirDest, path.basename(imgName));
+        const srcImg = path.join(srcAssetsDir, path.basename(imgName));
+        const destImg = path.join(toDirs.privateAssets, path.basename(imgName));
         if (fs.existsSync(srcImg)) {
           await fsp.copyFile(srcImg, destImg);
         }
       }
       raw = raw.split(assetPrefix).join(destAssetPrefix);
-      const targetSlug = `${safeSlug}-von-${path.basename(fromUsername)}`;
-      await fsp.writeFile(path.join(destDirs.wiki, `${targetSlug}.md`), raw, 'utf-8');
-      log('info', `Wiki-Artikel '${safeSlug}' von '${fromUsername}' an '${toUsername}' geteilt`, 'WIKI');
+      raw = raw.replace(/^visibility:\s*".*"$/m, 'visibility: "private"');
+      const targetSlug = `${safeSlug}-von-${safeFrom}`;
+      await fsp.writeFile(path.join(toDirs.privateDir, `${targetSlug}.md`), raw, 'utf-8');
+      log('info', `Wiki-Artikel '${safeSlug}' von '${safeFrom}' an '${safeTo}' (Wiki/${safeTo}/) geteilt`, 'WIKI');
       res.json({ success: true, targetSlug });
     } catch (err: any) {
       log('error', `Fehler beim Teilen des Wiki-Artikels: ${err.message}`, 'WIKI');
@@ -3602,6 +3791,770 @@ async function createServer() {
   // Diagnostic Logs API
   app.get('/api/system/logs', (req, res) => {
     res.json(systemLogs.slice(-200).reverse());
+  });
+
+  // =========================================================================
+  // OPENGRAPH LINK PREVIEW API (with 30-minute in-memory cache)
+  // =========================================================================
+  const ogCache = new Map<string, { data: any; expiresAt: number }>();
+
+  function decodeHtmlEntities(str: string): string {
+    return str
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;|&apos;/g, "'")
+      .replace(/&#(\d+);/g, (_, num) => String.fromCharCode(Number(num)))
+      .trim();
+  }
+
+  function extractMetaTag(html: string, keys: string[]): string | undefined {
+    for (const key of keys) {
+      const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const r1 = new RegExp(`<meta[^>]+(?:property|name)=["']${escaped}["'][^>]+content=["']([^"']*)["'][^>]*>`, 'i');
+      const m1 = html.match(r1);
+      if (m1?.[1]) return decodeHtmlEntities(m1[1]);
+      const r2 = new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']${escaped}["'][^>]*>`, 'i');
+      const m2 = html.match(r2);
+      if (m2?.[1]) return decodeHtmlEntities(m2[1]);
+    }
+    return undefined;
+  }
+
+  app.get('/api/og-preview', async (req, res) => {
+    const rawUrl = String(req.query.url || '').trim();
+    if (!rawUrl) return res.status(400).json({ error: 'url fehlt' });
+
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(rawUrl);
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        return res.status(400).json({ error: 'Nur HTTP/HTTPS URLs erlaubt' });
+      }
+    } catch {
+      return res.status(400).json({ error: 'Ungültige URL' });
+    }
+
+    const cached = ogCache.get(parsedUrl.toString());
+    if (cached && cached.expiresAt > Date.now()) {
+      return res.json(cached.data);
+    }
+
+    const fallbackData = {
+      url: parsedUrl.toString(),
+      title: parsedUrl.hostname.replace(/^www\./, ''),
+      description: parsedUrl.pathname !== '/' ? parsedUrl.pathname : parsedUrl.hostname,
+      siteName: parsedUrl.hostname.replace(/^www\./, ''),
+      favicon: `${parsedUrl.origin}/favicon.ico`,
+    };
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
+      const response = await fetch(parsedUrl.toString(), {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; OchreSuiteBot/1.0; +https://ochresuite.local)',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+        redirect: 'follow',
+      });
+      clearTimeout(timeout);
+
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
+        ogCache.set(parsedUrl.toString(), { data: fallbackData, expiresAt: Date.now() + 30 * 60 * 1000 });
+        return res.json(fallbackData);
+      }
+
+      const rawText = (await response.text()).slice(0, 260000);
+      const titleTag = rawText.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+      const title =
+        extractMetaTag(rawText, ['og:title', 'twitter:title']) ||
+        (titleTag ? decodeHtmlEntities(titleTag) : '') ||
+        fallbackData.title;
+      const description =
+        extractMetaTag(rawText, ['og:description', 'twitter:description', 'description']) || undefined;
+      const siteName =
+        extractMetaTag(rawText, ['og:site_name']) || parsedUrl.hostname.replace(/^www\./, '');
+      let image = extractMetaTag(rawText, ['og:image', 'twitter:image', 'og:image:url']);
+      if (image) {
+        try {
+          image = new URL(image, parsedUrl.origin).toString();
+        } catch {}
+      }
+
+      const iconHref =
+        rawText.match(/<link[^>]+rel=["'][^"']*icon[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>/i)?.[1] ||
+        '/favicon.ico';
+      let favicon = fallbackData.favicon;
+      try {
+        favicon = new URL(iconHref, parsedUrl.origin).toString();
+      } catch {}
+
+      const data = {
+        url: parsedUrl.toString(),
+        title: title.slice(0, 140),
+        description: description?.slice(0, 260),
+        image,
+        siteName,
+        favicon,
+      };
+      ogCache.set(parsedUrl.toString(), { data, expiresAt: Date.now() + 30 * 60 * 1000 });
+      return res.json(data);
+    } catch {
+      ogCache.set(parsedUrl.toString(), { data: fallbackData, expiresAt: Date.now() + 10 * 60 * 1000 });
+      return res.json(fallbackData);
+    }
+  });
+
+  // =========================================================================
+  // PROJEKTE MODULE API (Open-Standard JSON under vault_data/Projects/)
+  // =========================================================================
+  function getProjectsDir(): string {
+    const dir = path.join(VAULT_PATH, 'Projects');
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o775 });
+    }
+    return dir;
+  }
+
+  async function ensureInitialProjectSeed() {
+    const dir = getProjectsDir();
+    const existing = (await fsp.readdir(dir).catch(() => [])).filter((f) => f.endsWith('.json'));
+    if (existing.length > 0) return;
+
+    const today = new Date();
+    const isoOffset = (days: number) => {
+      const d = new Date(today);
+      d.setDate(d.getDate() + days);
+      return d.toISOString().split('T')[0];
+    };
+
+    const seedProject = {
+      id: 'proj_nas_setup',
+      title: 'Heimserver & NAS Optimierung',
+      description: 'Zentrales Projekt für Docker-Volumes, Datensicherung und Notiz-Dokumentation.',
+      ownerUsername: 'michael',
+      visibility: 'shared',
+      sharedWithUsers: ['sarah', 'alex'],
+      status: 'active',
+      color: '#C87D20',
+      startDate: isoOffset(-3),
+      dueDate: isoOffset(14),
+      linkedNotePaths: ['Projekte/Docker-Setup.md'],
+      linkedWikiSlugs: ['docker-nas-backup-anleitung'],
+      tasks: [
+        {
+          id: 'pt_1',
+          title: 'Docker Compose Permissions prüfen',
+          description: 'UID:GID 2000:100 auf dem NAS testen',
+          status: 'done',
+          priority: 'high',
+          assignee: 'Michael',
+          startDate: isoOffset(-3),
+          dueDate: isoOffset(-1),
+          createdAt: Date.now() - 86400000 * 3,
+        },
+        {
+          id: 'pt_2',
+          title: 'Wöchentliches Backup-Skript verifizieren',
+          description: 'Automated Snapshot auf Zweit-Festplatte',
+          status: 'in_progress',
+          priority: 'high',
+          assignee: 'Alex',
+          startDate: isoOffset(-1),
+          dueDate: isoOffset(4),
+          createdAt: Date.now() - 86400000 * 2,
+        },
+        {
+          id: 'pt_3',
+          title: 'Handwerker / Elektriker Termin für USV-Steckdose',
+          description: 'Externer Ansprechpartner für Keller-Rack',
+          status: 'todo',
+          priority: 'medium',
+          assignee: 'Elektro Meier (Extern)',
+          startDate: isoOffset(2),
+          dueDate: isoOffset(9),
+          createdAt: Date.now() - 86400000,
+        },
+        {
+          id: 'pt_4',
+          title: 'Familien-Freigaben gemeinsam testen',
+          status: 'review',
+          priority: 'low',
+          assignee: 'Sarah',
+          startDate: isoOffset(5),
+          dueDate: isoOffset(12),
+          createdAt: Date.now(),
+        },
+      ],
+      createdAt: Date.now() - 86400000 * 3,
+      updatedAt: Date.now(),
+    };
+
+    await fsp.writeFile(path.join(dir, `${seedProject.id}.json`), JSON.stringify(seedProject, null, 2), 'utf-8');
+  }
+  await ensureInitialProjectSeed();
+
+  app.get('/api/projects', async (req, res) => {
+    const username = path.basename((req.query.username as string) || 'michael');
+    try {
+      const dir = getProjectsDir();
+      const files = (await fsp.readdir(dir)).filter((f) => f.endsWith('.json'));
+      const result: any[] = [];
+      for (const file of files) {
+        try {
+          const raw = await fsp.readFile(path.join(dir, file), 'utf-8');
+          const proj = JSON.parse(raw);
+          const isOwner = proj.ownerUsername === username;
+          const isSharedWithUser =
+            proj.visibility === 'shared' &&
+            Array.isArray(proj.sharedWithUsers) &&
+            proj.sharedWithUsers.includes(username);
+          if (isOwner || isSharedWithUser) {
+            result.push(proj);
+          }
+        } catch {}
+      }
+      result.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      res.json(result);
+    } catch (err: any) {
+      log('error', `Fehler beim Laden der Projekte: ${err.message}`, 'PROJECTS');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/projects', async (req, res) => {
+    const project = req.body;
+    if (!project || !project.title) {
+      return res.status(400).json({ error: 'Projektdaten oder Titel fehlen' });
+    }
+    try {
+      const dir = getProjectsDir();
+      const safeId =
+        String(project.id || `proj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`)
+          .replace(/[^a-zA-Z0-9_-]/g, '_');
+      const now = Date.now();
+      const saved = {
+        ...project,
+        id: safeId,
+        visibility: project.visibility === 'shared' ? 'shared' : 'private',
+        sharedWithUsers: Array.isArray(project.sharedWithUsers) ? project.sharedWithUsers : [],
+        linkedNotePaths: Array.isArray(project.linkedNotePaths) ? project.linkedNotePaths : [],
+        linkedWikiSlugs: Array.isArray(project.linkedWikiSlugs) ? project.linkedWikiSlugs : [],
+        tasks: Array.isArray(project.tasks) ? project.tasks : [],
+        createdAt: project.createdAt || now,
+        updatedAt: now,
+      };
+      await fsp.writeFile(path.join(dir, `${safeId}.json`), JSON.stringify(saved, null, 2), 'utf-8');
+      log('info', `Projekt gespeichert: '${saved.title}' (${saved.id})`, 'PROJECTS');
+      res.json({ success: true, project: saved });
+    } catch (err: any) {
+      log('error', `Fehler beim Speichern des Projekts: ${err.message}`, 'PROJECTS');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/projects', async (req, res) => {
+    const id = String(req.query.id || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (!id) return res.status(400).json({ error: 'Projekt-ID fehlt' });
+    try {
+      const dir = getProjectsDir();
+      const fp = path.join(dir, `${id}.json`);
+      if (fs.existsSync(fp)) {
+        await fsp.unlink(fp);
+        log('info', `Projekt gelöscht: ${id}`, 'PROJECTS');
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // =========================================================================
+  // SMARTHOME VIEWER BACKEND (MQTT Client Pool + HTTP/DB Poller + SSE Stream)
+  // =========================================================================
+  interface ServerSmarthomeState {
+    brokers: any[];
+    dbSources: any[];
+    tiles: any[];
+  }
+
+  function getSmarthomeConfigPath(): string {
+    const dir = path.join(VAULT_PATH, 'Smarthome');
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o775 });
+    }
+    return path.join(dir, 'config.json');
+  }
+
+  async function loadSmarthomeConfig(): Promise<ServerSmarthomeState> {
+    const fp = getSmarthomeConfigPath();
+    if (!fs.existsSync(fp)) {
+      const initial: ServerSmarthomeState = { brokers: [], dbSources: [], tiles: [] };
+      await fsp.writeFile(fp, JSON.stringify(initial, null, 2), 'utf-8');
+      return initial;
+    }
+    try {
+      const parsed = JSON.parse(await fsp.readFile(fp, 'utf-8'));
+      return {
+        brokers: Array.isArray(parsed.brokers) ? parsed.brokers : [],
+        dbSources: Array.isArray(parsed.dbSources) ? parsed.dbSources : [],
+        tiles: Array.isArray(parsed.tiles) ? parsed.tiles : [],
+      };
+    } catch {
+      return { brokers: [], dbSources: [], tiles: [] };
+    }
+  }
+
+  async function saveSmarthomeConfig(state: ServerSmarthomeState) {
+    const fp = getSmarthomeConfigPath();
+    await fsp.writeFile(fp, JSON.stringify(state, null, 2), 'utf-8');
+  }
+
+  const mqttClientPool = new Map<string, MqttClient>();
+  const mqttBrokerStatus = new Map<string, 'connected' | 'connecting' | 'disconnected' | 'error'>();
+  const smarthomeLiveValues = new Map<
+    string,
+    { key: string; value: string; numericValue?: number; timestamp: number; history: number[] }
+  >();
+  const smarthomeSseClients = new Set<express.Response>();
+
+  function broadcastSmarthomeEvent(payload: any) {
+    const line = `data: ${JSON.stringify(payload)}\n\n`;
+    for (const client of smarthomeSseClients) {
+      try {
+        client.write(line);
+      } catch {}
+    }
+  }
+
+  function recordSmarthomeValue(key: string, rawVal: string) {
+    const cleaned = rawVal.trim();
+    const numeric = Number(cleaned.replace(',', '.'));
+    const isNum = cleaned !== '' && !Number.isNaN(numeric) && Number.isFinite(numeric);
+    const prev = smarthomeLiveValues.get(key);
+    const history = prev?.history ? [...prev.history] : [];
+    if (isNum) {
+      history.push(numeric);
+      if (history.length > 24) history.shift();
+    }
+    const entry = {
+      key,
+      value: cleaned,
+      numericValue: isNum ? numeric : prev?.numericValue,
+      timestamp: Date.now(),
+      history,
+    };
+    smarthomeLiveValues.set(key, entry);
+    broadcastSmarthomeEvent({ type: 'live_value', entry });
+  }
+
+  function extractJsonPathValue(obj: any, jsonPath?: string): string {
+    if (obj === null || obj === undefined) return '';
+    if (!jsonPath || !jsonPath.trim()) {
+      return typeof obj === 'object' ? JSON.stringify(obj) : String(obj);
+    }
+    const parts = jsonPath.split('.').map((p) => p.trim()).filter(Boolean);
+    let cur: any = obj;
+    for (const part of parts) {
+      if (cur === null || cur === undefined) return '';
+      cur = cur[part];
+    }
+    if (cur === null || cur === undefined) return '';
+    return typeof cur === 'object' ? JSON.stringify(cur) : String(cur);
+  }
+
+  async function syncMqttConnections() {
+    const cfg = await loadSmarthomeConfig();
+    const activeIds = new Set(cfg.brokers.filter((b) => b.enabled !== false).map((b) => b.id));
+
+    // Disconnect removed/disabled brokers
+    for (const [id, client] of mqttClientPool.entries()) {
+      if (!activeIds.has(id)) {
+        try {
+          client.end(true);
+        } catch {}
+        mqttClientPool.delete(id);
+        mqttBrokerStatus.set(id, 'disconnected');
+      }
+    }
+
+    // Connect active brokers
+    for (const broker of cfg.brokers) {
+      if (broker.enabled === false) {
+        mqttBrokerStatus.set(broker.id, 'disconnected');
+        continue;
+      }
+      if (mqttClientPool.has(broker.id)) continue;
+
+      const protocol = broker.protocol === 'mqtts' || broker.protocol === 'ws' ? broker.protocol : 'mqtt';
+      const url = `${protocol}://${broker.host}:${Number(broker.port) || 1883}`;
+      mqttBrokerStatus.set(broker.id, 'connecting');
+      broadcastSmarthomeEvent({ type: 'broker_status', brokerId: broker.id, status: 'connecting' });
+
+      try {
+        const client = mqtt.connect(url, {
+          username: broker.username || undefined,
+          password: broker.password || undefined,
+          reconnectPeriod: 8000,
+          connectTimeout: 5000,
+          clientId: `ochresuite_${broker.id}_${Math.random().toString(36).slice(2, 6)}`,
+        });
+
+        mqttClientPool.set(broker.id, client);
+
+        client.on('connect', () => {
+          mqttBrokerStatus.set(broker.id, 'connected');
+          broadcastSmarthomeEvent({ type: 'broker_status', brokerId: broker.id, status: 'connected' });
+          log('info', `MQTT verbunden: ${broker.name} (${url})`, 'SMARTHOME');
+          const subs = cfg.tiles
+            .filter((t) => t.sourceType === 'mqtt' && t.sourceId === broker.id && t.topicOrPath)
+            .map((t) => t.topicOrPath);
+          if (subs.length > 0) {
+            client.subscribe(subs, { qos: 0 }, () => {});
+          } else {
+            client.subscribe('#', { qos: 0 }, () => {});
+          }
+        });
+
+        client.on('message', (topic, payload) => {
+          const text = payload.toString('utf-8');
+          recordSmarthomeValue(`${broker.id}::${topic}`, text);
+        });
+
+        client.on('error', (err) => {
+          mqttBrokerStatus.set(broker.id, 'error');
+          broadcastSmarthomeEvent({
+            type: 'broker_status',
+            brokerId: broker.id,
+            status: 'error',
+            error: err.message,
+          });
+        });
+
+        client.on('close', () => {
+          if (mqttBrokerStatus.get(broker.id) !== 'error') {
+            mqttBrokerStatus.set(broker.id, 'disconnected');
+            broadcastSmarthomeEvent({ type: 'broker_status', brokerId: broker.id, status: 'disconnected' });
+          }
+        });
+      } catch (err: any) {
+        mqttBrokerStatus.set(broker.id, 'error');
+      }
+    }
+  }
+
+  async function pollAllDbSources(onlySourceId?: string) {
+    const cfg = await loadSmarthomeConfig();
+    const sources = onlySourceId ? cfg.dbSources.filter((s) => s.id === onlySourceId) : cfg.dbSources;
+    for (const src of sources) {
+      if (src.enabled === false) continue;
+      try {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), 3500);
+        const headers: Record<string, string> = { Accept: 'application/json' };
+        if (src.authHeader) {
+          headers['Authorization'] = src.authHeader;
+        }
+        const resp = await fetch(src.url, { headers, signal: controller.signal });
+        clearTimeout(t);
+        if (!resp.ok) continue;
+        const json = await resp.json();
+        src.lastSyncAt = Date.now();
+
+        const matchingTiles = cfg.tiles.filter((tile) => tile.sourceType === 'db' && tile.sourceId === src.id);
+        for (const tile of matchingTiles) {
+          const extracted = extractJsonPathValue(json, tile.jsonPath || tile.topicOrPath);
+          if (extracted !== '') {
+            recordSmarthomeValue(`${src.id}::${tile.topicOrPath}`, extracted);
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // Initialize MQTT pool cleanly in background & poll HTTP/DB sources periodically
+  syncMqttConnections().catch(() => {});
+  setInterval(() => {
+    pollAllDbSources().catch(() => {});
+  }, 30000);
+
+  async function probeMqttHostPort(host: string, port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const socket = new net.Socket();
+      let settled = false;
+      const done = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        try {
+          socket.destroy();
+        } catch {}
+        resolve(ok);
+      };
+      socket.setTimeout(900);
+      socket.once('timeout', () => done(false));
+      socket.once('error', () => done(false));
+      socket.connect(port, host, () => {
+        // Send minimal MQTT 3.1.1 CONNECT packet and verify CONNACK (0x20)
+        const connectPacket = Buffer.from([
+          0x10, 0x0e, 0x00, 0x04, 0x4d, 0x51, 0x54, 0x54, 0x04, 0x02, 0x00, 0x3c, 0x00, 0x02, 0x6f, 0x73,
+        ]);
+        socket.write(connectPacket);
+      });
+      socket.once('data', (chunk) => {
+        done(chunk.length >= 2 && chunk[0] === 0x20);
+      });
+    });
+  }
+
+  app.get('/api/smarthome/stream', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    smarthomeSseClients.add(res);
+    const keepalive = setInterval(() => {
+      try {
+        res.write(': ping\n\n');
+      } catch {}
+    }, 25000);
+
+    req.on('close', () => {
+      clearInterval(keepalive);
+      smarthomeSseClients.delete(res);
+    });
+  });
+
+  app.get('/api/smarthome/state', async (req, res) => {
+    const username = path.basename((req.query.username as string) || 'michael');
+    try {
+      const cfg = await loadSmarthomeConfig();
+      const brokers = cfg.brokers.map((b) => ({
+        ...b,
+        status: mqttBrokerStatus.get(b.id) || (b.enabled ? 'connecting' : 'disconnected'),
+      }));
+      const tiles = cfg.tiles.filter(
+        (t) => t.ownerUsername === username || t.isAdminPreset === true
+      );
+      const values: Record<string, any> = {};
+      for (const [k, v] of smarthomeLiveValues.entries()) {
+        values[k] = v;
+      }
+      res.json({
+        brokers,
+        dbSources: cfg.dbSources,
+        tiles,
+        values,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/smarthome/discover', async (_req, res) => {
+    try {
+      const hostCandidates = ['localhost', '127.0.0.1', 'mosquitto', 'iobroker', 'homeassistant'];
+      const portCandidates = [1883, 1884, 9001];
+      const checks: Array<Promise<{ host: string; port: number; kind: 'mqtt'; label: string } | null>> = [];
+
+      for (const host of hostCandidates) {
+        for (const port of portCandidates) {
+          checks.push(
+            probeMqttHostPort(host, port).then((ok) =>
+              ok ? { host, port, kind: 'mqtt', label: `MQTT Broker (${host}:${port})` } : null
+            )
+          );
+        }
+      }
+
+      const settled = await Promise.all(checks);
+      const found = settled.filter((item): item is NonNullable<typeof item> => item !== null);
+      res.json({ discovered: found });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/smarthome/brokers', async (req, res) => {
+    const broker = req.body;
+    if (!broker || !broker.host) {
+      return res.status(400).json({ error: 'Host fehlt' });
+    }
+    try {
+      const cfg = await loadSmarthomeConfig();
+      const id = broker.id || `mqtt_${Date.now()}`;
+      const record = {
+        id,
+        name: broker.name || broker.host,
+        host: broker.host.trim(),
+        port: Number(broker.port) || 1883,
+        protocol: broker.protocol || 'mqtt',
+        username: broker.username || '',
+        password: broker.password || '',
+        enabled: broker.enabled !== false,
+      };
+      const idx = cfg.brokers.findIndex((b) => b.id === id);
+      if (idx >= 0) {
+        const old = mqttClientPool.get(id);
+        if (old) {
+          try {
+            old.end(true);
+          } catch {}
+          mqttClientPool.delete(id);
+        }
+        cfg.brokers[idx] = record;
+      } else {
+        cfg.brokers.push(record);
+      }
+      await saveSmarthomeConfig(cfg);
+      await syncMqttConnections();
+      res.json({ success: true, broker: { ...record, status: mqttBrokerStatus.get(id) || 'connecting' } });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/smarthome/brokers', async (req, res) => {
+    const id = String(req.query.id || '');
+    if (!id) return res.status(400).json({ error: 'Broker-ID fehlt' });
+    try {
+      const cfg = await loadSmarthomeConfig();
+      cfg.brokers = cfg.brokers.filter((b) => b.id !== id);
+      await saveSmarthomeConfig(cfg);
+      await syncMqttConnections();
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/smarthome/db-sources', async (req, res) => {
+    const src = req.body;
+    if (!src || !src.url) return res.status(400).json({ error: 'Datenbank / JSON URL fehlt' });
+    try {
+      const cfg = await loadSmarthomeConfig();
+      const id = src.id || `db_${Date.now()}`;
+      const record = {
+        id,
+        name: src.name || 'Telemetrie-Quelle',
+        kind: src.kind || 'http-json',
+        url: src.url.trim(),
+        pollIntervalSec: Math.max(5, Number(src.pollIntervalSec) || 30),
+        authHeader: src.authHeader || undefined,
+        enabled: src.enabled !== false,
+        lastSyncAt: src.lastSyncAt || undefined,
+      };
+      const idx = cfg.dbSources.findIndex((s) => s.id === id);
+      if (idx >= 0) cfg.dbSources[idx] = record;
+      else cfg.dbSources.push(record);
+      await saveSmarthomeConfig(cfg);
+      await pollAllDbSources(id);
+      res.json({ success: true, source: record });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/smarthome/db-sources', async (req, res) => {
+    const id = String(req.query.id || '');
+    if (!id) return res.status(400).json({ error: 'Source-ID fehlt' });
+    try {
+      const cfg = await loadSmarthomeConfig();
+      cfg.dbSources = cfg.dbSources.filter((s) => s.id !== id);
+      await saveSmarthomeConfig(cfg);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/smarthome/db-sources/poll', async (req, res) => {
+    const sourceId = req.body?.sourceId;
+    try {
+      await pollAllDbSources(sourceId);
+      const values: Record<string, any> = {};
+      for (const [k, v] of smarthomeLiveValues.entries()) values[k] = v;
+      res.json({ success: true, values });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/smarthome/tiles', async (req, res) => {
+    const tile = req.body;
+    if (!tile || !tile.title || !tile.topicOrPath) {
+      return res.status(400).json({ error: 'Titel oder Topic/Pfad fehlt' });
+    }
+    try {
+      const cfg = await loadSmarthomeConfig();
+      const id = tile.id || `tile_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const record = {
+        ...tile,
+        id,
+        size: tile.size === 'wide' || tile.size === 'lg' ? tile.size : 'sm',
+        displayMode: tile.displayMode || 'value',
+        isAdminPreset: Boolean(tile.isAdminPreset),
+      };
+      const idx = cfg.tiles.findIndex((t) => t.id === id);
+      if (idx >= 0) cfg.tiles[idx] = record;
+      else cfg.tiles.push(record);
+      await saveSmarthomeConfig(cfg);
+
+      // Subscribe active MQTT client immediately if applicable
+      if (record.sourceType === 'mqtt') {
+        const client = mqttClientPool.get(record.sourceId);
+        if (client?.connected) {
+          client.subscribe(record.topicOrPath, { qos: 0 }, () => {});
+        }
+      } else if (record.sourceType === 'db') {
+        await pollAllDbSources(record.sourceId);
+      }
+
+      res.json({ success: true, tile: record });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/smarthome/tiles', async (req, res) => {
+    const id = String(req.query.id || '');
+    if (!id) return res.status(400).json({ error: 'Tile-ID fehlt' });
+    try {
+      const cfg = await loadSmarthomeConfig();
+      cfg.tiles = cfg.tiles.filter((t) => t.id !== id);
+      await saveSmarthomeConfig(cfg);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/smarthome/tiles/adopt', async (req, res) => {
+    const { presetId, username } = req.body;
+    if (!presetId || !username) {
+      return res.status(400).json({ error: 'presetId oder username fehlt' });
+    }
+    try {
+      const cfg = await loadSmarthomeConfig();
+      const preset = cfg.tiles.find((t) => t.id === presetId && t.isAdminPreset);
+      if (!preset) return res.status(404).json({ error: 'Admin-Vorlage nicht gefunden' });
+
+      const copy = {
+        ...preset,
+        id: `tile_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        ownerUsername: path.basename(username),
+        isAdminPreset: false,
+      };
+      cfg.tiles.push(copy);
+      await saveSmarthomeConfig(cfg);
+      res.json({ success: true, tile: copy });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // Serve public directory (manifest.json, sw.js, icons)

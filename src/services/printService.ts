@@ -1,5 +1,5 @@
 import { parseMarkdownToHtml } from './markdownParser';
-import { WikiArticle, MealCycle, Recipe, MealCalendarOverride } from '../types';
+import { WikiArticle, MealCycle, Recipe, MealCalendarOverride, ProjectItem } from '../types';
 import { getScaledIngredientDisplay } from './portionScaling';
 
 function escapeHtml(str: string): string {
@@ -600,7 +600,7 @@ export function printMealPlanA4(params: {
           <thead>
             <tr>
               <th>Tag</th>
-              <th>Geplante Tellergerichte</th>
+              <th>Geplante Rezepte</th>
             </tr>
           </thead>
           <tbody>
@@ -608,6 +608,213 @@ export function printMealPlanA4(params: {
           </tbody>
         </table>
         ${recipeDetailsHtml}
+      </body>
+    </html>
+  `);
+}
+
+export function printRecipeA4(
+  recipe: Recipe,
+  targetPortions?: number,
+  ownerName?: string,
+  accentColor = '#C26D2D'
+) {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const portions = Math.max(1, targetPortions || recipe.portions || 2);
+  const coverImg = recipe.images && recipe.images.length > 0 ? recipe.images[0] : '';
+
+  const ingRows = (recipe.ingredients || [])
+    .map((ing) => {
+      const scaled = getScaledIngredientDisplay(ing, recipe.portions || 2, portions);
+      return `<tr>
+        <td><strong>${escapeHtml(scaled.name)}</strong></td>
+        <td style="width: 34%; text-align: right; font-variant-numeric: tabular-nums;">${escapeHtml(scaled.amount || 'nach Bedarf')}</td>
+      </tr>`;
+    })
+    .join('');
+
+  const stepsHtml = (recipe.instructions || [])
+    .map((step, i) => `<li>${escapeHtml(step)}</li>`)
+    .join('');
+
+  triggerIframePrint(
+    `
+    <!DOCTYPE html>
+    <html lang="de">
+      <head>
+        <meta charset="utf-8" />
+        <base href="${origin}/" />
+        <title>${escapeHtml(recipe.title)} – Rezept A4</title>
+        <style>
+          ${BASE_PRINT_STYLES(accentColor)}
+          .meta-bar { font-size: 9pt; color: #666; margin-bottom: 10px; }
+          .hero-strip {
+            width: 100%;
+            max-height: 55mm;
+            overflow: hidden;
+            border-radius: 8px;
+            border: 1px solid #e5e3dc;
+            margin-bottom: 12px;
+            background: #f6f4ef;
+            text-align: center;
+          }
+          .hero-strip img {
+            width: 100%;
+            height: 55mm;
+            object-fit: cover;
+            display: block;
+          }
+          .summary-pills {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 12px;
+            font-size: 9pt;
+          }
+          .pill {
+            padding: 4px 10px;
+            border: 1px solid #e5e3dc;
+            background: #faf9f5;
+            border-radius: 6px;
+            font-weight: 600;
+          }
+          ol li {
+            margin-bottom: 6px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="meta-bar">
+          Ochre Kochbuch${ownerName ? ` · ${escapeHtml(ownerName)}` : ''} · Kategorie: <strong>${escapeHtml(recipe.category || 'Rezept')}</strong>
+        </div>
+        <h1>${escapeHtml(recipe.title)}</h1>
+        ${coverImg ? `<div class="hero-strip"><img src="${escapeHtml(coverImg)}" alt="${escapeHtml(recipe.title)}" /></div>` : ''}
+        <div class="summary-pills">
+          <span class="pill">Portionen: ${portions}${portions !== recipe.portions ? ` (Basis ${recipe.portions})` : ''}</span>
+          <span class="pill">Zubereitungszeit: ${recipe.prepTimeMinutes || 0} Min.</span>
+          ${recipe.mealTypes?.length ? `<span class="pill">Mahlzeit: ${escapeHtml(recipe.mealTypes.join(', '))}</span>` : ''}
+        </div>
+        ${recipe.description ? `<blockquote>${escapeHtml(recipe.description)}</blockquote>` : ''}
+        <h2>Zutaten (${portions} Portionen)</h2>
+        ${
+          ingRows
+            ? `<table><thead><tr><th>Zutat</th><th style="text-align:right;">Menge</th></tr></thead><tbody>${ingRows}</tbody></table>`
+            : '<p style="color:#666;">Keine Zutaten hinterlegt.</p>'
+        }
+        <h2>Arbeitsschritte</h2>
+        ${stepsHtml ? `<ol>${stepsHtml}</ol>` : '<p style="color:#666;">Keine Arbeitsschritte hinterlegt.</p>'}
+      </body>
+    </html>
+    `,
+    Boolean(coverImg)
+  );
+}
+
+export function printProjectA4(project: ProjectItem, accentColor = '#B45309') {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const statusLabels: Record<string, string> = {
+    todo: 'Offen',
+    in_progress: 'In Arbeit',
+    review: 'Prüfung',
+    done: 'Erledigt',
+  };
+  const priorityLabels: Record<string, string> = {
+    high: 'Hoch',
+    medium: 'Mittel',
+    low: 'Niedrig',
+  };
+
+  const tasks = project.tasks || [];
+  const counts = {
+    todo: tasks.filter((t) => t.status === 'todo').length,
+    in_progress: tasks.filter((t) => t.status === 'in_progress').length,
+    review: tasks.filter((t) => t.status === 'review').length,
+    done: tasks.filter((t) => t.status === 'done').length,
+  };
+
+  const sortedTasks = [...tasks].sort((a, b) => (a.startDate || '').localeCompare(b.startDate || ''));
+
+  const taskRows = sortedTasks
+    .map(
+      (t) => `
+      <tr>
+        <td><strong>${escapeHtml(t.title)}</strong>${t.description ? `<br/><span style="font-size:8.5pt;color:#555;">${escapeHtml(t.description)}</span>` : ''}</td>
+        <td>${escapeHtml(statusLabels[t.status] || t.status)}</td>
+        <td>${escapeHtml(t.assignee || 'Nicht zugewiesen')}</td>
+        <td>${escapeHtml(priorityLabels[t.priority] || t.priority)}</td>
+        <td style="font-variant-numeric: tabular-nums; white-space: nowrap;">${escapeHtml(t.startDate || '–')} – ${escapeHtml(t.dueDate || '–')}</td>
+      </tr>
+    `
+    )
+    .join('');
+
+  const linkedNotes = project.linkedNotePaths || [];
+  const linkedWikis = project.linkedWikiSlugs || [];
+  const linksHtml =
+    linkedNotes.length + linkedWikis.length > 0
+      ? `<h2>Verknüpfte Dokumente (Notes &amp; Wiki)</h2>
+       <ul>
+         ${linkedNotes.map((p) => `<li><strong>[Notiz]</strong> ${escapeHtml(p)}</li>`).join('')}
+         ${linkedWikis.map((s) => `<li><strong>[Wiki]</strong> ${escapeHtml(s)}</li>`).join('')}
+       </ul>`
+      : '';
+
+  triggerIframePrint(`
+    <!DOCTYPE html>
+    <html lang="de">
+      <head>
+        <meta charset="utf-8" />
+        <base href="${origin}/" />
+        <title>${escapeHtml(project.title)} – Projektplan A4</title>
+        <style>
+          ${BASE_PRINT_STYLES(accentColor)}
+          .meta-bar { font-size: 9pt; color: #666; margin-bottom: 10px; }
+          .kpi-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+            margin: 10px 0 14px 0;
+          }
+          .kpi-box {
+            border: 1px solid #e5e3dc;
+            background: #faf9f5;
+            border-radius: 6px;
+            padding: 8px 10px;
+          }
+          .kpi-num { font-size: 14pt; font-weight: 800; color: ${accentColor}; }
+          .kpi-lbl { font-size: 8pt; color: #666; }
+        </style>
+      </head>
+      <body>
+        <div class="meta-bar">
+          Ochre Projekte · Eigentümer: <strong>${escapeHtml(project.ownerDisplayName || project.ownerUsername)}</strong> · Sichtbarkeit: ${project.visibility === 'shared' ? `Geteilt (${escapeHtml((project.sharedWithUsers || []).join(', ') || 'Team')})` : 'Privat'}
+        </div>
+        <h1>${escapeHtml(project.title)}</h1>
+        ${project.description ? `<blockquote>${escapeHtml(project.description)}</blockquote>` : ''}
+        <div class="kpi-row">
+          <div class="kpi-box"><div class="kpi-num">${counts.todo}</div><div class="kpi-lbl">Offen</div></div>
+          <div class="kpi-box"><div class="kpi-num">${counts.in_progress}</div><div class="kpi-lbl">In Arbeit</div></div>
+          <div class="kpi-box"><div class="kpi-num">${counts.review}</div><div class="kpi-lbl">Prüfung</div></div>
+          <div class="kpi-box"><div class="kpi-num">${counts.done}</div><div class="kpi-lbl">Erledigt</div></div>
+        </div>
+        <h2>Kanban-Aufgaben &amp; Zeitplan (Timeline)</h2>
+        ${
+          taskRows
+            ? `<table>
+                <thead>
+                  <tr>
+                    <th>Aufgabe</th>
+                    <th>Status</th>
+                    <th>Zuständig</th>
+                    <th>Priorität</th>
+                    <th>Zeitraum</th>
+                  </tr>
+                </thead>
+                <tbody>${taskRows}</tbody>
+              </table>`
+            : '<p style="color:#666;">Noch keine Aufgaben in diesem Projekt.</p>'
+        }
+        ${linksHtml}
       </body>
     </html>
   `);

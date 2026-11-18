@@ -121,7 +121,7 @@ export interface GraphData {
   links: GraphLink[];
 }
 
-export type SuiteModuleId = 'dashboard' | 'notes' | 'wiki' | 'recipes' | 'finance';
+export type SuiteModuleId = 'dashboard' | 'notes' | 'wiki' | 'recipes' | 'finance' | 'smarthome' | 'projects';
 
 export interface EnabledModules {
   dashboard: boolean;
@@ -129,6 +129,8 @@ export interface EnabledModules {
   wiki: boolean;
   recipes: boolean;
   finance: boolean;
+  smarthome: boolean;
+  projects: boolean;
 }
 
 export type NoteProfileId = 'profile1' | 'profile2';
@@ -139,6 +141,8 @@ export interface ModuleColors {
   wiki: string;
   recipes: string;
   finance: string;
+  smarthome?: string;
+  projects?: string;
 }
 
 export interface NoteProfileConfig {
@@ -173,6 +177,8 @@ export type DashboardWidgetId =
   | 'wiki_overview'
   | 'cookbook_catalog_stats'
   | 'finance_recent_tx'
+  | 'smarthome_overview'
+  | 'projects_open'
   | 'system_health'
   | 'quick_actions';
 
@@ -218,12 +224,17 @@ export interface WikiBlock {
   defaultCollapsed?: boolean;
 }
 
+export type WikiVisibility = 'public' | 'private';
+
 export interface WikiArticle {
   slug: string;
   title: string;
   category: string;
   tags: string[];
   updatedAt: string;
+  visibility?: WikiVisibility;
+  author?: string;
+  storagePath?: string;
   body: string;
   images: WikiImage[];
   snippets: WikiCodeSnippet[];
@@ -374,9 +385,134 @@ export interface FinanceTransaction {
   isCash?: boolean;
 }
 
+export interface CreditorRecord {
+  id: string;
+  name: string;
+  defaultCategoryId: string;
+  isCashPreferred?: boolean;
+  notes?: string;
+  createdAt: string | number;
+}
+
+export interface OpenGraphPreview {
+  url: string;
+  title: string;
+  description?: string;
+  image?: string;
+  siteName?: string;
+  favicon?: string;
+  hostname?: string;
+}
+
 export interface TaskNotificationSettings {
   enabled: boolean;
   notifyToday: boolean;
   notifyOverdue: boolean;
   reminderTime: string; // HH:mm
 }
+
+// Smarthome Viewer Types (MQTT + DB Telemetry)
+export type SmarthomeTileSize = 'sm' | 'wide' | 'lg';
+
+export interface SmarthomeBrokerConfig {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  protocol: 'mqtt' | 'mqtts' | 'ws';
+  username?: string;
+  password?: string;
+  enabled: boolean;
+  status?: 'connected' | 'connecting' | 'disconnected' | 'error';
+  lastError?: string;
+}
+
+export interface SmarthomeDiscoveredBroker {
+  host: string;
+  port: number;
+  kind: 'mqtt';
+  label: string;
+}
+
+export interface SmarthomeDbSource {
+  id: string;
+  name: string;
+  kind: 'http-json' | 'influx-v2' | 'prometheus';
+  url: string;
+  pollIntervalSec: number;
+  authHeader?: string;
+  enabled: boolean;
+  lastSyncAt?: number;
+}
+
+export interface SmarthomeTile {
+  id: string;
+  ownerUsername: string;
+  title: string;
+  subtitle?: string;
+  size: SmarthomeTileSize;
+  sourceType: 'mqtt' | 'db';
+  sourceId: string;
+  topicOrPath: string;
+  jsonPath?: string;
+  unit?: string;
+  displayMode?: 'value' | 'chart';
+  icon?: string;
+  isAdminPreset?: boolean;
+  adoptedFromPresetId?: string;
+  topic?: string;
+  lastValue?: string;
+}
+
+export interface SmarthomeLiveValue {
+  key: string;
+  value: string;
+  numericValue?: number;
+  timestamp: number;
+  history: number[];
+}
+
+export interface SmarthomeState {
+  brokers: SmarthomeBrokerConfig[];
+  dbSources: SmarthomeDbSource[];
+  tiles: SmarthomeTile[];
+  values: Record<string, SmarthomeLiveValue>;
+}
+
+// Projekte Module Types
+export type ProjectVisibility = 'private' | 'shared';
+export type ProjectStatus = 'planning' | 'active' | 'completed';
+export type ProjectTaskStatus = 'todo' | 'in_progress' | 'review' | 'done';
+
+export interface ProjectTask {
+  id: string;
+  title: string;
+  description?: string;
+  status: ProjectTaskStatus;
+  assignee: string;
+  priority: 'low' | 'medium' | 'high';
+  startDate: string; // YYYY-MM-DD
+  dueDate: string; // YYYY-MM-DD
+  createdAt?: number;
+}
+
+export interface ProjectItem {
+  id: string;
+  title: string;
+  description?: string;
+  ownerUsername: string;
+  ownerDisplayName?: string;
+  visibility: ProjectVisibility;
+  sharedWithUsers: string[];
+  status: ProjectStatus;
+  color?: string;
+  startDate?: string;
+  dueDate?: string;
+  linkedNotePaths: string[];
+  linkedWikiSlugs: string[];
+  tasks: ProjectTask[];
+  createdAt?: number;
+  updatedAt: number;
+}
+
+

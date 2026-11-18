@@ -37,6 +37,7 @@ import {
   Lock,
   Globe,
   Mail,
+  Printer,
 } from 'lucide-react';
 import {
   User,
@@ -60,6 +61,7 @@ import {
 } from '../../services/profileDefaults';
 import { getScaledIngredientDisplay } from '../../services/portionScaling';
 import { generateWeeklyShoppingList } from '../../services/shoppingListService';
+import { printRecipeA4 } from '../../services/printService';
 import {
   collectIngredientsFromRecipes,
   findIngredientDuplicates,
@@ -317,7 +319,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
   // Selected Recipe Detail Overlay + Portions Scaling + Image Browser ("Bilder")
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
   const [viewPortions, setViewPortions] = useState<number>(2);
-  const [showMediaCatalog, setShowMediaCatalog] = useState<boolean>(false);
+  const [recipeDetailTab, setRecipeDetailTab] = useState<'info' | 'ingredients' | 'steps' | 'media'>('info');
   const [uploadingMedia, setUploadingMedia] = useState<boolean>(false);
   const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
   const [isOverlayFileDragOver, setIsOverlayFileDragOver] = useState<boolean>(false);
@@ -467,7 +469,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
   const openRecipeOverlay = useCallback((recipe: Recipe, targetPortions?: number) => {
     setSelectedRecipe(recipe);
     setViewPortions(Math.max(1, targetPortions || recipe.portions || 2));
-    setShowMediaCatalog(false);
+    setRecipeDetailTab('info');
     setLightboxImageUrl(null);
   }, []);
 
@@ -1371,6 +1373,14 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     };
   }, [handleAssignRecipeToDate, handleAssignRecipeToCycleDay, mealSections, triggerDropFlash, scheduleCatalogRestoreAfterDrop]);
 
+  // Reset swipe/drawer transient states cleanly when switching cookbook tabs (prevents Zyklus lockout)
+  useEffect(() => {
+    setCatalogDragX(null);
+    catalogSwipeRef.current = null;
+    setIsLightCatalogOpen(false);
+    setIsLightCatalogRetracted(false);
+  }, [activeTab]);
+
   // Mobile/Tablet Pixel-Launcher 1:1 finger-tracked swipe for left Katalog Drawer
   useEffect(() => {
     if (!hasLibrary || (activeTab !== 'calendar' && activeTab !== 'cycle')) return;
@@ -1391,8 +1401,8 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       }
       const x = e.touches[0].clientX;
       const y = e.touches[0].clientY;
-      // Allow opening pull from the left ~60% of mobile/tablet viewport (matches Notes feel & prevents edge misses)
-      if (!isLightCatalogOpen && x > Math.max(200, window.innerWidth * 0.6)) {
+      // Allow opening pull from the left ~70% of mobile/tablet viewport across Calendar & Zyklus
+      if (!isLightCatalogOpen && x > Math.max(220, window.innerWidth * 0.7)) {
         catalogSwipeRef.current = null;
         return;
       }
@@ -1426,7 +1436,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
         if (Math.hypot(dx, dy) < 8) return;
         const movingRight = dx > 0;
         const validDirection = (!isLightCatalogOpen && movingRight) || (isLightCatalogOpen && !movingRight);
-        if (validDirection && Math.abs(dx) > Math.abs(dy) * 1.1) {
+        if (validDirection && Math.abs(dx) > Math.abs(dy) * 0.75) {
           s.lockedAxis = 'horizontal';
           s.isTracking = true;
         } else {
@@ -1481,7 +1491,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
         <div className="flex items-center gap-1.5 min-w-0">
           <GripVertical className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
           <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 truncate">
-            {isMobileSwipeDrawer ? 'Katalog' : 'Tellergerichte'}
+            {isMobileSwipeDrawer ? 'Katalog' : 'Rezepte'}
           </span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
@@ -1493,7 +1503,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
             }}
             style={{ backgroundColor: accentColor }}
             className="w-6 h-6 rounded-lg text-white flex items-center justify-center shadow-2xs cursor-pointer hover:opacity-90 active:scale-95"
-            title="Neues Tellergericht hinzufügen"
+            title="Neues Rezept hinzufügen"
             aria-label="Neues Gericht"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -1563,7 +1573,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       <div className="flex-1 overflow-y-auto overscroll-y-contain py-1 pb-16 lg:pb-2 space-y-2 no-scrollbar">
         {filteredRecipes.length === 0 ? (
           <div className="text-center text-[11px] text-neutral-400 py-8">
-            Keine passenden Tellergerichte gefunden.
+            Keine passenden Rezepte gefunden.
           </div>
         ) : (
           filteredRecipes.map((recipe) => {
@@ -2015,7 +2025,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
           {/* TAB 1: ESSENSKALENDER (Main Calendar Area on Right of Left Katalog) */}
           {/* ======================================================== */}
           {activeTab === 'calendar' && (
-            <div className="flex-1 flex flex-col h-full overflow-hidden p-3 md:p-5 pb-20 lg:pb-5">
+            <div className="flex-1 flex flex-col h-full overflow-y-auto lg:overflow-hidden p-3 md:p-5 pb-20 lg:pb-5">
               {/* Plan Owner Selector + Week Nav */}
               <div className="flex flex-wrap items-center justify-between gap-2 pb-3 shrink-0">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -2090,7 +2100,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
               </div>
 
               {/* 7-Days Calendar Cards with Configurable Sections & Right-Aligned Mobile Day Labels */}
-              <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-2.5 overflow-y-auto overscroll-y-contain touch-pan-y pr-1">
+              <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-2.5 lg:overflow-y-auto lg:overscroll-y-contain pr-1">
                 {calendarDays.map((day) => {
                   const isDayDropHovered = pointerDrag?.hoverDate === day.date;
                   const weekdayColor = weekdayColors[day.isoWeekday] || accentColor;
@@ -2109,16 +2119,16 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       }}
                       style={
                         isDayDropHovered
-                          ? { borderColor: accentColor, backgroundColor: `${accentColor}12` }
+                          ? { borderColor: accentColor, backgroundColor: `${accentColor}14` }
                           : day.isToday
                           ? { borderColor: accentColor, backgroundColor: `${accentColor}0A` }
                           : { borderTopColor: weekdayColor, borderTopWidth: '3px' }
                       }
-                      className={`rounded-2xl border p-2.5 flex flex-col transition-all min-h-[210px] ${
+                      className={`rounded-2xl border p-2.5 flex flex-col transition-colors duration-150 min-h-[210px] ${
                         isDayDropHovered
-                          ? 'ring-2 ring-offset-1 shadow-md'
+                          ? 'shadow-md border-2'
                           : day.isToday
-                          ? 'ring-2 shadow-sm'
+                          ? 'shadow-sm border-2'
                           : 'border-[#E5E3DC] dark:border-[#2B2D31] bg-white dark:bg-[#1E2024]'
                       }`}
                     >
@@ -2199,7 +2209,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       </div>
 
                       {/* Configurable Sections (e.g. Mittag, Abend, ...) */}
-                      <div className="flex-1 py-2 space-y-2 overflow-y-auto overscroll-y-contain no-scrollbar">
+                      <div className="flex-1 py-2 space-y-2 overflow-visible">
                         {mealSections.map((sec, secIdx) => {
                           const slotIds = day.slots[sec.id] || [];
                           const isSectionHovered =
@@ -2226,12 +2236,12 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                               }}
                               style={
                                 isSectionHovered || isSlotDropped
-                                  ? { borderColor: accentColor, backgroundColor: `${accentColor}1C` }
+                                  ? { borderColor: accentColor, backgroundColor: `${accentColor}22` }
                                   : undefined
                               }
-                              className={`rounded-xl border p-1.5 space-y-1 transition-all duration-300 ${
+                              className={`rounded-xl border p-1.5 space-y-1 transition-colors duration-150 ${
                                 isSectionHovered || isSlotDropped
-                                  ? 'ring-2 shadow-xs'
+                                  ? 'shadow-xs'
                                   : 'border-[#E5E3DC]/80 dark:border-[#2B2D31] bg-[#FAF9F5]/80 dark:bg-[#191B1F]/70'
                               }`}
                             >
@@ -2287,11 +2297,11 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                       onClick={() => openRecipeOverlay(r, day.portions)}
                                       style={
                                         isDroppedCard
-                                          ? { borderColor: accentColor, backgroundColor: `${accentColor}14` }
+                                          ? { borderColor: accentColor, backgroundColor: `${accentColor}22` }
                                           : undefined
                                       }
-                                      className={`group p-1.5 rounded-lg bg-white dark:bg-[#26282E] border border-[#E5E3DC] dark:border-[#383A40] text-[11px] font-medium flex items-center justify-between hover:border-neutral-400 transition-all duration-300 cursor-pointer gap-1.5 ${
-                                        isDroppedCard ? 'ring-1 shadow-md animate-dish-wiggle' : ''
+                                      className={`group p-1.5 rounded-lg bg-white dark:bg-[#26282E] border border-[#E5E3DC] dark:border-[#383A40] text-[11px] font-medium flex items-center justify-between hover:border-neutral-400 transition-colors duration-150 cursor-pointer gap-1.5 ${
+                                        isDroppedCard ? 'shadow-md animate-dish-wiggle' : ''
                                       }`}
                                     >
                                       {r.images?.[0] && (
@@ -2349,7 +2359,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
           {/* TAB 2: ZYKLUS BEARBEITEN (With Left Katalog + Drag&Drop + Sections + Right Mobile Labels) */}
           {/* ======================================================== */}
           {activeTab === 'cycle' && (
-            <div className="flex-1 p-4 md:p-6 pb-24 lg:pb-6 overflow-y-auto overscroll-y-contain touch-pan-y space-y-5">
+            <div className="flex-1 p-4 md:p-6 pb-24 lg:pb-6 overflow-y-auto overscroll-y-contain space-y-5">
               <div className="max-w-5xl mx-auto space-y-5">
                 <div className="p-4 rounded-2xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                   <div>
@@ -2443,8 +2453,8 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                             ? { borderColor: accentColor, backgroundColor: `${accentColor}12` }
                             : undefined
                         }
-                        className={`p-3 rounded-2xl border border-[#E5E3DC] dark:border-[#2B2D31] bg-white dark:bg-[#1E2024] shadow-2xs flex flex-col min-h-[210px] transition-all ${
-                          isDayDropHovered ? 'ring-2 ring-offset-1 shadow-md' : ''
+                        className={`p-3 rounded-2xl border border-[#E5E3DC] dark:border-[#2B2D31] bg-white dark:bg-[#1E2024] shadow-2xs flex flex-col min-h-[210px] transition-colors duration-150 ${
+                          isDayDropHovered ? 'shadow-md border-2' : ''
                         }`}
                       >
                         {/* Day Header: On Mobile/Tablet label sits on the RIGHT so open Katalog drawer never covers it */}
@@ -2487,7 +2497,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                           </div>
                         </div>
 
-                        <div className="flex-1 py-2 space-y-2 overflow-y-auto overscroll-y-contain no-scrollbar">
+                        <div className="flex-1 py-2 space-y-2 overflow-visible">
                           {mealSections.map((sec, secIdx) => {
                             const secIds = cycleSlots[sec.id] || [];
                             const isSecHovered =
@@ -2514,12 +2524,12 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                 }}
                                 style={
                                   isSecHovered || isSlotDropped
-                                    ? { borderColor: accentColor, backgroundColor: `${accentColor}1C` }
+                                    ? { borderColor: accentColor, backgroundColor: `${accentColor}22` }
                                     : undefined
                                 }
-                                className={`rounded-xl border p-1.5 space-y-1 transition-all duration-300 ${
+                                className={`rounded-xl border p-1.5 space-y-1 transition-colors duration-150 ${
                                   isSecHovered || isSlotDropped
-                                    ? 'ring-2 shadow-xs'
+                                    ? 'shadow-xs'
                                     : 'border-[#E5E3DC]/80 dark:border-[#2B2D31] bg-[#FAF9F5]/80 dark:bg-[#191B1F]/70'
                                 }`}
                               >
@@ -2576,11 +2586,11 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                         onClick={() => openRecipeOverlay(r, dayPortions)}
                                         style={
                                           isDroppedCard
-                                            ? { borderColor: accentColor, backgroundColor: `${accentColor}14` }
+                                            ? { borderColor: accentColor, backgroundColor: `${accentColor}22` }
                                             : undefined
                                         }
-                                        className={`p-1.5 rounded-lg bg-white dark:bg-[#282A2F] border border-[#E5E3DC]/80 dark:border-[#363940] text-[11px] font-medium flex items-center justify-between gap-1.5 cursor-pointer hover:border-neutral-400 transition-all duration-300 ${
-                                          isDroppedCard ? 'ring-1 shadow-md animate-dish-wiggle' : ''
+                                        className={`p-1.5 rounded-lg bg-white dark:bg-[#282A2F] border border-[#E5E3DC]/80 dark:border-[#363940] text-[11px] font-medium flex items-center justify-between gap-1.5 cursor-pointer hover:border-neutral-400 transition-colors duration-150 ${
+                                          isDroppedCard ? 'shadow-md animate-dish-wiggle' : ''
                                         }`}
                                       >
                                         {r.images?.[0] && (
@@ -2693,7 +2703,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       }`}
                     >
                       <BookOpen className="w-3.5 h-3.5" />
-                      <span>Tellergerichte</span>
+                      <span>Rezepte</span>
                       <span className="text-[11px] opacity-80 tabular-nums">({recipes.length})</span>
                     </button>
 
@@ -2801,7 +2811,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       }}
                       style={{ backgroundColor: accentColor }}
                       className="hidden lg:flex w-8 h-8 rounded-xl text-white items-center justify-center shadow-2xs cursor-pointer hover:opacity-90 active:scale-95 shrink-0"
-                      title="Neues Tellergericht hinzufügen"
+                      title="Neues Rezept hinzufügen"
                       aria-label="Neues Gericht"
                     >
                       <Plus className="w-4 h-4" />
@@ -2890,7 +2900,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 {/* Recipe Cards Grid (Supports Desktop Drag & Drop of Image Files directly onto Cards) */}
                 {filteredRecipes.length === 0 ? (
                   <div className="p-8 text-center rounded-2xl border border-dashed border-[#E5E3DC] dark:border-[#2B2D31] text-xs text-neutral-500 space-y-2">
-                    <p>Noch keine Tellergerichte in dieser Auswahl vorhanden.</p>
+                    <p>Noch keine Rezepte in dieser Auswahl vorhanden.</p>
                     <button
                       type="button"
                       onClick={() => {
@@ -3148,7 +3158,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                     {filteredIngredients.length === 0 ? (
                       <div className="p-8 text-center rounded-2xl border border-dashed border-[#E5E3DC] dark:border-[#2B2D31] text-xs text-neutral-500 space-y-2.5">
                         <p>
-                          Keine Zutaten gefunden. Du kannst Zutaten hier direkt anlegen oder aus Tellergerichten übernehmen.
+                          Keine Zutaten gefunden. Du kannst Zutaten hier direkt anlegen oder aus Rezepten übernehmen.
                         </p>
                         <button
                           type="button"
@@ -3204,7 +3214,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                           ? ` (${ing.sampleAmounts.slice(0, 3).join(', ')})`
                                           : ''
                                       }`
-                                    : 'Bereit zur Auswahl in neuen Tellergerichten'}
+                                    : 'Bereit zur Auswahl in neuen Rezepten'}
                                 </span>
                               </div>
 
@@ -4056,7 +4066,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       )}
 
       {/* ======================================================== */}
-      {/* MODAL: REZEPT-ANLEITUNG, PORTIONSSKALIERUNG & BILDERKATALOG */}
+      {/* MODAL: REZEPT-ANLEITUNG (SCHMALES TITELBILD, TABS & A4 PDF) */}
       {/* ======================================================== */}
       {selectedRecipe && (
         <div
@@ -4077,28 +4087,51 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 e.preventDefault();
                 e.stopPropagation();
                 setIsOverlayFileDragOver(false);
-                setShowMediaCatalog(true);
+                setRecipeDetailTab('media');
                 handleUploadRecipeImages(selectedRecipe, e.dataTransfer.files);
               }
             }}
             style={isOverlayFileDragOver ? { borderColor: accentColor } : undefined}
             className={`bg-white dark:bg-[#1E2024] w-full max-w-2xl max-h-[88vh] rounded-3xl shadow-2xl border-2 flex flex-col overflow-hidden animate-in zoom-in-95 duration-200 ${
               isOverlayFileDragOver
-                ? 'ring-4 ring-amber-500/20'
+                ? 'shadow-amber-500/20'
                 : 'border-[#E5E3DC] dark:border-[#2B2D31]'
             }`}
           >
-            {/* Header with Bilder button directly beside Share2 */}
-            <div className="p-4 md:p-5 border-b border-[#E5E3DC] dark:border-[#2B2D31] flex items-start justify-between gap-2">
+            {/* Narrow Cover Hero Banner Strip (when image exists) */}
+            {selectedRecipe.images && selectedRecipe.images.length > 0 && (
+              <div className="relative h-24 sm:h-28 w-full overflow-hidden border-b border-[#E5E3DC] dark:border-[#2B2D31] bg-[#F4F3EF] dark:bg-[#161719] shrink-0">
+                <img
+                  src={selectedRecipe.images[0]}
+                  alt={selectedRecipe.title}
+                  onClick={() => setLightboxImageUrl(selectedRecipe.images![0])}
+                  className="w-full h-full object-cover cursor-pointer hover:scale-[1.02] transition-transform duration-300"
+                />
+                <div className="absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/50 to-transparent pointer-events-none" />
+                {selectedRecipe.images.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => setRecipeDetailTab('media')}
+                    className="absolute bottom-2 right-2.5 px-2 py-0.5 rounded-full bg-black/65 hover:bg-black/80 text-white text-[10px] font-semibold flex items-center gap-1 cursor-pointer"
+                  >
+                    <Images className="w-3 h-3" />
+                    <span>+{selectedRecipe.images.length - 1} Fotos</span>
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Compact Header + Actions (Als A4 PDF, Teilen, Bearbeiten, Schließen) */}
+            <div className="px-4 py-3.5 md:px-5 border-b border-[#E5E3DC] dark:border-[#2B2D31] flex items-start justify-between gap-2 shrink-0">
               <div className="min-w-0">
                 <span className="text-[11px] font-bold tracking-wider" style={{ color: accentColor }}>
                   {selectedRecipe.category}
                   {selectedRecipe.sharedFrom ? ` · von ${selectedRecipe.sharedFrom}` : ''}
                 </span>
-                <h3 className="text-lg font-bold text-neutral-900 dark:text-neutral-100 mt-0.5 leading-snug">
+                <h3 className="text-base sm:text-lg font-bold text-neutral-900 dark:text-neutral-100 mt-0.5 leading-snug truncate">
                   {selectedRecipe.title}
                 </h3>
-                <div className="flex flex-wrap items-center gap-3 text-xs text-neutral-500 mt-1.5 tabular-nums">
+                <div className="flex flex-wrap items-center gap-2.5 text-xs text-neutral-500 mt-1.5 tabular-nums">
                   <span className="flex items-center gap-1">
                     <Clock className="w-3.5 h-3.5" style={{ color: accentColor }} />
                     {selectedRecipe.prepTimeMinutes} Min
@@ -4116,7 +4149,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       <Minus className="w-3 h-3" />
                     </button>
                     <span className="font-bold text-neutral-800 dark:text-neutral-100 px-1">
-                      {viewPortions} Portionen
+                      {viewPortions} Port.
                     </span>
                     <button
                       type="button"
@@ -4130,46 +4163,32 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
 
                   {viewPortions !== selectedRecipe.portions && (
                     <span
-                      className="text-[11px] font-semibold px-2 py-0.5 rounded-md"
+                      className="text-[10px] font-semibold px-2 py-0.5 rounded-md"
                       style={{ backgroundColor: `${accentColor}1A`, color: accentColor }}
                     >
-                      Skaliert (Basis: {selectedRecipe.portions})
+                      Basis: {selectedRecipe.portions}
                     </span>
-                  )}
-
-                  {selectedRecipe.mealTypes && selectedRecipe.mealTypes.length > 0 && (
-                    <div className="flex flex-wrap items-center gap-1">
-                      {selectedRecipe.mealTypes.map((mt) => (
-                        <span
-                          key={mt}
-                          className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-700 dark:text-neutral-300 border border-[#E5E3DC] dark:border-[#2F3136]"
-                        >
-                          {mt}
-                        </span>
-                      ))}
-                    </div>
                   )}
                 </div>
               </div>
 
-              {/* Top-Right Controls: Bilder (neben Teilen), Teilen, Bearbeiten, Schließen */}
+              {/* Top-Right Controls: Als A4 PDF, Teilen, Bearbeiten, Schließen */}
               <div className="flex items-center gap-1.5 shrink-0">
                 <button
                   type="button"
-                  onClick={() => setShowMediaCatalog((v) => !v)}
-                  style={showMediaCatalog ? { backgroundColor: accentColor, color: '#fff' } : undefined}
-                  className={`flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-semibold cursor-pointer transition-all ${
-                    showMediaCatalog
-                      ? 'shadow-xs'
-                      : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white'
-                  }`}
-                  title="Bilderkatalog, Kamera & Upload öffnen"
+                  onClick={() =>
+                    printRecipeA4(
+                      selectedRecipe,
+                      viewPortions,
+                      selectedRecipe.sharedFrom || currentUser.displayName,
+                      accentColor
+                    )
+                  }
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white text-xs font-semibold cursor-pointer"
+                  title="Rezept als A4 PDF drucken"
                 >
-                  <Images className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Bilder</span>
-                  {selectedRecipe.images && selectedRecipe.images.length > 0 && (
-                    <span className="text-[10px] opacity-85">({selectedRecipe.images.length})</span>
-                  )}
+                  <Printer className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Als A4 PDF</span>
                 </button>
 
                 {onShareRecipe && (
@@ -4191,7 +4210,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       setSelectedRecipe(null);
                     }}
                     className="p-1.5 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
-                    title="Gericht bearbeiten"
+                    title="Rezept bearbeiten"
                   >
                     <Edit3 className="w-4 h-4" />
                   </button>
@@ -4206,9 +4225,202 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
               </div>
             </div>
 
-            <div className="p-4 md:p-6 overflow-y-auto space-y-5 text-neutral-800 dark:text-neutral-200">
-              {/* Collapsible / Interactive Recipe Bilderkatalog (Media Browser + Mobile Camera + Upload) */}
-              {showMediaCatalog && (
+            {/* Detail Overlay Navigation Tabs */}
+            <div className="px-4 py-2 bg-[#F7F6F2] dark:bg-[#181A1E] border-b border-[#E5E3DC] dark:border-[#2B2D31] flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0">
+              {(
+                [
+                  { id: 'info' as const, label: 'Kurzinfo' },
+                  { id: 'ingredients' as const, label: 'Zutaten', count: selectedRecipe.ingredients.length },
+                  { id: 'steps' as const, label: 'Arbeitsschritte', count: selectedRecipe.instructions.length },
+                  { id: 'media' as const, label: 'Bilder', count: selectedRecipe.images?.length || 0 },
+                ]
+              ).map((t) => {
+                const isActive = recipeDetailTab === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setRecipeDetailTab(t.id)}
+                    style={isActive ? { backgroundColor: accentColor, color: '#fff' } : undefined}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                      isActive
+                        ? 'shadow-xs'
+                        : 'text-neutral-600 dark:text-neutral-300 bg-white dark:bg-[#23252A] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400'
+                    }`}
+                  >
+                    <span>{t.label}</span>
+                    {typeof t.count === 'number' && (
+                      <span
+                        className={`text-[10px] font-extrabold px-1.5 py-0.2 rounded-full tabular-nums ${
+                          isActive
+                            ? 'bg-white/25 text-white'
+                            : 'bg-[#F4F3EF] dark:bg-[#2C2E34] text-neutral-600 dark:text-neutral-300'
+                        }`}
+                      >
+                        {t.count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Tabbed Content Area */}
+            <div className="flex-1 p-4 md:p-5 overflow-y-auto overscroll-y-contain space-y-4 text-neutral-800 dark:text-neutral-200">
+              {recipeDetailTab === 'info' && (
+                <div className="space-y-4">
+                  {selectedRecipe.description ? (
+                    <p className="text-xs md:text-sm text-neutral-600 dark:text-neutral-300 italic bg-[#F4F3EF] dark:bg-[#25272C] p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136]">
+                      "{selectedRecipe.description}"
+                    </p>
+                  ) : (
+                    <p className="text-xs text-neutral-400 bg-[#F4F3EF]/60 dark:bg-[#25272C]/60 p-3.5 rounded-2xl border border-dashed border-[#E5E3DC] dark:border-[#2F3136]">
+                      Keine Kurzbeschreibung hinterlegt.
+                    </p>
+                  )}
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div className="p-3 rounded-2xl bg-[#FAF9F5] dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136]">
+                      <span className="text-[10px] font-semibold text-neutral-400 block">Kategorie</span>
+                      <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 mt-0.5 block truncate">
+                        {selectedRecipe.category}
+                      </span>
+                    </div>
+                    <div className="p-3 rounded-2xl bg-[#FAF9F5] dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136]">
+                      <span className="text-[10px] font-semibold text-neutral-400 block">Dauer</span>
+                      <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 mt-0.5 block tabular-nums">
+                        {selectedRecipe.prepTimeMinutes} Min
+                      </span>
+                    </div>
+                    <div className="p-3 rounded-2xl bg-[#FAF9F5] dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136]">
+                      <span className="text-[10px] font-semibold text-neutral-400 block">Zutaten</span>
+                      <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 mt-0.5 block tabular-nums">
+                        {selectedRecipe.ingredients.length} Einträge
+                      </span>
+                    </div>
+                    <div className="p-3 rounded-2xl bg-[#FAF9F5] dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136]">
+                      <span className="text-[10px] font-semibold text-neutral-400 block">Schritte</span>
+                      <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 mt-0.5 block tabular-nums">
+                        {selectedRecipe.instructions.length} Schritte
+                      </span>
+                    </div>
+                  </div>
+
+                  {selectedRecipe.mealTypes && selectedRecipe.mealTypes.length > 0 && (
+                    <div className="space-y-1.5">
+                      <span className="text-[11px] font-bold text-neutral-500 block">Mahlzeiten-Eignung</span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {selectedRecipe.mealTypes.map((mt) => (
+                          <span
+                            key={mt}
+                            className="text-xs font-semibold px-2.5 py-1 rounded-xl bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-700 dark:text-neutral-300 border border-[#E5E3DC] dark:border-[#2F3136]"
+                          >
+                            {mt}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2 pt-1 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setRecipeDetailTab('ingredients')}
+                      style={{ borderColor: accentColor, color: accentColor }}
+                      className="px-3 py-1.5 rounded-xl border text-xs font-bold cursor-pointer hover:bg-amber-500/5"
+                    >
+                      Zutaten für {viewPortions} Port. ansehen →
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRecipeDetailTab('steps')}
+                      className="px-3 py-1.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] text-xs font-semibold cursor-pointer hover:border-neutral-400"
+                    >
+                      Direkt zu den Arbeitsschritten →
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {recipeDetailTab === 'ingredients' && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-neutral-500">
+                      Benötigte Zutaten ({viewPortions} {viewPortions === 1 ? 'Portion' : 'Portionen'}):
+                    </h4>
+                    {viewPortions !== selectedRecipe.portions && (
+                      <button
+                        type="button"
+                        onClick={() => setViewPortions(selectedRecipe.portions)}
+                        style={{ color: accentColor }}
+                        className="text-[11px] hover:underline font-medium cursor-pointer"
+                      >
+                        Auf {selectedRecipe.portions} zurücksetzen
+                      </button>
+                    )}
+                  </div>
+                  {selectedRecipe.ingredients.length === 0 ? (
+                    <div className="p-6 text-center rounded-2xl border border-dashed border-[#E5E3DC] dark:border-[#2F3136] text-xs text-neutral-400">
+                      Keine Zutaten hinterlegt.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {selectedRecipe.ingredients.map((ing) => {
+                        const scaled = getScaledIngredientDisplay(
+                          ing,
+                          selectedRecipe.portions,
+                          viewPortions
+                        );
+                        return (
+                          <div
+                            key={ing.id}
+                            className="p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA] dark:bg-[#1A1C1F] text-xs flex items-center justify-between gap-2"
+                          >
+                            <span className="font-medium">{scaled.name}</span>
+                            {scaled.amount && (
+                              <span className="text-neutral-500 font-semibold shrink-0 tabular-nums">
+                                {scaled.amount}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {recipeDetailTab === 'steps' && (
+                <div className="space-y-2.5">
+                  <h4 className="text-xs font-bold text-neutral-500">Schritt-für-Schritt Zubereitung:</h4>
+                  {selectedRecipe.instructions.length === 0 ? (
+                    <div className="p-6 text-center rounded-2xl border border-dashed border-[#E5E3DC] dark:border-[#2F3136] text-xs text-neutral-400">
+                      Keine Arbeitsschritte hinterlegt.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {selectedRecipe.instructions.map((step, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-start gap-3 p-3 rounded-2xl bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] shadow-2xs"
+                        >
+                          <div
+                            className="w-6 h-6 rounded-full text-white font-bold text-xs flex items-center justify-center shrink-0 tabular-nums"
+                            style={{ backgroundColor: accentColor }}
+                          >
+                            {idx + 1}
+                          </div>
+                          <p className="text-xs md:text-sm leading-relaxed text-neutral-800 dark:text-neutral-200">
+                            {step}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {recipeDetailTab === 'media' && (
                 <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF]/80 dark:bg-[#23252A] space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
@@ -4321,90 +4533,9 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                   )}
                 </div>
               )}
-
-              {/* Cover Hero Preview when Bilder drawer is closed and images exist */}
-              {!showMediaCatalog && selectedRecipe.images && selectedRecipe.images.length > 0 && (
-                <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
-                  {selectedRecipe.images.map((url) => (
-                    <img
-                      key={url}
-                      src={url}
-                      alt={selectedRecipe.title}
-                      onClick={() => setLightboxImageUrl(url)}
-                      className="h-32 sm:h-40 rounded-2xl object-cover border border-[#E5E3DC] dark:border-[#2F3136] cursor-pointer shrink-0 hover:opacity-95 transition-opacity"
-                    />
-                  ))}
-                </div>
-              )}
-
-              {selectedRecipe.description && (
-                <p className="text-xs md:text-sm text-neutral-600 dark:text-neutral-300 italic bg-[#F4F3EF] dark:bg-[#25272C] p-3 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136]">
-                  "{selectedRecipe.description}"
-                </p>
-              )}
-
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-bold text-neutral-500">
-                    Benötigte Komponenten ({viewPortions} {viewPortions === 1 ? 'Portion' : 'Portionen'}):
-                  </h4>
-                  {viewPortions !== selectedRecipe.portions && (
-                    <button
-                      type="button"
-                      onClick={() => setViewPortions(selectedRecipe.portions)}
-                      style={{ color: accentColor }}
-                      className="text-[11px] hover:underline font-medium cursor-pointer"
-                    >
-                      Auf {selectedRecipe.portions} zurücksetzen
-                    </button>
-                  )}
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {selectedRecipe.ingredients.map((ing) => {
-                    const scaled = getScaledIngredientDisplay(
-                      ing,
-                      selectedRecipe.portions,
-                      viewPortions
-                    );
-                    return (
-                      <div
-                        key={ing.id}
-                        className="p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA] dark:bg-[#1A1C1F] text-xs flex items-center justify-between gap-2"
-                      >
-                        <span className="font-medium">{scaled.name}</span>
-                        {scaled.amount && (
-                          <span className="text-neutral-500 font-semibold shrink-0">{scaled.amount}</span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="space-y-2.5">
-                <h4 className="text-xs font-bold text-neutral-500">Schritt-für-Schritt Zubereitung:</h4>
-                <div className="space-y-2">
-                  {selectedRecipe.instructions.map((step, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-start gap-3 p-3 rounded-2xl bg-white dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] shadow-2xs"
-                    >
-                      <div
-                        className="w-6 h-6 rounded-full text-white font-bold text-xs flex items-center justify-center shrink-0 tabular-nums"
-                        style={{ backgroundColor: accentColor }}
-                      >
-                        {idx + 1}
-                      </div>
-                      <p className="text-xs md:text-sm leading-relaxed text-neutral-800 dark:text-neutral-200">
-                        {step}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </div>
             </div>
 
-            <div className="p-3 border-t border-[#E5E3DC] dark:border-[#2B2D31] bg-[#F4F3EF] dark:bg-[#1A1C1F] flex items-center justify-between gap-2">
+            <div className="p-3 border-t border-[#E5E3DC] dark:border-[#2B2D31] bg-[#F4F3EF] dark:bg-[#1A1C1F] flex items-center justify-between gap-2 shrink-0">
               <span className="text-[11px] text-neutral-400 hidden sm:inline">
                 {selectedIsOwn ? 'Tipp: Bilddatei einfach ins Fenster ziehen' : ''}
               </span>
@@ -4565,7 +4696,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 ) : (
                   <Plus className="w-4 h-4" style={{ color: accentColor }} />
                 )}
-                <span>{editingRecipe ? 'Tellergericht bearbeiten' : 'Neues Tellergericht hinzufügen'}</span>
+                <span>{editingRecipe ? 'Rezept bearbeiten' : 'Neues Rezept hinzufügen'}</span>
               </h3>
               <button
                 type="button"
@@ -4623,7 +4754,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 const titleVal = formTitle.trim();
                 if (!titleVal) {
                   setRecipeFormTab('recipe');
-                  setFormValidationError('Bitte einen Namen für das Tellergericht eingeben.');
+                  setFormValidationError('Bitte einen Namen für das Rezept eingeben.');
                   return;
                 }
 
@@ -5095,7 +5226,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                   </div>
                 )}
 
-                {/* TAB 3: VERFÜGBARKEIT (Mahlzeiten-Eignung Mehrfachauswahl) */}
+                {/* TAB 3: VERFÜGBARKEIT (Mahlzeiten-Eignung im 2-Spalten-Raster) */}
                 {recipeFormTab === 'availability' && (
                   <div className="space-y-3">
                     <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF]/80 dark:bg-[#25272C] space-y-2.5">
@@ -5108,9 +5239,9 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                         </span>
                       </div>
                       <p className="text-[11px] text-neutral-500">
-                        Wähle aus, zu welchen Tageszeiten oder Abschnitten dieses Gericht passt.
+                        Wähle aus, zu welchen Tageszeiten oder Abschnitten dieses Rezept passt.
                       </p>
-                      <div className="flex flex-wrap gap-2 pt-1">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1">
                         {Array.from(
                           new Set([
                             ...MEAL_TYPE_OPTIONS,
@@ -5132,14 +5263,18 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                   ? { backgroundColor: accentColor, borderColor: accentColor, color: '#fff' }
                                   : undefined
                               }
-                              className={`px-3 py-1.5 rounded-full border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-all ${
+                              className={`w-full px-3 py-2 rounded-xl border text-xs font-semibold flex items-center justify-between gap-1.5 cursor-pointer transition-colors ${
                                 isSelected
                                   ? 'shadow-2xs'
-                                  : 'border-[#E5E3DC] dark:border-[#363940] bg-white dark:bg-[#1E2024] text-neutral-700 dark:text-neutral-300'
+                                  : 'border-[#E5E3DC] dark:border-[#363940] bg-white dark:bg-[#1E2024] text-neutral-700 dark:text-neutral-300 hover:border-neutral-400'
                               }`}
                             >
-                              {isSelected && <Check className="w-3.5 h-3.5" />}
-                              <span>{mt}</span>
+                              <span className="truncate">{mt}</span>
+                              {isSelected ? (
+                                <Check className="w-3.5 h-3.5 shrink-0" />
+                              ) : (
+                                <span className="w-3.5 h-3.5 rounded-full border border-neutral-300 dark:border-neutral-600 shrink-0" />
+                              )}
                             </button>
                           );
                         })}
@@ -5295,7 +5430,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 }}
                 style={{ backgroundColor: accentColor }}
                 className="flex items-center justify-center gap-1.5 h-10 px-3 sm:px-3.5 rounded-full text-xs font-semibold text-white transition-all cursor-pointer active:scale-95 shrink-0 shadow-xs hover:opacity-95"
-                title="Neues Tellergericht hinzufügen"
+                title="Neues Rezept hinzufügen"
                 aria-label="Neu"
               >
                 <Plus className="w-4 h-4 shrink-0" />

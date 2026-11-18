@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Ochre Suite - Notes",
+  "name": "Ochre Suite",
   "short_name": "OchreSuite",
-  "description": "Selbst-gehosteter Obsidian Markdown Editor mit Tasks, Wissensgraph und Offline-Fähigkeit.",
+  "description": "Modulare Ochre Suite – Notizen, Aufgaben, Wiki, Essensplan, Finanzen, Smarthome & Projekte als Open-Standard PWA.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

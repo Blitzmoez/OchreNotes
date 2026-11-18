@@ -17,9 +17,11 @@ import {
   CreditCard,
   Banknote,
   Search,
-  Calendar
+  Calendar,
+  Users,
+  Trash2
 } from 'lucide-react';
-import { FinanceTransaction, CreditorCategory, CreditorRule } from '../../types';
+import { FinanceTransaction, CreditorCategory, CreditorRule, CreditorRecord } from '../../types';
 
 const INITIAL_CATEGORIES: CreditorCategory[] = [
   { id: 'cat_groceries', name: 'Lebensmittel & Haushalt', color: '#C87D20' },
@@ -95,12 +97,32 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     return saved ? JSON.parse(saved) : INITIAL_RULES;
   });
 
+  const [creditors, setCreditors] = useState<CreditorRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem('ochre_finance_creditors');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [
+      { id: 'cred_rewe', name: 'REWE Markt', defaultCategoryId: 'cat_groceries', isCashPreferred: false, createdAt: '2026-11-01T10:00:00Z' },
+      { id: 'cred_baeckerei', name: 'Bäckerei Schmidt', defaultCategoryId: 'cat_leisure', isCashPreferred: true, notes: 'Stamm-Bäcker ums Eck', createdAt: '2026-11-01T10:00:00Z' },
+      { id: 'cred_wochenmarkt', name: 'Wochenmarkt Obst', defaultCategoryId: 'cat_groceries', isCashPreferred: true, notes: 'Nur Barzahlung', createdAt: '2026-11-01T10:00:00Z' },
+    ];
+  });
+
+  // Inline Creditor Creation Form state
+  const [isCreditorModalOpen, setIsCreditorModalOpen] = useState(false);
+  const [newCreditorName, setNewCreditorName] = useState('');
+  const [newCreditorCatId, setNewCreditorCatId] = useState('cat_groceries');
+  const [newCreditorCashPreferred, setNewCreditorCashPreferred] = useState(true);
+  const [newCreditorNotes, setNewCreditorNotes] = useState('');
+
   // Modal: Quick Cash Transaction (Mobile / Desktop)
   const [isCashModalOpen, setIsCashModalOpen] = useState(false);
   const [cashAmount, setCashAmount] = useState('');
   const [cashCreditor, setCashCreditor] = useState('');
   const [cashCategoryId, setCashCategoryId] = useState('cat_groceries');
   const [cashDescription, setCashDescription] = useState('');
+  const [saveCashCreditor, setSaveCashCreditor] = useState(true);
 
   // Modal: CSV Upload Modal
   const [isCsvModalOpen, setIsCsvModalOpen] = useState(false);
@@ -110,11 +132,20 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
   // Search & Filter
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('all');
+  const [selectedCreditorFilter, setSelectedCreditorFilter] = useState<string>('all');
+  const creditorsRef = React.useRef<HTMLDivElement>(null);
 
   // Persistence helpers
   const saveTransactions = (data: FinanceTransaction[]) => {
     setTransactions(data);
     localStorage.setItem('ochre_finance_tx', JSON.stringify(data));
+  };
+
+  const saveCreditors = (next: CreditorRecord[]) => {
+    setCreditors(next);
+    try {
+      localStorage.setItem('ochre_finance_creditors', JSON.stringify(next));
+    } catch {}
   };
 
   // Automated categorization helper based on rules
@@ -216,16 +247,32 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     reader.readAsText(file, 'utf-8');
   };
 
-  // Add Quick Cash Transaction
+  // Add Quick Cash Transaction (with optional inline Creditor creation)
   const handleAddCash = (e: React.FormEvent) => {
     e.preventDefault();
     const val = parseFloat(cashAmount.replace(',', '.'));
     if (isNaN(val) || val <= 0) return;
 
+    const cleanCreditor = cashCreditor.trim() || 'Barzahlung';
+    if (
+      saveCashCreditor &&
+      cleanCreditor !== 'Barzahlung' &&
+      !creditors.some((c) => c.name.toLowerCase() === cleanCreditor.toLowerCase())
+    ) {
+      const created: CreditorRecord = {
+        id: `cred_${Date.now()}`,
+        name: cleanCreditor,
+        defaultCategoryId: cashCategoryId,
+        isCashPreferred: true,
+        createdAt: new Date().toISOString(),
+      };
+      saveCreditors([created, ...creditors]);
+    }
+
     const newTx: FinanceTransaction = {
       id: `cash_${Date.now()}`,
       date: new Date().toISOString().split('T')[0],
-      creditor: cashCreditor.trim() || 'Barzahlung',
+      creditor: cleanCreditor,
       categoryId: cashCategoryId,
       amount: -Math.abs(val),
       description: cashDescription.trim() || 'Schnelle Barzahlung',
@@ -238,6 +285,36 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     setCashCreditor('');
     setCashDescription('');
     setIsCashModalOpen(false);
+  };
+
+  const handleCreateCreditor = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = newCreditorName.trim();
+    if (!trimmed) return;
+    if (creditors.some((c) => c.name.toLowerCase() === trimmed.toLowerCase())) {
+      setIsCreditorModalOpen(false);
+      return;
+    }
+    const created: CreditorRecord = {
+      id: `cred_${Date.now()}`,
+      name: trimmed,
+      defaultCategoryId: newCreditorCatId,
+      isCashPreferred: newCreditorCashPreferred,
+      notes: newCreditorNotes.trim() || undefined,
+      createdAt: new Date().toISOString(),
+    };
+    saveCreditors([created, ...creditors]);
+    setNewCreditorName('');
+    setNewCreditorNotes('');
+    setIsCreditorModalOpen(false);
+  };
+
+  const handleDeleteCreditor = (id: string) => {
+    saveCreditors(creditors.filter((c) => c.id !== id));
+    const removed = creditors.find((c) => c.id === id);
+    if (removed && selectedCreditorFilter.toLowerCase() === removed.name.toLowerCase()) {
+      setSelectedCreditorFilter('all');
+    }
   };
 
   // Statistics Calculation
@@ -267,15 +344,82 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     return { income, expense, balance: income - expense, cashSpent, categoryBreakdown };
   }, [transactions, categories]);
 
+  // Per-Creditor Statistics (combines explicit creditors + any creditor appearing in transactions)
+  const creditorStats = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        key: string;
+        record?: CreditorRecord;
+        name: string;
+        defaultCategoryId: string;
+        spent: number;
+        income: number;
+        cashSpent: number;
+        cardSpent: number;
+        txCount: number;
+        lastDate: string;
+      }
+    >();
+
+    creditors.forEach((c) => {
+      const key = c.name.trim().toLowerCase();
+      map.set(key, {
+        key,
+        record: c,
+        name: c.name,
+        defaultCategoryId: c.defaultCategoryId,
+        spent: 0,
+        income: 0,
+        cashSpent: 0,
+        cardSpent: 0,
+        txCount: 0,
+        lastDate: '',
+      });
+    });
+
+    transactions.forEach((tx) => {
+      const name = (tx.creditor || 'Unbekannt').trim();
+      const key = name.toLowerCase();
+      const existing = map.get(key) || {
+        key,
+        name,
+        defaultCategoryId: tx.categoryId,
+        spent: 0,
+        income: 0,
+        cashSpent: 0,
+        cardSpent: 0,
+        txCount: 0,
+        lastDate: '',
+      };
+      existing.txCount += 1;
+      if (tx.date > existing.lastDate) existing.lastDate = tx.date;
+      if (tx.amount >= 0) {
+        existing.income += tx.amount;
+      } else {
+        const abs = Math.abs(tx.amount);
+        existing.spent += abs;
+        if (tx.isCash || tx.type === 'cash') existing.cashSpent += abs;
+        else existing.cardSpent += abs;
+      }
+      map.set(key, existing);
+    });
+
+    return Array.from(map.values()).sort((a, b) => b.spent - a.spent || b.txCount - a.txCount);
+  }, [creditors, transactions]);
+
   // Filtered transactions
   const filteredTransactions = useMemo(() => {
     return transactions.filter(tx => {
       const matchesSearch = tx.creditor.toLowerCase().includes(searchQuery.toLowerCase()) ||
         tx.description.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesCat = selectedCategoryFilter === 'all' || tx.categoryId === selectedCategoryFilter;
-      return matchesSearch && matchesCat;
+      const matchesCred =
+        selectedCreditorFilter === 'all' ||
+        tx.creditor.trim().toLowerCase() === selectedCreditorFilter.toLowerCase();
+      return matchesSearch && matchesCat && matchesCred;
     });
-  }, [transactions, searchQuery, selectedCategoryFilter]);
+  }, [transactions, searchQuery, selectedCategoryFilter, selectedCreditorFilter]);
 
   const getCategory = (catId: string) => categories.find(c => c.id === catId) || categories[categories.length - 1];
 
@@ -426,6 +570,104 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
             </div>
           </div>
 
+          {/* Section: Kreditoren & Empfänger-Statistik */}
+          <div ref={creditorsRef} className="p-4 rounded-3xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-2xs space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-1">
+              <div className="flex items-center gap-2">
+                <Users className="w-4 h-4 text-[var(--finance-accent)]" />
+                <div>
+                  <h3 className="text-xs font-bold text-neutral-900 dark:text-neutral-100 uppercase tracking-wider">
+                    Kreditoren &amp; Empfänger-Statistik ({creditorStats.length})
+                  </h3>
+                  <span className="text-[11px] text-neutral-400">
+                    Klicke auf einen Kreditor zum Filtern · Auch für Barzahlungen anlegbar
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCreditorModalOpen(true)}
+                style={{ backgroundColor: accentColor }}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-full text-white text-xs font-semibold shadow-xs cursor-pointer active:scale-95 transition-all"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Kreditor anlegen</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              {creditorStats.map((item) => {
+                const cat = getCategory(item.defaultCategoryId);
+                const isSelected = selectedCreditorFilter.toLowerCase() === item.key;
+                return (
+                  <div
+                    key={item.key}
+                    onClick={() =>
+                      setSelectedCreditorFilter(isSelected ? 'all' : item.name)
+                    }
+                    className={`p-3 rounded-2xl border transition-all cursor-pointer space-y-2 ${
+                      isSelected
+                        ? 'border-[var(--finance-accent)] bg-amber-500/10 shadow-xs'
+                        : 'border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA] dark:bg-[#202226] hover:border-neutral-400'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <Building className="w-3.5 h-3.5 text-[var(--finance-accent)] shrink-0" />
+                          <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 truncate">
+                            {item.name}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                          <span
+                            className="text-[10px] px-1.5 py-0.2 rounded-full font-medium"
+                            style={{ backgroundColor: `${cat.color}20`, color: cat.color }}
+                          >
+                            {cat.name}
+                          </span>
+                          {(item.record?.isCashPreferred || item.cashSpent > 0) && (
+                            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-500/15 text-[var(--finance-accent)] font-semibold">
+                              Bar
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <div className="text-right tabular-nums">
+                          <span className="text-sm font-extrabold text-neutral-900 dark:text-neutral-100 block">
+                            {item.spent > 0 ? `-${item.spent.toFixed(2)} €` : item.income > 0 ? `+${item.income.toFixed(2)} €` : '0,00 €'}
+                          </span>
+                          <span className="text-[10px] text-neutral-400">{item.txCount} Buch.</span>
+                        </div>
+                        {item.record && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteCreditor(item.record!.id);
+                            }}
+                            className="p-1 rounded-full text-neutral-400 hover:text-red-500 cursor-pointer"
+                            title="Gespeicherten Kreditor entfernen"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {(item.cashSpent > 0 || item.cardSpent > 0) && (
+                      <div className="flex items-center justify-between text-[10px] text-neutral-500 pt-1 border-t border-[#E5E3DC]/60 dark:border-[#2F3136] tabular-nums">
+                        <span>Karte/Bank: {item.cardSpent.toFixed(2)} €</span>
+                        <span>Bar: {item.cashSpent.toFixed(2)} €</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Section: Transactions Table & Search */}
           <div ref={transactionsRef} className="p-4 rounded-3xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-2xs space-y-3">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-1 border-b border-[#E5E3DC] dark:border-[#2B2D31]">
@@ -437,7 +679,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
               </div>
 
               {/* Filters & Search Input */}
-              <div className="flex items-center gap-2 w-full sm:w-auto">
+              <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
                 <div className="relative flex-1 sm:w-56">
                   <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
                   <input
@@ -449,12 +691,15 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                   />
                 </div>
 
-                {selectedCategoryFilter !== 'all' && (
+                {(selectedCategoryFilter !== 'all' || selectedCreditorFilter !== 'all') && (
                   <button
-                    onClick={() => setSelectedCategoryFilter('all')}
-                    className="text-[10px] px-2 py-1 rounded-full bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 font-medium cursor-pointer"
+                    onClick={() => {
+                      setSelectedCategoryFilter('all');
+                      setSelectedCreditorFilter('all');
+                    }}
+                    className="text-[10px] px-2.5 py-1 rounded-full bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 font-semibold cursor-pointer"
                   >
-                    Filter zurücksetzen
+                    Filter zurücksetzen{selectedCreditorFilter !== 'all' ? ` (${selectedCreditorFilter})` : ''}
                   </button>
                 )}
               </div>
@@ -683,14 +928,45 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
               </div>
 
               <div>
-                <label className="font-semibold block mb-1">Empfänger / Wo ausgegeben?</label>
+                <label className="font-semibold block mb-1">Kreditor wählen oder neu eingeben</label>
+                {creditors.length > 0 && (
+                  <select
+                    value={creditors.some((c) => c.name === cashCreditor) ? cashCreditor : ''}
+                    onChange={(e) => {
+                      const chosenName = e.target.value;
+                      setCashCreditor(chosenName);
+                      const rec = creditors.find((c) => c.name === chosenName);
+                      if (rec) setCashCategoryId(rec.defaultCategoryId);
+                    }}
+                    className="w-full p-2 mb-1.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden cursor-pointer"
+                  >
+                    <option value="">-- Gespeicherten Kreditor wählen --</option>
+                    {creditors.map((c) => (
+                      <option key={c.id} value={c.name}>
+                        {c.name} {c.isCashPreferred ? '(Bar)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <input
                   type="text"
-                  placeholder="z. B. Wochenmarkt, Kiosk, Trinkgeld"
+                  placeholder="Oder neuen Kreditor tippen (z. B. Wochenmarkt, Kiosk)..."
                   value={cashCreditor}
                   onChange={(e) => setCashCreditor(e.target.value)}
                   className="w-full p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden focus:border-[var(--finance-accent)]"
                 />
+                {cashCreditor.trim() &&
+                  !creditors.some((c) => c.name.toLowerCase() === cashCreditor.trim().toLowerCase()) && (
+                    <label className="flex items-center gap-1.5 mt-1.5 text-[11px] text-neutral-600 dark:text-neutral-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={saveCashCreditor}
+                        onChange={(e) => setSaveCashCreditor(e.target.checked)}
+                        className="rounded accent-[var(--finance-accent)]"
+                      />
+                      <span>„{cashCreditor.trim()}“ direkt als Kreditor speichern</span>
+                    </label>
+                  )}
               </div>
 
               <div>
@@ -730,6 +1006,106 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                   className="px-4 py-1.5 rounded-full bg-[var(--finance-accent)] text-white font-bold shadow-xs hover:opacity-90"
                 >
                   Barausgabe buchen
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL: KREDITOR ANLEGEN (AUCH BARZAHLUNG)               */}
+      {/* ======================================================== */}
+      {isCreditorModalOpen && (
+        <div
+          onClick={() => setIsCreditorModalOpen(false)}
+          className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-xs"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-[#1E2024] w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-[#E5E3DC] dark:border-[#2B2D31] space-y-4 animate-in zoom-in-95 duration-200"
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-[#E5E3DC] dark:border-[#2B2D31]">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-amber-100 dark:bg-amber-950/60 text-[var(--finance-accent)] flex items-center justify-center">
+                  <Building className="w-4 h-4" />
+                </div>
+                <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100">
+                  Kreditor anlegen
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCreditorModalOpen(false)}
+                className="text-neutral-400 hover:text-neutral-700 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateCreditor} className="space-y-3 text-xs">
+              <div>
+                <label className="font-semibold block mb-1">Name des Kreditors / Empfängers</label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  placeholder="z. B. Wochenmarkt, Hofladen, Baumarkt..."
+                  value={newCreditorName}
+                  onChange={(e) => setNewCreditorName(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden focus:border-[var(--finance-accent)]"
+                />
+              </div>
+
+              <div>
+                <label className="font-semibold block mb-1">Standard-Kategorie</label>
+                <select
+                  value={newCreditorCatId}
+                  onChange={(e) => setNewCreditorCatId(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden cursor-pointer"
+                >
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <label className="flex items-center gap-2 p-2.5 rounded-xl bg-[#F4F3EF] dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#2F3136] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={newCreditorCashPreferred}
+                  onChange={(e) => setNewCreditorCashPreferred(e.target.checked)}
+                  className="rounded accent-[var(--finance-accent)]"
+                />
+                <span>Barzahlung (auch ohne Bank-CSV erfassen)</span>
+              </label>
+
+              <div>
+                <label className="font-semibold block mb-1">Notiz (optional)</label>
+                <input
+                  type="text"
+                  placeholder="z. B. Jeden Samstag auf dem Marktplatz"
+                  value={newCreditorNotes}
+                  onChange={(e) => setNewCreditorNotes(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsCreditorModalOpen(false)}
+                  className="px-3 py-1.5 rounded-full border text-neutral-600 dark:text-neutral-400 cursor-pointer"
+                >
+                  Abbrechen
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-1.5 rounded-full bg-[var(--finance-accent)] text-white font-bold shadow-xs hover:opacity-90 cursor-pointer"
+                >
+                  Kreditor speichern
                 </button>
               </div>
             </form>

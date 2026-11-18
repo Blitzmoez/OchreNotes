@@ -22,7 +22,9 @@ import {
   Repeat,
   ShoppingCart,
   Sparkles,
-  LayoutDashboard
+  LayoutDashboard,
+  Cpu,
+  FolderKanban
 } from 'lucide-react';
 import { User, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId, CookbookTab } from '../../types';
 import { useTranslation } from '../../services/i18n.tsx';
@@ -79,12 +81,14 @@ export const Header: React.FC<HeaderProps> = ({
   mobileBarPosition = 'top',
 }) => {
   const activeProfile = profileSettings[profileSettings.activeProfileId] || profileSettings.profile1;
-  const activeColors = {
+  const activeColors: Record<SuiteModuleId, string> = {
     dashboard: profileSettings.profile1.colors.dashboard || '#A67C21',
     notes: activeProfile.colors.notes,
     wiki: profileSettings.profile1.colors.wiki,
     recipes: profileSettings.profile1.colors.recipes,
     finance: profileSettings.profile1.colors.finance,
+    smarthome: profileSettings.profile1.colors.smarthome || '#78716C',
+    projects: profileSettings.profile1.colors.projects || '#8E6126',
   };
   const currentModuleColor = activeColors[activeSuiteModule] || activeColors.notes;
   const { t } = useTranslation();
@@ -243,6 +247,22 @@ export const Header: React.FC<HeaderProps> = ({
                 <BarChart3 className="w-3.5 h-3.5" />
               </div>
             )}
+            {activeSuiteModule === 'smarthome' && (
+              <div
+                style={{ backgroundColor: activeColors.smarthome }}
+                className="w-6.5 h-6.5 rounded-lg text-white flex items-center justify-center shadow-xs shrink-0"
+              >
+                <Cpu className="w-3.5 h-3.5" />
+              </div>
+            )}
+            {activeSuiteModule === 'projects' && (
+              <div
+                style={{ backgroundColor: activeColors.projects }}
+                className="w-6.5 h-6.5 rounded-lg text-white flex items-center justify-center shadow-xs shrink-0"
+              >
+                <FolderKanban className="w-3.5 h-3.5" />
+              </div>
+            )}
 
             {/* Active Module Name */}
             <div className="flex items-center gap-1 min-w-0">
@@ -255,30 +275,33 @@ export const Header: React.FC<HeaderProps> = ({
                   ? 'Wiki'
                   : activeSuiteModule === 'recipes'
                   ? 'Essensplan'
-                  : 'Finanzen'}
+                  : activeSuiteModule === 'finance'
+                  ? 'Finanzen'
+                  : activeSuiteModule === 'smarthome'
+                  ? 'Smarthome'
+                  : 'Projekte'}
               </span>
               <ChevronRight className={`w-3.5 h-3.5 text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 transition-transform duration-200 ${isSuiteMenuOpen && !isSuiteMenuClosing ? 'rotate-180' : ''}`} />
             </div>
           </button>
 
-          {/* Module Switcher Full-Height Left Drawer (Slides in from left, closes upward) */}
+          {/* Module Switcher Full-Height Left Drawer (Slides in from left, fades out cleanly) */}
           {isSuiteMenuOpen && (
             <div 
               data-no-swipe
               onClick={(e) => e.stopPropagation()}
               className={`fixed inset-y-0 left-0 h-[100dvh] w-72 sm:w-80 bg-white dark:bg-[#1E1F23] shadow-2xl border-r border-[#E5E3DC] dark:border-[#2F3136] z-[110] flex flex-col p-4 space-y-3 ${
-                isSuiteMenuClosing ? 'animate-drawer-close-up pointer-events-none' : 'animate-drawer-in-left'
+                isSuiteMenuClosing ? 'animate-drawer-fade-out pointer-events-none' : 'animate-drawer-in-left'
               }`}
             >
-              {/* Prominent Ochre Suite Brand Header */}
+              {/* Prominent Ochre Suite Brand Header with Notizbuch Icon */}
               <div className="flex items-center justify-between pb-3 border-b border-[#E5E3DC] dark:border-[#2F3136] shrink-0">
                 <div className="flex items-center gap-2.5">
-                  <div
-                    style={{ backgroundColor: activeColors.notes }}
-                    className="w-8 h-8 rounded-xl text-white flex items-center justify-center font-bold text-xs shadow-xs"
-                  >
-                    OS
-                  </div>
+                  <img
+                    src="/favicon.svg"
+                    alt="Ochre Suite"
+                    className="w-8 h-8 rounded-xl shadow-xs shrink-0"
+                  />
                   <div>
                     <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 leading-tight">
                       Ochre Suite
@@ -288,14 +311,6 @@ export const Header: React.FC<HeaderProps> = ({
                     </span>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={closeSuiteMenu}
-                  className="w-8 h-8 rounded-full bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer"
-                  aria-label="Menü schließen"
-                >
-                  <X className="w-4 h-4" />
-                </button>
               </div>
 
               {/* Module Items with rounded box cards for switching */}
@@ -343,46 +358,48 @@ export const Header: React.FC<HeaderProps> = ({
                   </div>
                 ) : null}
 
-                {/* Module 1: Notes (Always available) */}
-                <div 
-                  onClick={() => {
-                    onSelectSuiteModule('notes');
-                    setIsSuiteMenuOpen(false);
-                  }}
-                  style={
-                    activeSuiteModule === 'notes'
-                      ? { borderColor: activeColors.notes, backgroundColor: `${activeColors.notes}14` }
-                      : undefined
-                  }
-                  className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
-                    activeSuiteModule === 'notes'
-                      ? 'border-2'
-                      : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div
-                      style={{ backgroundColor: activeColors.notes }}
-                      className="w-8 h-8 rounded-xl text-white flex items-center justify-center font-bold text-sm shadow-xs"
-                    >
-                      <BookOpen className="w-4 h-4" />
+                {/* Module 1: Notes */}
+                {enabledModules.notes ? (
+                  <div 
+                    onClick={() => {
+                      onSelectSuiteModule('notes');
+                      setIsSuiteMenuOpen(false);
+                    }}
+                    style={
+                      activeSuiteModule === 'notes'
+                        ? { borderColor: activeColors.notes, backgroundColor: `${activeColors.notes}14` }
+                        : undefined
+                    }
+                    className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
+                      activeSuiteModule === 'notes'
+                        ? 'border-2'
+                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div
+                        style={{ backgroundColor: activeColors.notes }}
+                        className="w-8 h-8 rounded-xl text-white flex items-center justify-center font-bold text-sm shadow-xs"
+                      >
+                        <BookOpen className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="font-bold text-neutral-900 dark:text-neutral-100 block">Notes</span>
+                        <span className="text-[11px] text-neutral-500">Obsidian Markdown & Aufgaben</span>
+                      </div>
                     </div>
-                    <div>
-                      <span className="font-bold text-neutral-900 dark:text-neutral-100 block">Notes</span>
-                      <span className="text-[11px] text-neutral-500">Obsidian Markdown & Aufgaben</span>
-                    </div>
+                    {activeSuiteModule === 'notes' ? (
+                      <span
+                        style={{ backgroundColor: activeColors.notes }}
+                        className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
+                      >
+                        Aktiv
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-neutral-400">Öffnen →</span>
+                    )}
                   </div>
-                  {activeSuiteModule === 'notes' ? (
-                    <span
-                      style={{ backgroundColor: activeColors.notes }}
-                      className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
-                    >
-                      Aktiv
-                    </span>
-                  ) : (
-                    <span className="text-[10px] text-neutral-400">Öffnen →</span>
-                  )}
-                </div>
+                ) : null}
 
                 {/* Module 2: Wiki (Open-Standard Knowledge Base) */}
                 {enabledModules.wiki ? (
@@ -427,7 +444,7 @@ export const Header: React.FC<HeaderProps> = ({
                   </div>
                 ) : null}
 
-                {/* Module 3: Essensplan (Enabled or Disabled) */}
+                {/* Module 3: Essensplan */}
                 {enabledModules.recipes ? (
                   <div 
                     onClick={() => {
@@ -454,7 +471,7 @@ export const Header: React.FC<HeaderProps> = ({
                       </div>
                       <div>
                         <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">Essensplan</span>
-                        <span className="text-[11px] text-neutral-500">Kalender, Gerichte &amp; Einkaufsliste</span>
+                        <span className="text-[11px] text-neutral-500">Kalender, Rezepte &amp; Einkaufsliste</span>
                       </div>
                     </div>
                     {activeSuiteModule === 'recipes' ? (
@@ -470,7 +487,7 @@ export const Header: React.FC<HeaderProps> = ({
                   </div>
                 ) : null}
 
-                {/* Module 4: Finanzen (Enabled or Disabled) */}
+                {/* Module 4: Finanzen */}
                 {enabledModules.finance ? (
                   <div 
                     onClick={() => {
@@ -497,7 +514,7 @@ export const Header: React.FC<HeaderProps> = ({
                       </div>
                       <div>
                         <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">Finanzen</span>
-                        <span className="text-[11px] text-neutral-500">CSV Bankimport &amp; Barzahlung</span>
+                        <span className="text-[11px] text-neutral-500">CSV Bankimport, Kreditoren &amp; Bar</span>
                       </div>
                     </div>
                     {activeSuiteModule === 'finance' ? (
@@ -512,29 +529,120 @@ export const Header: React.FC<HeaderProps> = ({
                     )}
                   </div>
                 ) : null}
+
+                {/* Module 5: Projekte */}
+                {enabledModules.projects ? (
+                  <div
+                    onClick={() => {
+                      onSelectSuiteModule('projects');
+                      setIsSuiteMenuOpen(false);
+                    }}
+                    style={
+                      activeSuiteModule === 'projects'
+                        ? { borderColor: activeColors.projects, backgroundColor: `${activeColors.projects}14` }
+                        : undefined
+                    }
+                    className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
+                      activeSuiteModule === 'projects'
+                        ? 'border-2'
+                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div
+                        style={{ backgroundColor: activeColors.projects }}
+                        className="w-8 h-8 rounded-xl text-white flex items-center justify-center shadow-xs"
+                      >
+                        <FolderKanban className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">Projekte</span>
+                        <span className="text-[11px] text-neutral-500">Kanban, Timeline &amp; Notiz-Links</span>
+                      </div>
+                    </div>
+                    {activeSuiteModule === 'projects' ? (
+                      <span
+                        style={{ backgroundColor: activeColors.projects }}
+                        className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
+                      >
+                        Aktiv
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-neutral-400">Öffnen →</span>
+                    )}
+                  </div>
+                ) : null}
+
+                {/* Module 6: Smarthome */}
+                {enabledModules.smarthome ? (
+                  <div
+                    onClick={() => {
+                      onSelectSuiteModule('smarthome');
+                      setIsSuiteMenuOpen(false);
+                    }}
+                    style={
+                      activeSuiteModule === 'smarthome'
+                        ? { borderColor: activeColors.smarthome, backgroundColor: `${activeColors.smarthome}14` }
+                        : undefined
+                    }
+                    className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
+                      activeSuiteModule === 'smarthome'
+                        ? 'border-2'
+                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div
+                        style={{ backgroundColor: activeColors.smarthome }}
+                        className="w-8 h-8 rounded-xl text-white flex items-center justify-center shadow-xs"
+                      >
+                        <Cpu className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">Smarthome</span>
+                        <span className="text-[11px] text-neutral-500">Live MQTT, Sensoren &amp; Telemetrie</span>
+                      </div>
+                    </div>
+                    {activeSuiteModule === 'smarthome' ? (
+                      <span
+                        style={{ backgroundColor: activeColors.smarthome }}
+                        className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
+                      >
+                        Aktiv
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-neutral-400">Öffnen →</span>
+                    )}
+                  </div>
+                ) : null}
               </div>
 
-              {/* Module Management Link + Thumb-Zone Close Button */}
-              <div className="pt-3 border-t border-[#E5E3DC] dark:border-[#2F3136] flex flex-col gap-2 text-xs shrink-0 pb-[env(safe-area-inset-bottom)]">
+              {/* Split Thumb-Zone Footer: 2/3 Close Button + 1/3 Module Verwalten */}
+              <div className="pt-3 border-t border-[#E5E3DC] dark:border-[#2F3136] flex items-stretch gap-2 text-xs shrink-0 pb-[env(safe-area-inset-bottom)]">
+                <button
+                  type="button"
+                  onClick={closeSuiteMenu}
+                  className="w-2/3 min-h-[44px] rounded-xl bg-[#F4F3EF] hover:bg-neutral-200 dark:bg-[#25272C] dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-200 font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer active:scale-[0.98]"
+                >
+                  <X className="w-4 h-4 shrink-0" />
+                  <span>Menü schließen</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => {
                     closeSuiteMenu();
                     onOpenSettings();
                   }}
-                  style={{ color: activeColors.notes }}
-                  className="hover:underline flex items-center gap-1.5 px-1 py-1 cursor-pointer font-semibold"
+                  style={{ borderColor: `${currentModuleColor}40`, color: currentModuleColor }}
+                  className="w-1/3 min-h-[44px] rounded-xl border bg-white hover:bg-amber-500/10 dark:bg-[#202225] dark:hover:bg-amber-500/10 flex items-center justify-center gap-1.5 px-2 py-1.5 text-[10px] leading-tight font-bold transition-colors cursor-pointer active:scale-[0.98]"
+                  title="Module & Profile verwalten"
                 >
-                  <Layers className="w-4 h-4" />
-                  <span>Module &amp; Profile verwalten</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={closeSuiteMenu}
-                  className="w-full min-h-[42px] rounded-xl bg-[#F4F3EF] hover:bg-neutral-200 dark:bg-[#25272C] dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-200 font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer active:scale-[0.98]"
-                >
-                  <X className="w-4 h-4" />
-                  <span>Menü schließen</span>
+                  <Settings className="w-3.5 h-3.5 shrink-0" />
+                  <span className="text-left">
+                    Module
+                    <br />
+                    verwalten
+                  </span>
                 </button>
               </div>
             </div>
@@ -710,50 +818,40 @@ export const Header: React.FC<HeaderProps> = ({
             <ChevronLeft className={`w-3.5 h-3.5 text-neutral-400 transition-transform duration-200 ${isUserMenuOpen && !isUserMenuClosing ? 'rotate-180' : ''}`} />
           </button>
 
-          {/* Right-Anchored Full-Height Profile Drawer (Slides in from right, closes upward) */}
+          {/* Right-Anchored Full-Height Profile Drawer (Slides in from right, fades out cleanly) */}
           {isUserMenuOpen && (
             <div
               data-no-swipe
               onClick={(e) => e.stopPropagation()}
               className={`fixed inset-y-0 right-0 h-[100dvh] w-72 sm:w-80 max-w-[85vw] bg-white dark:bg-[#1E1F23] shadow-2xl border-l border-[#E5E3DC] dark:border-[#2F3136] z-[110] flex flex-col p-4 space-y-3 ${
-                isUserMenuClosing ? 'animate-drawer-close-up pointer-events-none' : 'animate-drawer-in-right'
+                isUserMenuClosing ? 'animate-drawer-fade-out pointer-events-none' : 'animate-drawer-in-right'
               }`}
             >
-              {/* Drawer Header matching Module Drawer */}
-              <div className="flex items-center justify-between pb-3 border-b border-[#E5E3DC] dark:border-[#2F3136] shrink-0">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  {currentUser?.avatar ? (
-                    <img
-                      src={currentUser.avatar}
-                      alt={currentUser.displayName}
-                      referrerPolicy="no-referrer"
-                      className="w-8 h-8 rounded-xl object-cover shadow-xs shrink-0"
-                    />
-                  ) : (
-                    <div
-                      style={{ backgroundColor: currentModuleColor }}
-                      className="w-8 h-8 rounded-xl text-white flex items-center justify-center font-bold text-xs shadow-xs shrink-0"
-                    >
-                      {currentUser?.displayName?.[0] || 'U'}
-                    </div>
-                  )}
-                  <div className="min-w-0">
-                    <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 leading-tight truncate">
-                      {currentUser?.displayName || 'Gast'}
-                    </h3>
-                    <span className="text-[11px] text-neutral-400 block truncate">
-                      @{currentUser?.username || 'user'} · {currentUser?.role === 'admin' ? 'Administrator' : 'Benutzer'}
-                    </span>
+              {/* Drawer Header matching Module Drawer (single bottom close button) */}
+              <div className="flex items-center gap-2.5 pb-3 border-b border-[#E5E3DC] dark:border-[#2F3136] shrink-0">
+                {currentUser?.avatar ? (
+                  <img
+                    src={currentUser.avatar}
+                    alt={currentUser.displayName}
+                    referrerPolicy="no-referrer"
+                    className="w-8 h-8 rounded-xl object-cover shadow-xs shrink-0"
+                  />
+                ) : (
+                  <div
+                    style={{ backgroundColor: currentModuleColor }}
+                    className="w-8 h-8 rounded-xl text-white flex items-center justify-center font-bold text-xs shadow-xs shrink-0"
+                  >
+                    {currentUser?.displayName?.[0] || 'U'}
                   </div>
+                )}
+                <div className="min-w-0">
+                  <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 leading-tight truncate">
+                    {currentUser?.displayName || 'Gast'}
+                  </h3>
+                  <span className="text-[11px] text-neutral-400 block truncate">
+                    @{currentUser?.username || 'user'} · {currentUser?.role === 'admin' ? 'Administrator' : 'Benutzer'}
+                  </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={closeUserMenu}
-                  className="w-8 h-8 rounded-full bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer shrink-0"
-                  aria-label="Menü schließen"
-                >
-                  <X className="w-4 h-4" />
-                </button>
               </div>
 
               {/* Scrollable Middle Actions Area */}
@@ -827,55 +925,60 @@ export const Header: React.FC<HeaderProps> = ({
 
                 {/* Action Items: Context-aware per active Suite Module */}
                 <div className="space-y-1.5">
-                  {activeSuiteModule !== 'finance' && activeSuiteModule !== 'dashboard' && (
-                    <>
-                      <button
-                        onClick={() => {
-                          onOpenShareModal();
-                          setIsUserMenuOpen(false);
-                        }}
-                        className="w-full flex items-center justify-between p-3 text-xs rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#202225] hover:border-[var(--ochre-accent)] hover:bg-amber-500/10 text-neutral-800 dark:text-neutral-200 transition-all text-left group cursor-pointer"
-                      >
-                        <div className="flex items-center gap-2.5">
-                          <div
-                            className="w-8 h-8 rounded-xl flex items-center justify-center transition-colors"
-                            style={{ backgroundColor: `${currentModuleColor}1A`, color: currentModuleColor }}
-                          >
-                            <Share2 className="w-4 h-4" />
-                          </div>
-                          <span className="font-semibold">
-                            {activeSuiteModule === 'wiki'
-                              ? 'Wiki-Artikel teilen'
-                              : activeSuiteModule === 'recipes'
-                              ? 'Rezept teilen'
-                              : t.shareNote}
-                          </span>
+                  {(activeSuiteModule === 'notes' || activeSuiteModule === 'wiki' || activeSuiteModule === 'recipes') && (
+                    <button
+                      onClick={() => {
+                        onOpenShareModal();
+                        setIsUserMenuOpen(false);
+                      }}
+                      className="w-full flex items-center justify-between p-3 text-xs rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#202225] hover:border-[var(--ochre-accent)] hover:bg-amber-500/10 text-neutral-800 dark:text-neutral-200 transition-all text-left group cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div
+                          className="w-8 h-8 rounded-xl flex items-center justify-center transition-colors"
+                          style={{ backgroundColor: `${currentModuleColor}1A`, color: currentModuleColor }}
+                        >
+                          <Share2 className="w-4 h-4" />
                         </div>
-                        <ChevronRight className="w-4 h-4 text-neutral-400" />
-                      </button>
+                        <span className="font-semibold">
+                          {activeSuiteModule === 'wiki'
+                            ? 'Wiki-Artikel teilen'
+                            : activeSuiteModule === 'recipes'
+                            ? 'Rezept teilen'
+                            : t.shareNote}
+                        </span>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-neutral-400" />
+                    </button>
+                  )}
 
-                      <button
-                        onClick={() => {
-                          onPrintA4();
-                          setIsUserMenuOpen(false);
-                        }}
-                        className="w-full flex items-center justify-between p-3 text-xs rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#202225] hover:border-[var(--ochre-accent)] hover:bg-amber-500/10 text-neutral-800 dark:text-neutral-200 transition-all text-left group cursor-pointer"
-                      >
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-8 h-8 rounded-xl bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center text-neutral-600 dark:text-neutral-300 transition-colors">
-                            <Printer className="w-4 h-4" />
-                          </div>
-                          <span className="font-semibold">
-                            {activeSuiteModule === 'wiki'
-                              ? 'Wiki-Artikel als A4 drucken'
-                              : activeSuiteModule === 'recipes'
-                              ? 'Essensplan als A4 drucken'
-                              : t.printA4}
-                          </span>
+                  {(activeSuiteModule === 'notes' ||
+                    activeSuiteModule === 'wiki' ||
+                    activeSuiteModule === 'recipes' ||
+                    activeSuiteModule === 'projects') && (
+                    <button
+                      onClick={() => {
+                        onPrintA4();
+                        setIsUserMenuOpen(false);
+                      }}
+                      className="w-full flex items-center justify-between p-3 text-xs rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#202225] hover:border-[var(--ochre-accent)] hover:bg-amber-500/10 text-neutral-800 dark:text-neutral-200 transition-all text-left group cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-xl bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center text-neutral-600 dark:text-neutral-300 transition-colors">
+                          <Printer className="w-4 h-4" />
                         </div>
-                        <ChevronRight className="w-4 h-4 text-neutral-400" />
-                      </button>
-                    </>
+                        <span className="font-semibold">
+                          {activeSuiteModule === 'wiki'
+                            ? 'Wiki-Artikel als A4 drucken'
+                            : activeSuiteModule === 'recipes'
+                            ? 'Essensplan als A4 drucken'
+                            : activeSuiteModule === 'projects'
+                            ? 'Projekt als A4 drucken'
+                            : t.printA4}
+                        </span>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-neutral-400" />
+                    </button>
                   )}
 
                   <button

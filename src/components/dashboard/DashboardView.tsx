@@ -24,6 +24,11 @@ import {
   TrendingDown,
   Banknote,
   Layers,
+  Search,
+  X,
+  ArrowRight,
+  Cpu,
+  Briefcase,
 } from 'lucide-react';
 import {
   User,
@@ -43,7 +48,10 @@ import {
   MealCalendarOverride,
   IngredientMeta,
   FinanceTransaction,
+  CreditorRecord,
   SystemHealth,
+  ProjectItem,
+  SmarthomeState,
 } from '../../types';
 import { api } from '../../services/api';
 import { generateWeeklyShoppingList } from '../../services/shoppingListService';
@@ -60,7 +68,7 @@ interface DashboardViewProps {
   dashboardSettings: DashboardSettings;
   onNavigateToModule: (
     mod: SuiteModuleId,
-    options?: { notesView?: PaneType; cookbookTab?: CookbookTab; notePath?: string }
+    options?: { notesView?: PaneType; cookbookTab?: CookbookTab; notePath?: string; wikiSlug?: string; projectId?: string }
   ) => void;
   onOpenDashboardSettings: () => void;
   onTasksMutated?: () => void;
@@ -173,6 +181,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [pendingInviteCount, setPendingInviteCount] = useState<number>(0);
   const [checkedShoppingKeys, setCheckedShoppingKeys] = useState<Record<string, boolean>>({});
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
+  const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const [smarthomeState, setSmarthomeState] = useState<SmarthomeState | null>(null);
+  const [globalSearch, setGlobalSearch] = useState('');
 
   const [financeTx, setFinanceTx] = useState<FinanceTransaction[]>(() => {
     try {
@@ -183,12 +194,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
   });
 
+  const [financeCreditors, setFinanceCreditors] = useState<CreditorRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem('ochre_finance_creditors');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
   const loadDashboardData = useCallback(async () => {
     setLoading(true);
     try {
-      const [notesRes, tasksRes, wikiRes, cookbookRes, healthRes] = await Promise.all([
-        api.fetchNotes(currentUser.username, activeProfileId).catch(() => [] as NoteMetadata[]),
-        api.fetchTasks(currentUser.username, activeProfileId).catch(() => [] as TaskItem[]),
+      const [notesRes, tasksRes, wikiRes, cookbookRes, healthRes, projectsRes, smarthomeRes] = await Promise.all([
+        enabledModules.notes !== false
+          ? api.fetchNotes(currentUser.username, activeProfileId).catch(() => [] as NoteMetadata[])
+          : Promise.resolve([] as NoteMetadata[]),
+        enabledModules.notes !== false
+          ? api.fetchTasks(currentUser.username, activeProfileId).catch(() => [] as TaskItem[])
+          : Promise.resolve([] as TaskItem[]),
         enabledModules.wiki
           ? api.fetchWikiArticles(currentUser.username).catch(() => [] as WikiArticle[])
           : Promise.resolve([] as WikiArticle[]),
@@ -196,11 +220,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           ? api.fetchCookbook(currentUser.username).catch(() => null)
           : Promise.resolve(null),
         api.fetchSystemHealth().catch(() => null),
+        enabledModules.projects
+          ? api.fetchProjects(currentUser.username).catch(() => [] as ProjectItem[])
+          : Promise.resolve([] as ProjectItem[]),
+        enabledModules.smarthome
+          ? api.fetchSmarthomeState(currentUser.username).catch(() => null)
+          : Promise.resolve(null),
       ]);
 
       setNotes(notesRes);
       setTasks(tasksRes);
       setWikiArticles(wikiRes);
+      setProjects(projectsRes);
+      setSmarthomeState(smarthomeRes);
       if (healthRes) setSystemHealth(healthRes);
 
       if (cookbookRes) {
@@ -226,11 +258,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       try {
         const savedTx = localStorage.getItem('ochre_finance_tx');
         if (savedTx) setFinanceTx(JSON.parse(savedTx));
+        const savedCred = localStorage.getItem('ochre_finance_creditors');
+        if (savedCred) setFinanceCreditors(JSON.parse(savedCred));
       } catch {}
     } finally {
       setLoading(false);
     }
-  }, [currentUser.username, activeProfileId, enabledModules.wiki, enabledModules.recipes]);
+  }, [currentUser.username, activeProfileId, enabledModules.notes, enabledModules.wiki, enabledModules.recipes, enabledModules.projects, enabledModules.smarthome]);
 
   useEffect(() => {
     loadDashboardData();
@@ -336,6 +370,191 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   }, [dashboardSettings]);
 
   const isShoppingActive = enableCookbookShoppingList && serverShoppingEnabled;
+
+  // Global Multi-Module Live Search Results
+  const globalSearchResults = useMemo(() => {
+    const q = globalSearch.trim().toLowerCase();
+    if (!q) return [];
+    const results: Array<{
+      id: string;
+      module: SuiteModuleId;
+      moduleLabel: string;
+      color: string;
+      title: string;
+      subtitle: string;
+      onClick: () => void;
+    }> = [];
+
+    if (enabledModules.notes !== false) {
+      notes
+        .filter((n) => n.title.toLowerCase().includes(q) || n.path.toLowerCase().includes(q))
+        .slice(0, 5)
+        .forEach((n) =>
+          results.push({
+            id: `note_${n.path}`,
+            module: 'notes',
+            moduleLabel: 'Notiz',
+            color: accentColors.notes,
+            title: n.title,
+            subtitle: n.folder || '/',
+            onClick: () => onNavigateToModule('notes', { notesView: 'editor', notePath: n.path }),
+          })
+        );
+      tasks
+        .filter((t) => t.title.toLowerCase().includes(q) || t.noteTitle.toLowerCase().includes(q))
+        .slice(0, 4)
+        .forEach((t) =>
+          results.push({
+            id: `task_${t.id}`,
+            module: 'notes',
+            moduleLabel: 'Aufgabe',
+            color: accentColors.notes,
+            title: t.title,
+            subtitle: `${t.noteTitle}${t.dueDate ? ` · 📅 ${t.dueDate}` : ''}`,
+            onClick: () => onNavigateToModule('notes', { notesView: 'tasks' }),
+          })
+        );
+    }
+
+    if (enabledModules.wiki) {
+      wikiArticles
+        .filter(
+          (w) =>
+            w.title.toLowerCase().includes(q) ||
+            w.category.toLowerCase().includes(q) ||
+            w.tags.some((tg) => tg.toLowerCase().includes(q))
+        )
+        .slice(0, 5)
+        .forEach((w) =>
+          results.push({
+            id: `wiki_${w.slug}`,
+            module: 'wiki',
+            moduleLabel: 'Wiki',
+            color: accentColors.wiki,
+            title: w.title,
+            subtitle: `${w.category} · ${w.visibility === 'private' ? 'Privat' : 'Öffentlich'}`,
+            onClick: () => onNavigateToModule('wiki', { wikiSlug: w.slug }),
+          })
+        );
+    }
+
+    if (enabledModules.recipes) {
+      allCookbookRecipes
+        .filter(
+          (r) =>
+            r.title.toLowerCase().includes(q) ||
+            r.category.toLowerCase().includes(q) ||
+            r.ingredients.some((i) => i.name.toLowerCase().includes(q))
+        )
+        .slice(0, 5)
+        .forEach((r) =>
+          results.push({
+            id: `rec_${r.id}`,
+            module: 'recipes',
+            moduleLabel: 'Rezept',
+            color: accentColors.recipes,
+            title: r.title,
+            subtitle: `${r.category} · ${r.prepTimeMinutes} Min`,
+            onClick: () => onNavigateToModule('recipes', { cookbookTab: 'recipes' }),
+          })
+        );
+    }
+
+    if (enabledModules.finance) {
+      financeCreditors
+        .filter((c) => c.name.toLowerCase().includes(q))
+        .slice(0, 3)
+        .forEach((c) =>
+          results.push({
+            id: `cred_${c.id}`,
+            module: 'finance',
+            moduleLabel: 'Kreditor',
+            color: accentColors.finance,
+            title: c.name,
+            subtitle: c.isCashPreferred ? 'Barzahlung' : 'Konto/Bank',
+            onClick: () => onNavigateToModule('finance'),
+          })
+        );
+      financeTx
+        .filter(
+          (tx) =>
+            tx.creditor.toLowerCase().includes(q) || tx.description.toLowerCase().includes(q)
+        )
+        .slice(0, 4)
+        .forEach((tx) =>
+          results.push({
+            id: `tx_${tx.id}`,
+            module: 'finance',
+            moduleLabel: 'Finanzen',
+            color: accentColors.finance,
+            title: `${tx.creditor} (${tx.amount >= 0 ? '+' : ''}${tx.amount.toFixed(2)} €)`,
+            subtitle: `${tx.date} · ${tx.description}`,
+            onClick: () => onNavigateToModule('finance'),
+          })
+        );
+    }
+
+    if (enabledModules.projects) {
+      projects
+        .filter(
+          (p) =>
+            p.title.toLowerCase().includes(q) ||
+            (p.description || '').toLowerCase().includes(q) ||
+            p.tasks.some((tk) => tk.title.toLowerCase().includes(q))
+        )
+        .slice(0, 5)
+        .forEach((p) =>
+          results.push({
+            id: `proj_${p.id}`,
+            module: 'projects',
+            moduleLabel: 'Projekt',
+            color: accentColors.projects || '#A46422',
+            title: p.title,
+            subtitle: `${p.tasks.filter((tk) => tk.status !== 'done').length} offene Aufgaben · ${p.visibility === 'shared' ? 'Geteilt' : 'Privat'}`,
+            onClick: () => onNavigateToModule('projects', { projectId: p.id }),
+          })
+        );
+    }
+
+    if (enabledModules.smarthome && smarthomeState) {
+      smarthomeState.tiles
+        .filter(
+          (t) =>
+            t.title.toLowerCase().includes(q) ||
+            (t.topicOrPath || t.topic || '').toLowerCase().includes(q) ||
+            (t.unit || '').toLowerCase().includes(q)
+        )
+        .slice(0, 4)
+        .forEach((t) => {
+          const valKey = `${t.sourceId}::${t.topicOrPath || t.topic || ''}`;
+          const live = smarthomeState.values?.[valKey]?.value ?? t.lastValue ?? '–';
+          results.push({
+            id: `sh_${t.id}`,
+            module: 'smarthome',
+            moduleLabel: 'Smarthome',
+            color: accentColors.smarthome || '#B96A1E',
+            title: t.title,
+            subtitle: `${live} ${t.unit || ''} · ${t.topicOrPath || t.topic || ''}`,
+            onClick: () => onNavigateToModule('smarthome'),
+          });
+        });
+    }
+
+    return results.slice(0, 18);
+  }, [
+    globalSearch,
+    enabledModules,
+    notes,
+    tasks,
+    wikiArticles,
+    allCookbookRecipes,
+    financeCreditors,
+    financeTx,
+    projects,
+    smarthomeState,
+    accentColors,
+    onNavigateToModule,
+  ]);
 
   // Render Individual Thick Tile ("Kachel")
   const renderWidgetTile = (widgetId: DashboardWidgetId) => {
@@ -940,57 +1159,57 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 leading-tight">
                       Essensplan Katalog &amp; Zutaten
                     </h3>
-                    <span className="text-[11px] text-neutral-500">Tellergerichte &amp; Hygiene</span>
+                      <span className="text-[11px] text-neutral-500">Rezepte &amp; Hygiene</span>
+                    </div>
                   </div>
                 </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="p-2.5 rounded-2xl bg-[#FBFBFA] dark:bg-[#25272C] border border-[#E5E3DC]/80 dark:border-[#32353B]">
+                    <span className="text-[10px] text-neutral-400 block">Rezepte</span>
+                    <span className="text-xl font-extrabold tabular-nums" style={{ color: modColor }}>
+                      {recipes.length}
+                    </span>
+                  </div>
+                  <div className="p-2.5 rounded-2xl bg-[#FBFBFA] dark:bg-[#25272C] border border-[#E5E3DC]/80 dark:border-[#32353B]">
+                    <span className="text-[10px] text-neutral-400 block">Zutaten</span>
+                    <span className="text-xl font-extrabold text-neutral-900 dark:text-neutral-100 tabular-nums">
+                      {ingredientCatalogStats.total}
+                    </span>
+                  </div>
+                  <div className="p-2.5 rounded-2xl bg-[#FBFBFA] dark:bg-[#25272C] border border-[#E5E3DC]/80 dark:border-[#32353B]">
+                    <span className="text-[10px] text-neutral-400 block">Ohne Liste</span>
+                    <span className="text-xl font-extrabold text-neutral-600 dark:text-neutral-300 tabular-nums">
+                      {ingredientCatalogStats.excludedCount}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-[#FBFBFA] dark:bg-[#25272C] border border-[#E5E3DC]/80 dark:border-[#32353B] flex items-center justify-between text-xs">
+                  <span className="text-neutral-600 dark:text-neutral-300">
+                    Mögliche Zutaten-Duplikate
+                  </span>
+                  <span className="font-bold tabular-nums" style={{ color: ingredientCatalogStats.dupes > 0 ? modColor : undefined }}>
+                    {ingredientCatalogStats.dupes}
+                  </span>
+                </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-2">
-                <div className="p-2.5 rounded-2xl bg-[#FBFBFA] dark:bg-[#25272C] border border-[#E5E3DC]/80 dark:border-[#32353B]">
-                  <span className="text-[10px] text-neutral-400 block">Gerichte</span>
-                  <span className="text-xl font-extrabold tabular-nums" style={{ color: modColor }}>
-                    {recipes.length}
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-2xl bg-[#FBFBFA] dark:bg-[#25272C] border border-[#E5E3DC]/80 dark:border-[#32353B]">
-                  <span className="text-[10px] text-neutral-400 block">Zutaten</span>
-                  <span className="text-xl font-extrabold text-neutral-900 dark:text-neutral-100 tabular-nums">
-                    {ingredientCatalogStats.total}
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-2xl bg-[#FBFBFA] dark:bg-[#25272C] border border-[#E5E3DC]/80 dark:border-[#32353B]">
-                  <span className="text-[10px] text-neutral-400 block">Ohne Liste</span>
-                  <span className="text-xl font-extrabold text-neutral-600 dark:text-neutral-300 tabular-nums">
-                    {ingredientCatalogStats.excludedCount}
-                  </span>
-                </div>
-              </div>
-
-              <div className="p-3 rounded-2xl bg-[#FBFBFA] dark:bg-[#25272C] border border-[#E5E3DC]/80 dark:border-[#32353B] flex items-center justify-between text-xs">
-                <span className="text-neutral-600 dark:text-neutral-300">
-                  Mögliche Zutaten-Duplikate
-                </span>
-                <span className="font-bold tabular-nums" style={{ color: ingredientCatalogStats.dupes > 0 ? modColor : undefined }}>
-                  {ingredientCatalogStats.dupes}
-                </span>
+              <div className="pt-3 mt-3 border-t border-[#E5E3DC]/70 dark:border-[#2B2D31] flex items-center justify-between text-xs">
+                <span className="text-[11px] text-neutral-400">Rezepte &amp; Zutatenliste</span>
+                <button
+                  type="button"
+                  onClick={() => onNavigateToModule('recipes', { cookbookTab: 'recipes' })}
+                  style={{ color: modColor }}
+                  className="font-bold flex items-center gap-1 hover:underline cursor-pointer"
+                >
+                  <span>Zum Katalog</span>
+                  <ArrowUpRight className="w-3.5 h-3.5" />
+                </button>
               </div>
             </div>
-
-            <div className="pt-3 mt-3 border-t border-[#E5E3DC]/70 dark:border-[#2B2D31] flex items-center justify-between text-xs">
-              <span className="text-[11px] text-neutral-400">Tellergerichte &amp; Zutatenliste</span>
-              <button
-                type="button"
-                onClick={() => onNavigateToModule('recipes', { cookbookTab: 'recipes' })}
-                style={{ color: modColor }}
-                className="font-bold flex items-center gap-1 hover:underline cursor-pointer"
-              >
-                <span>Zum Katalog</span>
-                <ArrowUpRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-        );
-      }
+          );
+        }
 
       case 'finance_recent_tx': {
         const modColor = accentColors.finance;
@@ -1225,6 +1444,158 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         );
       }
 
+      case 'smarthome_overview': {
+        const modColor = accentColors.smarthome || '#B96A1E';
+        const tiles = smarthomeState?.tiles || [];
+        return (
+          <div
+            key={widgetId}
+            className="snap-start min-h-[268px] flex flex-col justify-between p-5 rounded-3xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-xs"
+          >
+            <div className="space-y-3.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    style={{ backgroundColor: modColor }}
+                    className="w-10 h-10 rounded-2xl text-white flex items-center justify-center shadow-xs shrink-0"
+                  >
+                    <Cpu className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 leading-tight">
+                      Smarthome Live-Werte
+                    </h3>
+                    <span className="text-[11px] text-neutral-500">MQTT &amp; Sensorik</span>
+                  </div>
+                </div>
+                <span className="text-2xl font-extrabold tabular-nums" style={{ color: modColor }}>
+                  {tiles.length}
+                </span>
+              </div>
+
+              {tiles.length === 0 ? (
+                <div className="py-6 text-center rounded-2xl bg-[#F4F3EF]/70 dark:bg-[#25272C] text-xs text-neutral-500">
+                  Noch keine Sensorkacheln eingerichtet.
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  {tiles.slice(0, 4).map((tile) => {
+                    const valKey = `${tile.sourceId}::${tile.topicOrPath || tile.topic || ''}`;
+                    const live = smarthomeState?.values?.[valKey]?.value ?? tile.lastValue ?? '–';
+                    return (
+                      <div
+                        key={tile.id}
+                        className="p-2.5 rounded-2xl bg-[#FBFBFA] dark:bg-[#25272C] border border-[#E5E3DC]/80 dark:border-[#32353B]"
+                      >
+                        <span className="text-[10px] text-neutral-400 block truncate">{tile.title}</span>
+                        <span className="text-sm font-extrabold text-neutral-900 dark:text-neutral-100 tabular-nums">
+                          {live} {tile.unit || ''}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 mt-3 border-t border-[#E5E3DC]/70 dark:border-[#2B2D31] flex items-center justify-between text-xs">
+              <span className="text-[11px] text-neutral-400">
+                {smarthomeState?.brokers?.length || 0} Broker · {smarthomeState?.dbSources?.length || 0} Quellen
+              </span>
+              <button
+                type="button"
+                onClick={() => onNavigateToModule('smarthome')}
+                style={{ color: modColor }}
+                className="font-bold flex items-center gap-1 hover:underline cursor-pointer"
+              >
+                <span>Zu Smarthome</span>
+                <ArrowUpRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      case 'projects_open': {
+        const modColor = accentColors.projects || '#A46422';
+        const openProjects = projects.filter((p) => p.status !== 'completed');
+        return (
+          <div
+            key={widgetId}
+            className="snap-start min-h-[268px] flex flex-col justify-between p-5 rounded-3xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-xs"
+          >
+            <div className="space-y-3.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    style={{ backgroundColor: modColor }}
+                    className="w-10 h-10 rounded-2xl text-white flex items-center justify-center shadow-xs shrink-0"
+                  >
+                    <Briefcase className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 leading-tight">
+                      Aktive Projekte
+                    </h3>
+                    <span className="text-[11px] text-neutral-500">Kanban &amp; Meilensteine</span>
+                  </div>
+                </div>
+                <span className="text-2xl font-extrabold tabular-nums" style={{ color: modColor }}>
+                  {openProjects.length}
+                </span>
+              </div>
+
+              {openProjects.length === 0 ? (
+                <div className="py-6 text-center rounded-2xl bg-[#F4F3EF]/70 dark:bg-[#25272C] text-xs text-neutral-500">
+                  Noch keine aktiven Projekte angelegt.
+                </div>
+              ) : (
+                <div className="space-y-1.5 max-h-44 overflow-y-auto pr-0.5">
+                  {openProjects.slice(0, 4).map((proj) => {
+                    const doneTasks = proj.tasks.filter((t) => t.status === 'done').length;
+                    const totalTasks = proj.tasks.length;
+                    return (
+                      <button
+                        key={proj.id}
+                        type="button"
+                        onClick={() => onNavigateToModule('projects', { projectId: proj.id })}
+                        className="w-full p-2 rounded-xl bg-[#FBFBFA] dark:bg-[#25272C] border border-[#E5E3DC]/80 dark:border-[#32353B] hover:border-neutral-400 flex items-center justify-between gap-2 text-left cursor-pointer transition-colors"
+                      >
+                        <div className="min-w-0">
+                          <span className="text-xs font-semibold text-neutral-900 dark:text-neutral-100 block truncate">
+                            {proj.title}
+                          </span>
+                          <span className="text-[10px] text-neutral-400 block truncate">
+                            {doneTasks}/{totalTasks} Aufgaben
+                            {proj.dueDate ? ` · Bis ${proj.dueDate}` : ''}
+                          </span>
+                        </div>
+                        <ArrowUpRight className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 mt-3 border-t border-[#E5E3DC]/70 dark:border-[#2B2D31] flex items-center justify-between text-xs">
+              <span className="text-[11px] text-neutral-400 tabular-nums">
+                {projects.length} Projekte gesamt
+              </span>
+              <button
+                type="button"
+                onClick={() => onNavigateToModule('projects')}
+                style={{ color: modColor }}
+                className="font-bold flex items-center gap-1 hover:underline cursor-pointer"
+              >
+                <span>Zu Projekte</span>
+                <ArrowUpRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        );
+      }
+
       default:
         return null;
     }
@@ -1274,6 +1645,76 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <span>Kacheln anpassen</span>
             </button>
           </div>
+        </div>
+
+        {/* Global Multi-Module Search Bar */}
+        <div className="relative">
+          <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-2xs focus-within:border-[var(--ochre-accent)] transition-colors">
+            <Search className="w-4 h-4 text-neutral-400 shrink-0" />
+            <input
+              type="text"
+              value={globalSearch}
+              onChange={(e) => setGlobalSearch(e.target.value)}
+              placeholder="Über alle aktiven Module suchen (Notizen, Aufgaben, Wiki, Rezepte, Finanzen, Projekte, Smarthome)..."
+              className="flex-1 bg-transparent text-xs sm:text-sm text-neutral-900 dark:text-neutral-100 placeholder:text-neutral-400 outline-hidden"
+            />
+            {globalSearch && (
+              <button
+                type="button"
+                onClick={() => setGlobalSearch('')}
+                className="p-1 rounded-full text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer"
+                aria-label="Suche leeren"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {globalSearch.trim() && (
+            <div className="mt-2 p-2.5 rounded-2xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-xl space-y-1.5">
+              <div className="px-2 py-1 flex items-center justify-between text-[11px] font-semibold text-neutral-400">
+                <span>Suchergebnisse ({globalSearchResults.length})</span>
+                <span>Klick öffnet Zielmodul</span>
+              </div>
+              {globalSearchResults.length === 0 ? (
+                <div className="px-3 py-5 text-center text-xs text-neutral-400">
+                  Keine Treffer für „{globalSearch}“ in den aktivierten Modulen gefunden.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 max-h-80 overflow-y-auto">
+                  {globalSearchResults.map((res) => (
+                    <button
+                      key={res.id}
+                      type="button"
+                      onClick={() => {
+                        setGlobalSearch('');
+                        res.onClick();
+                      }}
+                      className="flex items-center justify-between gap-2.5 p-2.5 rounded-xl bg-[#FBFBFA] dark:bg-[#25272C] border border-[#E5E3DC]/70 dark:border-[#32353B] hover:border-neutral-400 text-left cursor-pointer transition-colors"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            style={{ backgroundColor: `${res.color}20`, color: res.color }}
+                            className="text-[10px] font-bold px-1.5 py-0.2 rounded-md shrink-0"
+                          >
+                            {res.moduleLabel}
+                          </span>
+                          <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 truncate">
+                            {res.title}
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-neutral-500 block truncate mt-0.5">
+                          {res.subtitle}
+                        </span>
+                      </div>
+                      <ArrowRight className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Empty State if user turned off all tiles */}

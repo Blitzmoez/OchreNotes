@@ -265,7 +265,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
               {mode === 'wiki'
                 ? 'Sende diesen Wiki-Artikel inkl. Fotos direkt in den Wiki-Ordner eines anderen Benutzers.'
                 : mode === 'recipe'
-                ? 'Sende dieses Tellergericht direkt in den eigenen Katalog eines anderen Benutzers.'
+                ? 'Sende dieses Rezept direkt in den eigenen Katalog eines anderen Benutzers.'
                 : 'Freigegebene Notizen erscheinen beim Empfänger in einer separaten Rubrik in der Seitenleiste.'}
             </p>
 

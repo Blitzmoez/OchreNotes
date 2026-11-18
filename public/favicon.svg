@@ -1,11 +1,42 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
-    <linearGradient id="osGrad" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#D98F2E" />
-      <stop offset="100%" stop-color="#A66114" />
+    <linearGradient id="ochreBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#D98B28"/>
+      <stop offset="100%" stop-color="#9A5910"/>
+    </linearGradient>
+    <linearGradient id="pageGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFDF8"/>
+      <stop offset="100%" stop-color="#F5EAD6"/>
     </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="16" fill="url(#osGrad)" />
-  <rect x="3" y="3" width="58" height="58" rx="13" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="2" />
-  <text x="32" y="42" text-anchor="middle" font-family="'Plus Jakarta Sans', system-ui, -apple-system, sans-serif" font-size="27" font-weight="800" letter-spacing="-1" fill="#FFFFFF">OS</text>
+
+  <!-- Rounded Ochre App Background -->
+  <rect width="512" height="512" rx="112" fill="url(#ochreBg)"/>
+
+  <!-- Subtle Outer Shadow for Notebook -->
+  <rect x="114" y="88" width="296" height="348" rx="34" fill="#4A2805" opacity="0.22"/>
+
+  <!-- Notebook Body (Parchment Cover / Pages) -->
+  <rect x="108" y="80" width="296" height="348" rx="32" fill="url(#pageGrad)"/>
+
+  <!-- Notebook Left Spine -->
+  <path d="M108 112 C108 94.3 122.3 80 140 80 L176 80 L176 428 L140 428 C122.3 428 108 413.7 108 396 Z" fill="#5C3409"/>
+
+  <!-- Spine Spiral Rings -->
+  <rect x="90" y="136" width="54" height="22" rx="11" fill="#F4C77B"/>
+  <rect x="90" y="245" width="54" height="22" rx="11" fill="#F4C77B"/>
+  <rect x="90" y="354" width="54" height="22" rx="11" fill="#F4C77B"/>
+
+  <!-- Bookmark Ribbon -->
+  <path d="M320 80 L364 80 L364 196 L342 174 L320 196 Z" fill="#B9381F"/>
+
+  <!-- Notebook Ruled Lines -->
+  <rect x="206" y="156" width="90" height="18" rx="9" fill="#C87D20"/>
+  <rect x="206" y="206" width="160" height="14" rx="7" fill="#D5B88E"/>
+  <rect x="206" y="246" width="144" height="14" rx="7" fill="#D5B88E"/>
+  <rect x="206" y="286" width="160" height="14" rx="7" fill="#D5B88E"/>
+  <rect x="206" y="326" width="116" height="14" rx="7" fill="#D5B88E"/>
+
+  <!-- Subtle Right Page Edge Accent -->
+  <line x1="206" y1="368" x2="366" y2="368" stroke="#E4CEAB" stroke-width="6" stroke-linecap="round"/>
 </svg>

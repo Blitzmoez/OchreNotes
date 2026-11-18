@@ -24,8 +24,10 @@ import {
   Maximize2,
   Plus,
   Upload,
+  Globe,
+  Briefcase,
 } from 'lucide-react';
-import { YouTubeDisplayMode, NoteMediaItem, NoteProfileId } from '../../types';
+import { YouTubeDisplayMode, NoteMediaItem, NoteProfileId, OpenGraphPreview, ProjectItem } from '../../types';
 import { api } from '../../services/api';
 
 export interface NoteMediaContext {
@@ -50,6 +52,8 @@ interface LiveEditorPaneProps {
   showToolbar?: boolean;
   onToggleToolbar?: () => void;
   noteContext?: NoteMediaContext;
+  linkedProjects?: ProjectItem[];
+  onNavigateToProject?: (projectId: string) => void;
   // Mobile note tabs support
   openNoteTabs?: { path: string; title: string }[];
   activeTabPath?: string;
@@ -67,6 +71,98 @@ function getYouTubeId(text: string): string | null {
   const match = text.match(YOUTUBE_REGEX);
   return match ? match[1] : null;
 }
+
+const ogPreviewCache = new Map<string, OpenGraphPreview>();
+
+function getStandaloneUrl(text: string): string | null {
+  if (!text || getYouTubeId(text) || MARKDOWN_IMAGE_REGEX.test(text)) return null;
+  if (/\/api\/notes\/media\/file\//i.test(text)) return null;
+  const trimmed = text.trim();
+  const urlMatch = trimmed.match(/^(https?:\/\/[^\s<>()]+)$/i);
+  return urlMatch ? urlMatch[1] : null;
+}
+
+const OpenGraphCard: React.FC<{ url: string }> = React.memo(({ url }) => {
+  const [preview, setPreview] = useState<OpenGraphPreview | null>(() => ogPreviewCache.get(url) || null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    const cached = ogPreviewCache.get(url);
+    if (cached) {
+      setPreview(cached);
+      setFailed(false);
+      return;
+    }
+    let cancelled = false;
+    api
+      .fetchOpenGraph(url)
+      .then((data) => {
+        if (cancelled) return;
+        ogPreviewCache.set(url, data);
+        setPreview(data);
+        setFailed(false);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+
+  if (failed || !preview) {
+    return null;
+  }
+
+  let hostname = '';
+  try {
+    hostname = new URL(preview.url || url).hostname.replace(/^www\./i, '');
+  } catch {
+    hostname = url;
+  }
+
+  return (
+    <a
+      href={preview.url || url}
+      target="_blank"
+      rel="noreferrer"
+      onClick={(e) => e.stopPropagation()}
+      className="my-2 flex flex-col sm:flex-row items-stretch rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA] dark:bg-[#1D1F23] hover:border-[var(--ochre-accent)] transition-colors overflow-hidden max-w-xl shadow-2xs group/og"
+    >
+      {preview.image && (
+        <div className="w-full sm:w-36 h-28 sm:h-auto shrink-0 bg-neutral-100 dark:bg-neutral-900 overflow-hidden">
+          <img
+            src={preview.image}
+            alt={preview.title}
+            loading="lazy"
+            className="w-full h-full object-cover group-hover/og:scale-105 transition-transform duration-300"
+          />
+        </div>
+      )}
+      <div className="p-3 min-w-0 flex-1 flex flex-col justify-between gap-1.5">
+        <div className="space-y-1">
+          <div className="flex items-center gap-1.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+            {preview.favicon ? (
+              <img src={preview.favicon} alt="" className="w-3.5 h-3.5 rounded-xs shrink-0" loading="lazy" />
+            ) : (
+              <Globe className="w-3.5 h-3.5 text-[var(--ochre-accent)] shrink-0" />
+            )}
+            <span className="truncate font-medium">{preview.siteName || hostname}</span>
+            <ExternalLink className="w-3 h-3 ml-auto shrink-0 opacity-60 group-hover/og:text-[var(--ochre-accent)] group-hover/og:opacity-100" />
+          </div>
+          <h4 className="text-xs sm:text-[13px] font-bold text-neutral-900 dark:text-neutral-100 line-clamp-2 group-hover/og:text-[var(--ochre-accent)] transition-colors">
+            {preview.title || hostname}
+          </h4>
+          {preview.description && (
+            <p className="text-[11px] text-neutral-600 dark:text-neutral-400 line-clamp-2 leading-snug">
+              {preview.description}
+            </p>
+          )}
+        </div>
+      </div>
+    </a>
+  );
+});
 
 function getImageEmbed(text: string): { alt: string; url: string } | null {
   const mdMatch = text.match(MARKDOWN_IMAGE_REGEX);
@@ -244,6 +340,7 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
     const isNumbered = /^[ \t]*\d+\.[ ]/.test(rawLine);
     const ytId = getYouTubeId(rawLine);
     const imageEmbed = getImageEmbed(rawLine);
+    const standaloneUrl = getStandaloneUrl(rawLine);
 
     // Clean text without markdown command prefix (for rendered view)
     let cleanText = rawLine;
@@ -631,6 +728,8 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
             )}
           </div>
         )}
+        {/* OpenGraph Website Link Preview Card */}
+        {standaloneUrl && <OpenGraphCard url={standaloneUrl} />}
       </div>
     );
   }
@@ -647,6 +746,8 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
   onRenameNote,
   showToolbar: propShowToolbar,
   noteContext,
+  linkedProjects = [],
+  onNavigateToProject,
   openNoteTabs = [],
   activeTabPath,
   onSelectTab,
@@ -857,12 +958,22 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
       window.clearTimeout(blurTimerRef.current);
     }
     blurTimerRef.current = window.setTimeout(() => {
+      blurTimerRef.current = null;
+      const activeEl = document.activeElement as HTMLElement | null;
+      // Do NOT tear down active textarea if focus stayed inside it or inside a keep-focus toolbar/popover
+      if (activeEl) {
+        if (activeTextareaRef.current && activeEl === activeTextareaRef.current) {
+          return;
+        }
+        if (activeEl.closest('[data-keep-editor-focus="true"]')) {
+          return;
+        }
+      }
       if (focusedLineRef.current === idx) {
         focusedLineRef.current = null;
         setFocusedLineIndex(null);
       }
-      blurTimerRef.current = null;
-    }, 60);
+    }, 120);
   }, []);
 
   const updateLine = useCallback(
@@ -1364,6 +1475,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
       {!isReadOnly && showToolbar && (
         <div
           data-no-swipe="true"
+          data-keep-editor-focus="true"
           className="border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA]/95 dark:bg-[#1D1F23]/95 shrink-0 select-none animate-in fade-in duration-100 relative"
         >
           <div className="flex items-center px-2 py-1 min-w-0">
@@ -1601,6 +1713,29 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
           onClick={handleCanvasEmptyClick}
           className="max-w-3xl mx-auto space-y-1 min-h-[calc(100%-1rem)] pb-24 select-text"
         >
+          {/* Bidirectional Linked Projects Bar */}
+          {linkedProjects && linkedProjects.length > 0 && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="mb-3 pb-2.5 border-b border-[#E5E3DC]/70 dark:border-[#2F3136]/70 flex flex-wrap items-center gap-1.5 select-none"
+            >
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 mr-1">
+                <Briefcase className="w-3.5 h-3.5 text-[var(--ochre-accent)]" />
+                <span>Verknüpfte Projekte:</span>
+              </span>
+              {linkedProjects.map((proj) => (
+                <button
+                  key={proj.id}
+                  type="button"
+                  onClick={() => onNavigateToProject?.(proj.id)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-[11px] font-semibold text-[var(--ochre-accent)] transition-colors cursor-pointer"
+                >
+                  <span>{proj.title}</span>
+                  <ExternalLink className="w-3 h-3 opacity-70" />
+                </button>
+              ))}
+            </div>
+          )}
           {draftLines.map((rawLine, idx) => (
             <MarkdownLineRow
               key={idx}

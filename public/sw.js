@@ -1,5 +1,5 @@
 // Ochre Suite PWA Service Worker
-const CACHE_NAME = 'ochre-suite-v3';
+const CACHE_NAME = 'ochre-suite-v4';
 const PRECACHE_ASSETS = [
   '/manifest.json',
   '/favicon.svg',
