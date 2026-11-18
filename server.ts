@@ -1175,6 +1175,45 @@ async function createServer() {
     }
   });
 
+  // Vault SSE Live Sync Clients
+  const vaultSseClients = new Set<{ res: express.Response; username: string }>();
+
+  function broadcastVaultEvent(payload: {
+    type: 'note_saved' | 'note_deleted' | 'note_moved' | 'tasks_toggled' | 'vault_changed';
+    username: string;
+    profile?: string;
+    path?: string;
+    mtime?: number;
+  }) {
+    const msg = `data: ${JSON.stringify(payload)}\n\n`;
+    for (const client of vaultSseClients) {
+      try {
+        client.res.write(msg);
+      } catch {}
+    }
+  }
+
+  app.get('/api/vault/stream', (req, res) => {
+    const username = String(req.query.username || '');
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    const entry = { res, username };
+    vaultSseClients.add(entry);
+    const keepalive = setInterval(() => {
+      try {
+        res.write(': ping\n\n');
+      } catch {}
+    }, 25000);
+
+    req.on('close', () => {
+      clearInterval(keepalive);
+      vaultSseClients.delete(entry);
+    });
+  });
+
   // Save / Update Note
   app.post('/api/vault/notes', async (req, res) => {
     const { username, profile = 'profile1', path: notePath, content, isShared, sharedFrom } = req.body;
@@ -1196,6 +1235,14 @@ async function createServer() {
       await fsp.writeFile(fullPath, content, 'utf-8');
       const stat = await fsp.stat(fullPath);
       log('info', `Notiz gespeichert: '${targetUser}/${targetProfile}/${notePath}' (${stat.size} Bytes)`, 'VAULT');
+
+      broadcastVaultEvent({
+        type: 'note_saved',
+        username: targetUser,
+        profile: targetProfile,
+        path: notePath,
+        mtime: stat.mtimeMs,
+      });
 
       res.json({ success: true, mtime: stat.mtimeMs, size: stat.size });
     } catch (err: any) {
@@ -1226,6 +1273,14 @@ async function createServer() {
         if (shares.length !== updatedShares.length) {
           await saveShares(updatedShares);
         }
+
+        broadcastVaultEvent({
+          type: 'note_deleted',
+          username,
+          profile,
+          path: notePath,
+          mtime: Date.now(),
+        });
 
         return res.json({ success: true });
       }
@@ -1303,6 +1358,14 @@ async function createServer() {
       if (updated) {
         await saveShares(newShares);
       }
+
+      broadcastVaultEvent({
+        type: 'note_moved',
+        username,
+        profile,
+        path: newPath,
+        mtime: Date.now(),
+      });
 
       res.json({ success: true, newPath });
     } catch (err: any) {
@@ -1758,6 +1821,14 @@ async function createServer() {
       lines[lineIndex] = newLine;
       await fsp.writeFile(fullPath, lines.join('\n'), 'utf-8');
       log('info', `Aufgabe in '${targetUser}/${targetProfile}/${notePath}' Zeile ${lineIndex + 1} auf ${completed ? 'ERLEDIGT' : 'OFFEN'} gesetzt`, 'TASKS');
+
+      broadcastVaultEvent({
+        type: 'tasks_toggled',
+        username: targetUser,
+        profile: targetProfile,
+        path: notePath,
+        mtime: Date.now(),
+      });
 
       res.json({ success: true, updatedLine: newLine });
     } catch (err: any) {
@@ -2762,13 +2833,39 @@ async function createServer() {
     await fsp.writeFile(file, JSON.stringify(libs, null, 2), 'utf-8');
   }
 
+  async function getUserLibraryPrefs(): Promise<Record<string, string>> {
+    const file = getConfigFile('meal_library_prefs.json');
+    if (fs.existsSync(file)) {
+      try {
+        const parsed = JSON.parse(await fsp.readFile(file, 'utf-8'));
+        if (parsed && typeof parsed === 'object') return parsed;
+      } catch {}
+    }
+    return {};
+  }
+
+  async function setUserActiveLibraryId(username: string, libraryId: string | null) {
+    const prefs = await getUserLibraryPrefs();
+    if (libraryId) prefs[username] = libraryId;
+    else delete prefs[username];
+    const file = getConfigFile('meal_library_prefs.json');
+    await fsp.writeFile(file, JSON.stringify(prefs, null, 2), 'utf-8');
+  }
+
   async function resolveUserLibraryContext(username: string): Promise<{
     library: MealPlanLibraryRecord | null;
+    userLibraries: MealPlanLibraryRecord[];
     invitations: Array<{ libraryId: string; name: string; ownerUsername: string; ownerDisplayName: string; membersCount: number; createdAt: number }>;
     allLibraries: MealPlanLibraryRecord[];
   }> {
     const libs = await getMealLibraries();
-    const activeLib = libs.find((l) => l.members.includes(username)) || null;
+    const userLibraries = libs.filter((l) => l.members.includes(username));
+    const prefs = await getUserLibraryPrefs();
+    const preferredId = prefs[username];
+    const activeLib =
+      (preferredId ? userLibraries.find((l) => l.id === preferredId) : null) ||
+      userLibraries[0] ||
+      null;
     const invitations = libs
       .filter((l) => l.visibility === 'shared' && l.invitedUsers.includes(username) && !l.members.includes(username))
       .map((l) => ({
@@ -2779,7 +2876,7 @@ async function createServer() {
         membersCount: l.members.length,
         createdAt: l.createdAt,
       }));
-    return { library: activeLib, invitations, allLibraries: libs };
+    return { library: activeLib, userLibraries, invitations, allLibraries: libs };
   }
 
   async function resolveCookbookDirsForKey(keyOrUsername: string): Promise<{ cookbook: string; cookbookRecipes: string; cookbookMedia: string; routeKey: string }> {
@@ -2788,6 +2885,14 @@ async function createServer() {
     const byId = libs.find((l) => l.id === clean);
     if (byId) {
       return getCookbookDirsFromStorageKey(byId.storageKey);
+    }
+    const prefs = await getUserLibraryPrefs();
+    const prefId = prefs[clean];
+    if (prefId) {
+      const prefLib = libs.find((l) => l.id === prefId && l.members.includes(clean));
+      if (prefLib) {
+        return getCookbookDirsFromStorageKey(prefLib.storageKey);
+      }
     }
     const byMember = libs.find((l) => l.members.includes(clean));
     if (byMember) {
@@ -3118,13 +3223,25 @@ async function createServer() {
   app.get('/api/cookbook', async (req, res) => {
     const username = (req.query.username as string) || 'michael';
     try {
-      const { library, invitations, allLibraries } = await resolveUserLibraryContext(username);
+      const { library, userLibraries, invitations, allLibraries } = await resolveUserLibraryContext(username);
       const users = await getUsers();
+
+      const serializeLibMeta = (l: MealPlanLibraryRecord) => ({
+        id: l.id,
+        name: l.name,
+        ownerUsername: l.ownerUsername,
+        ownerDisplayName: l.ownerDisplayName,
+        visibility: l.visibility,
+        invitedUsers: l.invitedUsers,
+        members: l.members,
+        createdAt: l.createdAt,
+      });
 
       if (!library) {
         return res.json({
           hasLibrary: false,
           library: null,
+          libraries: userLibraries.map(serializeLibMeta),
           invitations,
           ...buildEmptyCookbookPayload(username),
           sharedCatalogs: [],
@@ -3175,16 +3292,8 @@ async function createServer() {
 
       res.json({
         hasLibrary: true,
-        library: {
-          id: library.id,
-          name: library.name,
-          ownerUsername: library.ownerUsername,
-          ownerDisplayName: library.ownerDisplayName,
-          visibility: library.visibility,
-          invitedUsers: library.invitedUsers,
-          members: library.members,
-          createdAt: library.createdAt,
-        },
+        library: serializeLibMeta(library),
+        libraries: userLibraries.map(serializeLibMeta),
         invitations,
         ...ownData,
         sharedCatalogs,
@@ -3204,6 +3313,7 @@ async function createServer() {
       name = 'Mein Essensplan',
       visibility = 'private',
       invitedUsers = [],
+      createNew = false,
     } = req.body;
 
     try {
@@ -3216,7 +3326,7 @@ async function createServer() {
         ? Array.from(new Set(invitedUsers.map((u: any) => String(u).trim()).filter((u) => u && u !== username)))
         : [];
 
-      if (libraryId) {
+      if (libraryId && !createNew) {
         const idx = libs.findIndex((l) => l.id === libraryId);
         if (idx === -1) {
           return res.status(404).json({ error: 'Essensplan-Library nicht gefunden' });
@@ -3239,14 +3349,15 @@ async function createServer() {
         return res.json({ success: true, library: libs[idx] });
       }
 
-      // Check if user is already member of a library — update instead or forbid duplicate
-      const alreadyMember = libs.find((l) => l.members.includes(username));
-      if (alreadyMember) {
-        alreadyMember.name = cleanName;
-        alreadyMember.visibility = cleanVisibility;
-        alreadyMember.invitedUsers = cleanInvited.filter((u) => !alreadyMember.members.includes(u));
-        await saveMealLibraries(libs);
-        return res.json({ success: true, library: alreadyMember });
+      if (!createNew) {
+        const alreadyMember = libs.find((l) => l.members.includes(username));
+        if (alreadyMember && !libraryId) {
+          alreadyMember.name = cleanName;
+          alreadyMember.visibility = cleanVisibility;
+          alreadyMember.invitedUsers = cleanInvited.filter((u) => !alreadyMember.members.includes(u));
+          await saveMealLibraries(libs);
+          return res.json({ success: true, library: alreadyMember });
+        }
       }
 
       const newId = `lib_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -3286,10 +3397,89 @@ async function createServer() {
 
       libs.push(newLib);
       await saveMealLibraries(libs);
+      await setUserActiveLibraryId(username, newLib.id);
       log('info', `Neue Essensplan-Library '${cleanName}' (${cleanVisibility}) erstellt für '${username}'`, 'COOKBOOK');
       res.json({ success: true, library: newLib });
     } catch (err: any) {
       log('error', `Fehler bei Essensplan-Library: ${err.message}`, 'COOKBOOK');
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/cookbook/library/select', async (req, res) => {
+    const { username, libraryId } = req.body;
+    if (!username || !libraryId) {
+      return res.status(400).json({ error: 'username oder libraryId fehlt' });
+    }
+    try {
+      const libs = await getMealLibraries();
+      const target = libs.find((l) => l.id === libraryId && l.members.includes(username));
+      if (!target) {
+        return res.status(404).json({ error: 'Bibliothek nicht gefunden oder kein Zugriff' });
+      }
+      await setUserActiveLibraryId(username, target.id);
+      res.json({ success: true, library: target });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/cookbook/library', async (req, res) => {
+    const username = String(req.query.username || '');
+    const libraryId = String(req.query.libraryId || '');
+    if (!username || !libraryId) {
+      return res.status(400).json({ error: 'username oder libraryId fehlt' });
+    }
+    try {
+      const libs = await getMealLibraries();
+      const idx = libs.findIndex((l) => l.id === libraryId);
+      if (idx === -1) return res.status(404).json({ error: 'Bibliothek nicht gefunden' });
+      const target = libs[idx];
+      if (target.ownerUsername !== username) {
+        return res.status(403).json({ error: 'Nur der Eigentümer darf diese Bibliothek löschen' });
+      }
+
+      if (target.storageKey.startsWith('lib:')) {
+        const cleanId = path.basename(target.storageKey.slice(4));
+        const libDir = path.join(VAULT_PATH, 'Essensplan', cleanId);
+        if (fs.existsSync(libDir)) {
+          await fsp.rm(libDir, { recursive: true, force: true });
+        }
+      } else {
+        const dirs = getCookbookDirsFromStorageKey(target.storageKey);
+        if (fs.existsSync(dirs.cookbookRecipes)) {
+          const entries = await fsp.readdir(dirs.cookbookRecipes);
+          for (const f of entries) {
+            if (f.endsWith('.md')) await fsp.unlink(path.join(dirs.cookbookRecipes, f)).catch(() => {});
+          }
+        }
+        for (const f of ['recipes.json', 'cycle.json', 'overrides.json', 'categories.json', 'settings.json', 'ingredient_meta.json', 'dismissed_duplicates.json']) {
+          await fsp.unlink(path.join(dirs.cookbook, f)).catch(() => {});
+        }
+      }
+
+      const remaining = libs.filter((l) => l.id !== libraryId);
+      await saveMealLibraries(remaining);
+
+      // Update active library preference for any user pointing to the deleted library
+      const prefs = await getUserLibraryPrefs();
+      let prefsChanged = false;
+      for (const [u, prefLibId] of Object.entries(prefs)) {
+        if (prefLibId === libraryId) {
+          const fallback = remaining.find((l) => l.members.includes(u));
+          if (fallback) prefs[u] = fallback.id;
+          else delete prefs[u];
+          prefsChanged = true;
+        }
+      }
+      if (prefsChanged) {
+        await fsp.writeFile(getConfigFile('meal_library_prefs.json'), JSON.stringify(prefs, null, 2), 'utf-8');
+      }
+
+      log('info', `Essensplan-Bibliothek '${target.name}' (${libraryId}) gelöscht von '${username}'`, 'COOKBOOK');
+      res.json({ success: true });
+    } catch (err: any) {
+      log('error', `Fehler beim Löschen der Bibliothek: ${err.message}`, 'COOKBOOK');
       res.status(500).json({ error: err.message });
     }
   });
@@ -3309,18 +3499,12 @@ async function createServer() {
         return res.status(403).json({ error: 'Keine Einladung für diese Library vorhanden' });
       }
 
-      // Remove user from any other library membership first so each user has a clean active library
-      for (const lib of libs) {
-        if (lib.id !== libraryId && lib.members.includes(username) && lib.ownerUsername !== username) {
-          lib.members = lib.members.filter((m) => m !== username);
-        }
-      }
-
       if (!target.members.includes(username)) {
         target.members.push(username);
       }
       target.invitedUsers = target.invitedUsers.filter((u) => u !== username);
       await saveMealLibraries(libs);
+      await setUserActiveLibraryId(username, target.id);
       log('info', `'${username}' ist Essensplan-Library '${target.name}' beigetreten`, 'COOKBOOK');
       res.json({ success: true, library: target });
     } catch (err: any) {
@@ -3363,6 +3547,11 @@ async function createServer() {
       }
       target.members = target.members.filter((m) => m !== username);
       await saveMealLibraries(libs);
+      const prefs = await getUserLibraryPrefs();
+      if (prefs[username] === libraryId) {
+        const nextLib = libs.find((l) => l.members.includes(username));
+        await setUserActiveLibraryId(username, nextLib?.id || null);
+      }
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -4037,14 +4226,30 @@ async function createServer() {
         String(project.id || `proj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`)
           .replace(/[^a-zA-Z0-9_-]/g, '_');
       const now = Date.now();
+      const normTasks = Array.isArray(project.tasks)
+        ? project.tasks.map((t: any) => {
+            const assignees = Array.isArray(t.assignees)
+              ? t.assignees.map((a: any) => String(a || '').trim()).filter(Boolean)
+              : t.assignee
+                ? [String(t.assignee).trim()].filter(Boolean)
+                : [];
+            return {
+              ...t,
+              assignees,
+              assignee: assignees[0] || t.assignee || '',
+            };
+          })
+        : [];
       const saved = {
         ...project,
         id: safeId,
+        profile: project.profile === 'profile2' ? 'profile2' : 'profile1',
         visibility: project.visibility === 'shared' ? 'shared' : 'private',
         sharedWithUsers: Array.isArray(project.sharedWithUsers) ? project.sharedWithUsers : [],
         linkedNotePaths: Array.isArray(project.linkedNotePaths) ? project.linkedNotePaths : [],
         linkedWikiSlugs: Array.isArray(project.linkedWikiSlugs) ? project.linkedWikiSlugs : [],
-        tasks: Array.isArray(project.tasks) ? project.tasks : [],
+        columns: Array.isArray(project.columns) && project.columns.length > 0 ? project.columns : undefined,
+        tasks: normTasks,
         createdAt: project.createdAt || now,
         updatedAt: now,
       };
@@ -4074,7 +4279,7 @@ async function createServer() {
   });
 
   // =========================================================================
-  // SMARTHOME VIEWER BACKEND (MQTT Client Pool + HTTP/DB Poller + SSE Stream)
+  // SMARTHOME VIEWER BACKEND (MQTT Client Pool + Influx v1/v2 + HTTP Poller + SSE)
   // =========================================================================
   interface ServerSmarthomeState {
     brokers: any[];
@@ -4116,9 +4321,22 @@ async function createServer() {
 
   const mqttClientPool = new Map<string, MqttClient>();
   const mqttBrokerStatus = new Map<string, 'connected' | 'connecting' | 'disconnected' | 'error'>();
+  const mqttDiscoveredTopics = new Map<
+    string,
+    { brokerId: string; topic: string; lastPayload: string; numericValue?: number; timestamp: number }
+  >();
   const smarthomeLiveValues = new Map<
     string,
-    { key: string; value: string; numericValue?: number; timestamp: number; history: number[] }
+    {
+      key: string;
+      value: string;
+      rawValue?: string;
+      numericValue?: number;
+      referenceValue?: number;
+      timestamp: number;
+      history: number[];
+      series?: Array<{ t: number; v: number }>;
+    }
   >();
   const smarthomeSseClients = new Set<express.Response>();
 
@@ -4131,25 +4349,230 @@ async function createServer() {
     }
   }
 
-  function recordSmarthomeValue(key: string, rawVal: string) {
-    const cleaned = rawVal.trim();
+  // Safe recursive-descent arithmetic evaluator (no eval / no Function)
+  function evaluateSafeFormula(formula: string, vars: Record<string, number>): number | null {
+    const expr = (formula || '').trim();
+    if (!expr) return null;
+
+    type Tok =
+      | { kind: 'num'; val: number }
+      | { kind: 'id'; name: string }
+      | { kind: 'op'; ch: string }
+      | { kind: 'paren'; ch: '(' | ')' };
+
+    const tokens: Tok[] = [];
+    let i = 0;
+    while (i < expr.length) {
+      const ch = expr[i];
+      if (/\s/.test(ch)) {
+        i++;
+        continue;
+      }
+      if (/[0-9.]/.test(ch)) {
+        let numStr = '';
+        while (i < expr.length && /[0-9.,]/.test(expr[i])) {
+          numStr += expr[i] === ',' ? '.' : expr[i];
+          i++;
+        }
+        const n = Number(numStr);
+        if (!Number.isFinite(n)) return null;
+        tokens.push({ kind: 'num', val: n });
+        continue;
+      }
+      if (/[a-zA-Z_]/.test(ch)) {
+        let id = '';
+        while (i < expr.length && /[a-zA-Z0-9_]/.test(expr[i])) {
+          id += expr[i];
+          i++;
+        }
+        tokens.push({ kind: 'id', name: id.toLowerCase() });
+        continue;
+      }
+      if (ch === '+' || ch === '-' || ch === '*' || ch === '/') {
+        tokens.push({ kind: 'op', ch });
+        i++;
+        continue;
+      }
+      if (ch === '(' || ch === ')') {
+        tokens.push({ kind: 'paren', ch });
+        i++;
+        continue;
+      }
+      return null;
+    }
+
+    let pos = 0;
+    function parseExpr(): number | null {
+      let left = parseTerm();
+      if (left === null) return null;
+      while (pos < tokens.length) {
+        const tok = tokens[pos];
+        if (tok.kind === 'op' && (tok.ch === '+' || tok.ch === '-')) {
+          pos++;
+          const right = parseTerm();
+          if (right === null) return null;
+          left = tok.ch === '+' ? left + right : left - right;
+        } else {
+          break;
+        }
+      }
+      return left;
+    }
+    function parseTerm(): number | null {
+      let left = parseFactor();
+      if (left === null) return null;
+      while (pos < tokens.length) {
+        const tok = tokens[pos];
+        if (tok.kind === 'op' && (tok.ch === '*' || tok.ch === '/')) {
+          pos++;
+          const right = parseFactor();
+          if (right === null) return null;
+          if (tok.ch === '/') {
+            if (right === 0) return null;
+            left = left / right;
+          } else {
+            left = left * right;
+          }
+        } else {
+          break;
+        }
+      }
+      return left;
+    }
+    function parseFactor(): number | null {
+      if (pos >= tokens.length) return null;
+      const tok = tokens[pos];
+      if (tok.kind === 'op' && (tok.ch === '+' || tok.ch === '-')) {
+        pos++;
+        const inner = parseFactor();
+        if (inner === null) return null;
+        return tok.ch === '-' ? -inner : inner;
+      }
+      if (tok.kind === 'num') {
+        pos++;
+        return tok.val;
+      }
+      if (tok.kind === 'id') {
+        pos++;
+        const val = vars[tok.name];
+        return typeof val === 'number' && Number.isFinite(val) ? val : null;
+      }
+      if (tok.kind === 'paren' && tok.ch === '(') {
+        pos++;
+        const inner = parseExpr();
+        if (inner === null) return null;
+        const close = tokens[pos];
+        if (!close || close.kind !== 'paren' || close.ch !== ')') return null;
+        pos++;
+        return inner;
+      }
+      return null;
+    }
+
+    const result = parseExpr();
+    if (result === null || pos !== tokens.length || !Number.isFinite(result)) return null;
+    return result;
+  }
+
+  function applyTileCalculation(
+    tile: any,
+    rawLatestStr: string,
+    latestNum: number | undefined,
+    refNum: number | undefined
+  ): { displayValue: string; numericValue?: number } {
+    const calc = tile?.calculation;
+    const decimals = typeof calc?.decimals === 'number' && calc.decimals >= 0 ? Math.min(6, calc.decimals) : 2;
+    if (calc?.formula && calc.formula.trim() && typeof latestNum === 'number' && Number.isFinite(latestNum)) {
+      const refVal = typeof refNum === 'number' && Number.isFinite(refNum) ? refNum : 0;
+      const diffVal = latestNum - refVal;
+      const computed = evaluateSafeFormula(calc.formula, {
+        latest: latestNum,
+        value: latestNum,
+        x: latestNum,
+        ref: refVal,
+        diff: diffVal,
+        delta: diffVal,
+      });
+      if (computed !== null && Number.isFinite(computed)) {
+        const rounded = Number(computed.toFixed(decimals));
+        return { displayValue: rounded.toFixed(decimals).replace(/\.?0+$/, (m) => (m.startsWith('.') ? '' : m)), numericValue: rounded };
+      }
+    }
+    if (typeof latestNum === 'number' && Number.isFinite(latestNum) && calc?.referenceTimestamp && typeof refNum === 'number' && Number.isFinite(refNum)) {
+      const diff = Number((latestNum - refNum).toFixed(decimals));
+      return { displayValue: String(diff), numericValue: diff };
+    }
+    return { displayValue: rawLatestStr, numericValue: latestNum };
+  }
+
+  function parseNumericString(raw: string): number | undefined {
+    const cleaned = raw.trim();
+    if (!cleaned) return undefined;
     const numeric = Number(cleaned.replace(',', '.'));
-    const isNum = cleaned !== '' && !Number.isNaN(numeric) && Number.isFinite(numeric);
+    return !Number.isNaN(numeric) && Number.isFinite(numeric) ? numeric : undefined;
+  }
+
+  function recordSmarthomeValue(
+    key: string,
+    rawVal: string,
+    extra?: {
+      rawValue?: string;
+      numericOverride?: number;
+      referenceValue?: number;
+      series?: Array<{ t: number; v: number }>;
+    }
+  ) {
+    const cleaned = rawVal.trim();
+    const parsedNum = extra?.numericOverride !== undefined ? extra.numericOverride : parseNumericString(cleaned);
+    const isNum = typeof parsedNum === 'number' && Number.isFinite(parsedNum);
     const prev = smarthomeLiveValues.get(key);
-    const history = prev?.history ? [...prev.history] : [];
-    if (isNum) {
-      history.push(numeric);
-      if (history.length > 24) history.shift();
+    let history = prev?.history ? [...prev.history] : [];
+    if (extra?.series && extra.series.length > 0) {
+      history = extra.series.slice(-48).map((p) => p.v);
+    } else if (isNum) {
+      history.push(parsedNum!);
+      if (history.length > 48) history.shift();
     }
     const entry = {
       key,
       value: cleaned,
-      numericValue: isNum ? numeric : prev?.numericValue,
+      rawValue: extra?.rawValue ?? prev?.rawValue ?? cleaned,
+      numericValue: isNum ? parsedNum : prev?.numericValue,
+      referenceValue: extra?.referenceValue !== undefined ? extra.referenceValue : prev?.referenceValue,
       timestamp: Date.now(),
       history,
+      series: extra?.series ?? prev?.series,
     };
     smarthomeLiveValues.set(key, entry);
     broadcastSmarthomeEvent({ type: 'live_value', entry });
+  }
+
+  function recordMqttDiscoveredTopic(brokerId: string, topic: string, payloadText: string) {
+    const num = parseNumericString(payloadText);
+    const key = `${brokerId}::${topic}`;
+    mqttDiscoveredTopics.set(key, {
+      brokerId,
+      topic,
+      lastPayload: payloadText.length > 200 ? payloadText.slice(0, 200) + '…' : payloadText,
+      numericValue: num,
+      timestamp: Date.now(),
+    });
+    // Cap per-broker cache cleanly at 500 topics
+    let countForBroker = 0;
+    let oldestKey: string | null = null;
+    let oldestTs = Infinity;
+    for (const [k, v] of mqttDiscoveredTopics.entries()) {
+      if (v.brokerId === brokerId) {
+        countForBroker++;
+        if (v.timestamp < oldestTs) {
+          oldestTs = v.timestamp;
+          oldestKey = k;
+        }
+      }
+    }
+    if (countForBroker > 500 && oldestKey) {
+      mqttDiscoveredTopics.delete(oldestKey);
+    }
   }
 
   function extractJsonPathValue(obj: any, jsonPath?: string): string {
@@ -4165,6 +4588,410 @@ async function createServer() {
     }
     if (cur === null || cur === undefined) return '';
     return typeof cur === 'object' ? JSON.stringify(cur) : String(cur);
+  }
+
+  function downsampleSeries(points: Array<{ t: number; v: number }>, maxPoints = 120): Array<{ t: number; v: number }> {
+    if (points.length <= maxPoints) return points;
+    const step = (points.length - 1) / (maxPoints - 1);
+    const out: Array<{ t: number; v: number }> = [];
+    for (let i = 0; i < maxPoints; i++) {
+      const idx = Math.min(points.length - 1, Math.round(i * step));
+      out.push(points[idx]);
+    }
+    return out;
+  }
+
+  function resolveTimeRangeMs(timeRange?: string): number {
+    switch (timeRange) {
+      case '1h':
+        return 3600_000;
+      case '6h':
+        return 6 * 3600_000;
+      case '7d':
+        return 7 * 86400_000;
+      case '30d':
+        return 30 * 86400_000;
+      case 'ytd': {
+        const jan1 = new Date(new Date().getFullYear(), 0, 1, 0, 0, 0, 0).getTime();
+        return Math.max(3600_000, Date.now() - jan1);
+      }
+      case '24h':
+      default:
+        return 24 * 3600_000;
+    }
+  }
+
+  function resolveFluxDuration(timeRange?: string): string {
+    switch (timeRange) {
+      case '1h':
+        return '-1h';
+      case '6h':
+        return '-6h';
+      case '7d':
+        return '-7d';
+      case '30d':
+        return '-30d';
+      case 'ytd':
+        return `${new Date().getFullYear()}-01-01T00:00:00Z`;
+      case '24h':
+      default:
+        return '-24h';
+    }
+  }
+
+  function resolveInfluxWindowInterval(timeRange?: string): string {
+    switch (timeRange) {
+      case '1h':
+        return '1m';
+      case '6h':
+        return '5m';
+      case '7d':
+        return '1h';
+      case '30d':
+        return '6h';
+      case 'ytd':
+        return '1d';
+      case '24h':
+      default:
+        return '15m';
+    }
+  }
+
+  function parseCsvRow(line: string): string[] {
+    const out: string[] = [];
+    let cur = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (ch === ',' && !inQuotes) {
+        out.push(cur);
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    out.push(cur);
+    return out;
+  }
+
+  function parseInfluxV2CsvSeries(csvText: string): Array<{ t: number; v: number }> {
+    const lines = csvText.split(/\r?\n/);
+    let headerCols: string[] = [];
+    let timeIdx = -1;
+    let valIdx = -1;
+    const points: Array<{ t: number; v: number }> = [];
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) {
+        headerCols = [];
+        timeIdx = -1;
+        valIdx = -1;
+        continue;
+      }
+      if (line.startsWith('#')) continue;
+      const cols = parseCsvRow(line);
+      if (cols.includes('_time') && cols.includes('_value')) {
+        headerCols = cols;
+        timeIdx = cols.indexOf('_time');
+        valIdx = cols.indexOf('_value');
+        continue;
+      }
+      if (headerCols.length === 0 || timeIdx < 0 || valIdx < 0) continue;
+      if (cols[timeIdx] === '_time') continue;
+      const ts = Date.parse(cols[timeIdx]);
+      const val = Number(cols[valIdx]);
+      if (Number.isFinite(ts) && Number.isFinite(val)) {
+        points.push({ t: ts, v: val });
+      }
+    }
+    points.sort((a, b) => a.t - b.t);
+    return points;
+  }
+
+  async function queryInfluxV1Tile(src: any, tile: any): Promise<{
+    series: Array<{ t: number; v: number }>;
+    latestNum?: number;
+    latestStr: string;
+    refNum?: number;
+  } | null> {
+    const baseUrl = String(src.url || '').replace(/\/+$/, '');
+    const db = String(src.database || '').trim();
+    if (!baseUrl || !db) return null;
+
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (src.authHeader) {
+      headers['Authorization'] = src.authHeader;
+    } else if (src.username || src.password) {
+      headers['Authorization'] = 'Basic ' + Buffer.from(`${src.username || ''}:${src.password || ''}`).toString('base64');
+    }
+
+    const runInfluxQl = async (q: string) => {
+      const params = new URLSearchParams({ db, q, epoch: 'ms' });
+      if (src.retentionPolicy) params.set('rp', String(src.retentionPolicy));
+      if (src.username && !src.authHeader) params.set('u', String(src.username));
+      if (src.password && !src.authHeader) params.set('p', String(src.password));
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      try {
+        const resp = await fetch(`${baseUrl}/query?${params.toString()}`, { headers, signal: controller.signal });
+        clearTimeout(timer);
+        if (!resp.ok) return null;
+        return await resp.json();
+      } catch {
+        clearTimeout(timer);
+        return null;
+      }
+    };
+
+    const parseSeriesResult = (json: any, preferredField?: string): Array<{ t: number; v: number }> => {
+      const s = json?.results?.[0]?.series?.[0];
+      if (!s || !Array.isArray(s.columns) || !Array.isArray(s.values)) return [];
+      const cols: string[] = s.columns;
+      const tIdx = cols.indexOf('time');
+      let vIdx = -1;
+      if (preferredField) {
+        vIdx = cols.findIndex((c) => c === preferredField || c === `mean_${preferredField}` || c === `last_${preferredField}`);
+      }
+      if (vIdx < 0) {
+        vIdx = cols.findIndex((c, idx) => idx !== tIdx && s.values.some((row: any[]) => typeof row[idx] === 'number'));
+      }
+      if (vIdx < 0) vIdx = tIdx === 0 ? 1 : 0;
+      const pts: Array<{ t: number; v: number }> = [];
+      for (const row of s.values) {
+        const ts = Number(row[tIdx >= 0 ? tIdx : 0]);
+        const val = Number(row[vIdx]);
+        if (Number.isFinite(ts) && Number.isFinite(val)) {
+          pts.push({ t: ts, v: val });
+        }
+      }
+      pts.sort((a, b) => a.t - b.t);
+      return pts;
+    };
+
+    const rawTopic = String(tile.topicOrPath || '').trim();
+    const preferredField = tile.jsonPath?.trim() || (rawTopic.includes('.') && !rawTopic.toUpperCase().startsWith('SELECT ') ? rawTopic.split('.').slice(1).join('.') : '');
+    const measurement = rawTopic.includes('.') && !rawTopic.toUpperCase().startsWith('SELECT ') ? rawTopic.split('.')[0] : rawTopic;
+
+    const rangeMs = resolveTimeRangeMs(tile.timeRange);
+    const startMs = Date.now() - rangeMs;
+    const windowStr = resolveInfluxWindowInterval(tile.timeRange);
+
+    let seriesQuery = '';
+    if (rawTopic.toUpperCase().startsWith('SELECT ')) {
+      seriesQuery = rawTopic;
+    } else {
+      const fieldExpr = preferredField ? `"${preferredField}"` : '*';
+      const safeMeas = `"${measurement.replace(/"/g, '')}"`;
+      if (tile.displayMode === 'chart' || tile.displayMode === 'both') {
+        seriesQuery = `SELECT MEAN(${fieldExpr}) FROM ${safeMeas} WHERE time >= ${startMs}ms GROUP BY time(${windowStr}) fill(none)`;
+      } else {
+        seriesQuery = `SELECT ${fieldExpr} FROM ${safeMeas} WHERE time >= ${startMs}ms ORDER BY time DESC LIMIT 60`;
+      }
+    }
+
+    const mainJson = await runInfluxQl(seriesQuery);
+    let points = parseSeriesResult(mainJson, preferredField || undefined);
+
+    // Fallback to raw LIMIT if GROUP BY yielded nothing (e.g. non-numeric or sparse)
+    if (points.length === 0 && !rawTopic.toUpperCase().startsWith('SELECT ')) {
+      const safeMeas = `"${measurement.replace(/"/g, '')}"`;
+      const fieldExpr = preferredField ? `"${preferredField}"` : '*';
+      const fallbackJson = await runInfluxQl(`SELECT ${fieldExpr} FROM ${safeMeas} ORDER BY time DESC LIMIT 60`);
+      points = parseSeriesResult(fallbackJson, preferredField || undefined);
+    }
+
+    let latestNum: number | undefined = points.length > 0 ? points[points.length - 1].v : undefined;
+    // Fetch exact newest point for precision
+    if (!rawTopic.toUpperCase().startsWith('SELECT ')) {
+      const safeMeas = `"${measurement.replace(/"/g, '')}"`;
+      const fieldExpr = preferredField ? `"${preferredField}"` : '*';
+      const latestJson = await runInfluxQl(`SELECT ${fieldExpr} FROM ${safeMeas} ORDER BY time DESC LIMIT 1`);
+      const latestPts = parseSeriesResult(latestJson, preferredField || undefined);
+      if (latestPts.length > 0) {
+        latestNum = latestPts[latestPts.length - 1].v;
+      }
+    }
+
+    let refNum: number | undefined;
+    const refTsStr = tile.calculation?.referenceTimestamp?.trim();
+    if (refTsStr && !rawTopic.toUpperCase().startsWith('SELECT ')) {
+      const parsedRefMs = Date.parse(refTsStr);
+      if (Number.isFinite(parsedRefMs)) {
+        const safeMeas = `"${measurement.replace(/"/g, '')}"`;
+        const fieldExpr = preferredField ? `"${preferredField}"` : '*';
+        const refJson = await runInfluxQl(
+          `SELECT ${fieldExpr} FROM ${safeMeas} WHERE time >= ${parsedRefMs}ms ORDER BY time ASC LIMIT 1`
+        );
+        let refPts = parseSeriesResult(refJson, preferredField || undefined);
+        if (refPts.length === 0) {
+          const prevRefJson = await runInfluxQl(
+            `SELECT ${fieldExpr} FROM ${safeMeas} WHERE time <= ${parsedRefMs}ms ORDER BY time DESC LIMIT 1`
+          );
+          refPts = parseSeriesResult(prevRefJson, preferredField || undefined);
+        }
+        if (refPts.length > 0) refNum = refPts[0].v;
+      }
+    }
+
+    const downsampled = downsampleSeries(points, 120);
+    return {
+      series: downsampled,
+      latestNum,
+      latestStr: latestNum !== undefined ? String(latestNum) : '',
+      refNum,
+    };
+  }
+
+  async function queryInfluxV2Tile(src: any, tile: any): Promise<{
+    series: Array<{ t: number; v: number }>;
+    latestNum?: number;
+    latestStr: string;
+    refNum?: number;
+  } | null> {
+    const baseUrl = String(src.url || '').replace(/\/+$/, '');
+    const org = String(src.org || '').trim();
+    const bucket = String(src.bucket || src.database || '').trim();
+    if (!baseUrl) return null;
+
+    const rawAuth = String(src.authHeader || src.password || '').trim();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/vnd.flux',
+      Accept: 'application/csv',
+    };
+    if (rawAuth) {
+      headers['Authorization'] = rawAuth.toLowerCase().startsWith('token ') || rawAuth.toLowerCase().startsWith('bearer ')
+        ? rawAuth
+        : `Token ${rawAuth}`;
+    }
+
+    const runFlux = async (flux: string): Promise<Array<{ t: number; v: number }>> => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      try {
+        const qs = org ? `?org=${encodeURIComponent(org)}` : '';
+        const resp = await fetch(`${baseUrl}/api/v2/query${qs}`, {
+          method: 'POST',
+          headers,
+          body: flux,
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        if (!resp.ok) return [];
+        const text = await resp.text();
+        return parseInfluxV2CsvSeries(text);
+      } catch {
+        clearTimeout(timer);
+        return [];
+      }
+    };
+
+    const rawTopic = String(tile.topicOrPath || '').trim();
+    let points: Array<{ t: number; v: number }> = [];
+    const preferredField = tile.jsonPath?.trim() || (rawTopic.includes('.') && !rawTopic.includes('from(') ? rawTopic.split('.').slice(1).join('.') : '');
+    const measurement = rawTopic.includes('.') && !rawTopic.includes('from(') ? rawTopic.split('.')[0] : rawTopic;
+
+    if (rawTopic.includes('from(')) {
+      points = await runFlux(rawTopic);
+    } else if (bucket) {
+      const startExpr = resolveFluxDuration(tile.timeRange);
+      const winEvery = resolveInfluxWindowInterval(tile.timeRange);
+      const fieldFilter = preferredField ? `\n  |> filter(fn: (r) => r._field == "${preferredField}")` : '';
+      const windowPipe =
+        tile.displayMode === 'chart' || tile.displayMode === 'both'
+          ? `\n  |> aggregateWindow(every: ${winEvery}, fn: mean, createEmpty: false)`
+          : `\n  |> tail(n: 60)`;
+      const flux = `from(bucket: "${bucket}")
+  |> range(start: ${startExpr})
+  |> filter(fn: (r) => r._measurement == "${measurement}")${fieldFilter}${windowPipe}`;
+      points = await runFlux(flux);
+    }
+
+    let latestNum: number | undefined = points.length > 0 ? points[points.length - 1].v : undefined;
+    if (!rawTopic.includes('from(') && bucket) {
+      const fieldFilter = preferredField ? `\n  |> filter(fn: (r) => r._field == "${preferredField}")` : '';
+      const latestPts = await runFlux(`from(bucket: "${bucket}")\n  |> range(start: -30d)\n  |> filter(fn: (r) => r._measurement == "${measurement}")${fieldFilter}\n  |> last()`);
+      if (latestPts.length > 0) latestNum = latestPts[latestPts.length - 1].v;
+    }
+
+    let refNum: number | undefined;
+    const refTsStr = tile.calculation?.referenceTimestamp?.trim();
+    if (refTsStr && !rawTopic.includes('from(') && bucket) {
+      const parsedRefMs = Date.parse(refTsStr);
+      if (Number.isFinite(parsedRefMs)) {
+        const refIso = new Date(parsedRefMs).toISOString();
+        const fieldFilter = preferredField ? `\n  |> filter(fn: (r) => r._field == "${preferredField}")` : '';
+        let refPts = await runFlux(
+          `from(bucket: "${bucket}")\n  |> range(start: ${refIso})\n  |> filter(fn: (r) => r._measurement == "${measurement}")${fieldFilter}\n  |> first()`
+        );
+        if (refPts.length === 0) {
+          refPts = await runFlux(
+            `from(bucket: "${bucket}")\n  |> range(start: -5y, stop: ${refIso})\n  |> filter(fn: (r) => r._measurement == "${measurement}")${fieldFilter}\n  |> last()`
+          );
+        }
+        if (refPts.length > 0) refNum = refPts[0].v;
+      }
+    }
+
+    return {
+      series: downsampleSeries(points, 120),
+      latestNum,
+      latestStr: latestNum !== undefined ? String(latestNum) : '',
+      refNum,
+    };
+  }
+
+  async function queryPrometheusTile(src: any, tile: any): Promise<{
+    series: Array<{ t: number; v: number }>;
+    latestNum?: number;
+    latestStr: string;
+  } | null> {
+    const baseUrl = String(src.url || '').replace(/\/+$/, '');
+    const expr = String(tile.topicOrPath || '').trim();
+    if (!baseUrl || !expr) return null;
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (src.authHeader) headers['Authorization'] = src.authHeader;
+
+    const endSec = Math.floor(Date.now() / 1000);
+    const spanSec = Math.floor(resolveTimeRangeMs(tile.timeRange) / 1000);
+    const startSec = endSec - spanSec;
+    const step = Math.max(15, Math.floor(spanSec / 100));
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4500);
+    try {
+      const resp = await fetch(
+        `${baseUrl}/api/v1/query_range?query=${encodeURIComponent(expr)}&start=${startSec}&end=${endSec}&step=${step}`,
+        { headers, signal: controller.signal }
+      );
+      clearTimeout(timer);
+      if (!resp.ok) return null;
+      const json = await resp.json();
+      const values = json?.data?.result?.[0]?.values;
+      if (!Array.isArray(values)) return null;
+      const pts: Array<{ t: number; v: number }> = [];
+      for (const pair of values) {
+        const ts = Number(pair[0]) * 1000;
+        const val = Number(pair[1]);
+        if (Number.isFinite(ts) && Number.isFinite(val)) pts.push({ t: ts, v: val });
+      }
+      const latestNum = pts.length > 0 ? pts[pts.length - 1].v : undefined;
+      return {
+        series: downsampleSeries(pts, 120),
+        latestNum,
+        latestStr: latestNum !== undefined ? String(latestNum) : '',
+      };
+    } catch {
+      clearTimeout(timer);
+      return null;
+    }
   }
 
   async function syncMqttConnections() {
@@ -4210,19 +5037,40 @@ async function createServer() {
           mqttBrokerStatus.set(broker.id, 'connected');
           broadcastSmarthomeEvent({ type: 'broker_status', brokerId: broker.id, status: 'connected' });
           log('info', `MQTT verbunden: ${broker.name} (${url})`, 'SMARTHOME');
-          const subs = cfg.tiles
-            .filter((t) => t.sourceType === 'mqtt' && t.sourceId === broker.id && t.topicOrPath)
-            .map((t) => t.topicOrPath);
-          if (subs.length > 0) {
-            client.subscribe(subs, { qos: 0 }, () => {});
-          } else {
-            client.subscribe('#', { qos: 0 }, () => {});
-          }
+          // Always subscribe wildcard '#' so live topic auto-discovery works seamlessly
+          client.subscribe('#', { qos: 0 }, () => {});
         });
 
-        client.on('message', (topic, payload) => {
+        client.on('message', async (topic, payload) => {
           const text = payload.toString('utf-8');
+          recordMqttDiscoveredTopic(broker.id, topic, text);
           recordSmarthomeValue(`${broker.id}::${topic}`, text);
+
+          // Update any MQTT tile on this broker/topic that uses jsonPath or formula calculations
+          try {
+            const latestCfg = await loadSmarthomeConfig();
+            const matching = latestCfg.tiles.filter(
+              (t) => t.sourceType === 'mqtt' && t.sourceId === broker.id && t.topicOrPath === topic
+            );
+            for (const tile of matching) {
+              let effectiveRaw = text;
+              if (tile.jsonPath && text.trim().startsWith('{')) {
+                try {
+                  const parsed = JSON.parse(text);
+                  const extracted = extractJsonPathValue(parsed, tile.jsonPath);
+                  if (extracted !== '') effectiveRaw = extracted;
+                } catch {}
+              }
+              const parsedNum = parseNumericString(effectiveRaw);
+              const { displayValue, numericValue } = applyTileCalculation(tile, effectiveRaw, parsedNum, undefined);
+              if (tile.jsonPath || tile.calculation?.formula) {
+                recordSmarthomeValue(`tile:${tile.id}`, displayValue, {
+                  rawValue: effectiveRaw,
+                  numericOverride: numericValue,
+                });
+              }
+            }
+          } catch {}
         });
 
         client.on('error', (err) => {
@@ -4252,7 +5100,48 @@ async function createServer() {
     const sources = onlySourceId ? cfg.dbSources.filter((s) => s.id === onlySourceId) : cfg.dbSources;
     for (const src of sources) {
       if (src.enabled === false) continue;
+      const matchingTiles = cfg.tiles.filter((tile) => tile.sourceType === 'db' && tile.sourceId === src.id);
+      if (matchingTiles.length === 0) continue;
+
       try {
+        if (src.kind === 'influx-v1' || src.kind === 'influx-v2' || src.kind === 'prometheus') {
+          for (const tile of matchingTiles) {
+            const resData =
+              src.kind === 'influx-v1'
+                ? await queryInfluxV1Tile(src, tile)
+                : src.kind === 'influx-v2'
+                  ? await queryInfluxV2Tile(src, tile)
+                  : await queryPrometheusTile(src, tile);
+            if (!resData) continue;
+            src.lastSyncAt = Date.now();
+            const refNum =
+              'refNum' in resData && typeof (resData as { refNum?: unknown }).refNum === 'number'
+                ? (resData as { refNum?: number }).refNum
+                : undefined;
+            const { displayValue, numericValue } = applyTileCalculation(
+              tile,
+              resData.latestStr,
+              resData.latestNum,
+              refNum
+            );
+            recordSmarthomeValue(`tile:${tile.id}`, displayValue || resData.latestStr, {
+              rawValue: resData.latestStr,
+              numericOverride: numericValue,
+              referenceValue: refNum,
+              series: resData.series,
+            });
+            if (resData.latestStr !== '') {
+              recordSmarthomeValue(`${src.id}::${tile.topicOrPath}`, resData.latestStr, {
+                numericOverride: resData.latestNum,
+                referenceValue: refNum,
+                series: resData.series,
+              });
+            }
+          }
+          continue;
+        }
+
+        // Default HTTP JSON source
         const controller = new AbortController();
         const t = setTimeout(() => controller.abort(), 3500);
         const headers: Record<string, string> = { Accept: 'application/json' };
@@ -4265,11 +5154,18 @@ async function createServer() {
         const json = await resp.json();
         src.lastSyncAt = Date.now();
 
-        const matchingTiles = cfg.tiles.filter((tile) => tile.sourceType === 'db' && tile.sourceId === src.id);
         for (const tile of matchingTiles) {
           const extracted = extractJsonPathValue(json, tile.jsonPath || tile.topicOrPath);
           if (extracted !== '') {
+            const num = parseNumericString(extracted);
+            const { displayValue, numericValue } = applyTileCalculation(tile, extracted, num, undefined);
             recordSmarthomeValue(`${src.id}::${tile.topicOrPath}`, extracted);
+            if (tile.calculation?.formula) {
+              recordSmarthomeValue(`tile:${tile.id}`, displayValue, {
+                rawValue: extracted,
+                numericOverride: numericValue,
+              });
+            }
           }
         }
       } catch {}
@@ -4353,6 +5249,14 @@ async function createServer() {
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  app.get('/api/smarthome/mqtt-topics', async (req, res) => {
+    const brokerId = req.query.brokerId ? String(req.query.brokerId) : '';
+    const topics = Array.from(mqttDiscoveredTopics.values())
+      .filter((t) => !brokerId || t.brokerId === brokerId)
+      .sort((a, b) => b.timestamp - a.timestamp);
+    res.json({ topics });
   });
 
   app.post('/api/smarthome/discover', async (_req, res) => {
@@ -4445,6 +5349,12 @@ async function createServer() {
         url: src.url.trim(),
         pollIntervalSec: Math.max(5, Number(src.pollIntervalSec) || 30),
         authHeader: src.authHeader || undefined,
+        database: src.database ? String(src.database).trim() : undefined,
+        retentionPolicy: src.retentionPolicy ? String(src.retentionPolicy).trim() : undefined,
+        org: src.org ? String(src.org).trim() : undefined,
+        bucket: src.bucket ? String(src.bucket).trim() : undefined,
+        username: src.username ? String(src.username).trim() : undefined,
+        password: src.password || undefined,
         enabled: src.enabled !== false,
         lastSyncAt: src.lastSyncAt || undefined,
       };
@@ -4497,6 +5407,10 @@ async function createServer() {
         id,
         size: tile.size === 'wide' || tile.size === 'lg' ? tile.size : 'sm',
         displayMode: tile.displayMode || 'value',
+        tab: tile.tab ? String(tile.tab).trim() : undefined,
+        group: tile.group ? String(tile.group).trim() : undefined,
+        timeRange: tile.timeRange || '24h',
+        calculation: tile.calculation || undefined,
         isAdminPreset: Boolean(tile.isAdminPreset),
       };
       const idx = cfg.tiles.findIndex((t) => t.id === id);
@@ -4504,11 +5418,27 @@ async function createServer() {
       else cfg.tiles.push(record);
       await saveSmarthomeConfig(cfg);
 
-      // Subscribe active MQTT client immediately if applicable
+      // Subscribe active MQTT client immediately & evaluate DB/formula immediately
       if (record.sourceType === 'mqtt') {
         const client = mqttClientPool.get(record.sourceId);
         if (client?.connected) {
           client.subscribe(record.topicOrPath, { qos: 0 }, () => {});
+        }
+        const existingRaw = smarthomeLiveValues.get(`${record.sourceId}::${record.topicOrPath}`);
+        if (existingRaw && (record.jsonPath || record.calculation?.formula)) {
+          let effectiveRaw = existingRaw.value;
+          if (record.jsonPath && effectiveRaw.trim().startsWith('{')) {
+            try {
+              const extracted = extractJsonPathValue(JSON.parse(effectiveRaw), record.jsonPath);
+              if (extracted !== '') effectiveRaw = extracted;
+            } catch {}
+          }
+          const num = parseNumericString(effectiveRaw);
+          const { displayValue, numericValue } = applyTileCalculation(record, effectiveRaw, num, undefined);
+          recordSmarthomeValue(`tile:${record.id}`, displayValue, {
+            rawValue: effectiveRaw,
+            numericOverride: numericValue,
+          });
         }
       } else if (record.sourceType === 'db') {
         await pollAllDbSources(record.sourceId);
@@ -4526,6 +5456,7 @@ async function createServer() {
     try {
       const cfg = await loadSmarthomeConfig();
       cfg.tiles = cfg.tiles.filter((t) => t.id !== id);
+      smarthomeLiveValues.delete(`tile:${id}`);
       await saveSmarthomeConfig(cfg);
       res.json({ success: true });
     } catch (err: any) {
@@ -4552,6 +5483,57 @@ async function createServer() {
       cfg.tiles.push(copy);
       await saveSmarthomeConfig(cfg);
       res.json({ success: true, tile: copy });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // =========================================================================
+  // SYSTEM CHANGELOG (/UPDATE File)
+  // =========================================================================
+  app.get('/api/system/changelog', async (_req, res) => {
+    try {
+      const updateFile = path.resolve(__dirname, 'UPDATE');
+      if (!fs.existsSync(updateFile)) {
+        return res.json({ versions: [], raw: '', updatedAt: 0 });
+      }
+      const stat = await fsp.stat(updateFile);
+      const raw = await fsp.readFile(updateFile, 'utf-8');
+      const lines = raw.split(/\r?\n/);
+
+      const versions: Array<{
+        version: string;
+        date: string;
+        sections: Array<{ title: string; items: string[] }>;
+      }> = [];
+      let currentVer: (typeof versions)[number] | null = null;
+      let currentSec: { title: string; items: string[] } | null = null;
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (line.startsWith('## ')) {
+          const rest = line.slice(3).trim();
+          const parts = rest.split(/\s+[–-]\s+/);
+          currentVer = {
+            version: parts[0]?.trim() || rest,
+            date: parts[1]?.trim() || '',
+            sections: [],
+          };
+          versions.push(currentVer);
+          currentSec = null;
+        } else if (line.startsWith('### ') && currentVer) {
+          currentSec = { title: line.slice(4).trim(), items: [] };
+          currentVer.sections.push(currentSec);
+        } else if (line.startsWith('- ') && currentVer) {
+          if (!currentSec) {
+            currentSec = { title: 'Allgemein', items: [] };
+            currentVer.sections.push(currentSec);
+          }
+          currentSec.items.push(line.slice(2).trim());
+        }
+      }
+
+      res.json({ versions, raw, updatedAt: stat.mtimeMs });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

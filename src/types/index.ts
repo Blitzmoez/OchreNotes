@@ -164,6 +164,7 @@ export interface SuiteProfileSettings {
   enableSecondProfile: boolean;
   activeProfileId: NoteProfileId;
   mobileBarPosition?: 'top' | 'bottom';
+  moduleOrder?: SuiteModuleId[];
   profile1: NoteProfileConfig;
   profile2: NoteProfileConfig;
 }
@@ -437,12 +438,28 @@ export interface SmarthomeDiscoveredBroker {
 export interface SmarthomeDbSource {
   id: string;
   name: string;
-  kind: 'http-json' | 'influx-v2' | 'prometheus';
+  kind: 'http-json' | 'influx-v1' | 'influx-v2' | 'prometheus';
   url: string;
   pollIntervalSec: number;
   authHeader?: string;
+  database?: string;
+  retentionPolicy?: string;
+  org?: string;
+  bucket?: string;
+  username?: string;
+  password?: string;
   enabled: boolean;
   lastSyncAt?: number;
+}
+
+export type SmarthomeTimeRange = '1h' | '6h' | '24h' | '7d' | '30d' | 'ytd';
+
+export interface SmarthomeTileCalculation {
+  mode: 'none' | 'formula' | 'delta_since';
+  formula?: string; // e.g. "(latest - ref) * 0.35" or "latest / 1000"
+  referenceTimestamp?: string; // ISO or YYYY-MM-DDTHH:mm
+  measurement?: string; // Influx measurement override
+  field?: string; // Influx field override
 }
 
 export interface SmarthomeTile {
@@ -450,6 +467,8 @@ export interface SmarthomeTile {
   ownerUsername: string;
   title: string;
   subtitle?: string;
+  tab?: string;
+  group?: string;
   size: SmarthomeTileSize;
   sourceType: 'mqtt' | 'db';
   sourceId: string;
@@ -457,6 +476,8 @@ export interface SmarthomeTile {
   jsonPath?: string;
   unit?: string;
   displayMode?: 'value' | 'chart';
+  timeRange?: SmarthomeTimeRange;
+  calculation?: SmarthomeTileCalculation;
   icon?: string;
   isAdminPreset?: boolean;
   adoptedFromPresetId?: string;
@@ -464,12 +485,28 @@ export interface SmarthomeTile {
   lastValue?: string;
 }
 
+export interface SmarthomeSeriesPoint {
+  t: number;
+  v: number;
+}
+
 export interface SmarthomeLiveValue {
   key: string;
   value: string;
+  rawValue?: string;
   numericValue?: number;
+  referenceValue?: number;
   timestamp: number;
   history: number[];
+  series?: SmarthomeSeriesPoint[];
+}
+
+export interface SmarthomeDiscoveredTopic {
+  brokerId: string;
+  topic: string;
+  lastPayload: string;
+  numericValue?: number;
+  timestamp: number;
 }
 
 export interface SmarthomeState {
@@ -482,7 +519,13 @@ export interface SmarthomeState {
 // Projekte Module Types
 export type ProjectVisibility = 'private' | 'shared';
 export type ProjectStatus = 'planning' | 'active' | 'completed';
-export type ProjectTaskStatus = 'todo' | 'in_progress' | 'review' | 'done';
+export type ProjectTaskStatus = string;
+
+export interface ProjectColumnConfig {
+  id: string;
+  label: string;
+  color?: string;
+}
 
 export interface ProjectTask {
   id: string;
@@ -490,6 +533,7 @@ export interface ProjectTask {
   description?: string;
   status: ProjectTaskStatus;
   assignee: string;
+  assignees?: string[];
   priority: 'low' | 'medium' | 'high';
   startDate: string; // YYYY-MM-DD
   dueDate: string; // YYYY-MM-DD
@@ -502,17 +546,37 @@ export interface ProjectItem {
   description?: string;
   ownerUsername: string;
   ownerDisplayName?: string;
+  profile?: NoteProfileId;
   visibility: ProjectVisibility;
   sharedWithUsers: string[];
   status: ProjectStatus;
   color?: string;
   startDate?: string;
   dueDate?: string;
+  columns?: ProjectColumnConfig[];
   linkedNotePaths: string[];
   linkedWikiSlugs: string[];
   tasks: ProjectTask[];
   createdAt?: number;
   updatedAt: number;
 }
+
+export interface ChangelogSection {
+  title: string;
+  items: string[];
+}
+
+export interface ChangelogVersion {
+  version: string;
+  date?: string;
+  sections: ChangelogSection[];
+}
+
+export interface ChangelogResponse {
+  versions: ChangelogVersion[];
+  raw: string;
+  updatedAt?: string;
+}
+
 
 

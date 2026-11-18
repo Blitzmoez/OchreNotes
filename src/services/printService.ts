@@ -712,12 +712,16 @@ export function printRecipeA4(
 
 export function printProjectA4(project: ProjectItem, accentColor = '#B45309') {
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  const statusLabels: Record<string, string> = {
-    todo: 'Offen',
-    in_progress: 'In Arbeit',
-    review: 'Prüfung',
-    done: 'Erledigt',
-  };
+  const columns =
+    project.columns && project.columns.length > 0
+      ? project.columns
+      : [
+          { id: 'todo', label: 'Offen', color: '#6B7280' },
+          { id: 'in_progress', label: 'In Arbeit', color: accentColor },
+          { id: 'review', label: 'Prüfung', color: '#2563EB' },
+          { id: 'done', label: 'Erledigt', color: '#10B981' },
+        ];
+  const colMap = new Map(columns.map((c) => [c.id, c]));
   const priorityLabels: Record<string, string> = {
     high: 'Hoch',
     medium: 'Mittel',
@@ -725,28 +729,68 @@ export function printProjectA4(project: ProjectItem, accentColor = '#B45309') {
   };
 
   const tasks = project.tasks || [];
-  const counts = {
-    todo: tasks.filter((t) => t.status === 'todo').length,
-    in_progress: tasks.filter((t) => t.status === 'in_progress').length,
-    review: tasks.filter((t) => t.status === 'review').length,
-    done: tasks.filter((t) => t.status === 'done').length,
-  };
+  const kpiHtml = columns
+    .map((col) => {
+      const cnt = tasks.filter((t) => t.status === col.id).length;
+      const colColor = col.color || accentColor;
+      return `<div class="kpi-box"><div class="kpi-num" style="color:${escapeHtml(colColor)}">${cnt}</div><div class="kpi-lbl">${escapeHtml(col.label)}</div></div>`;
+    })
+    .join('');
 
   const sortedTasks = [...tasks].sort((a, b) => (a.startDate || '').localeCompare(b.startDate || ''));
 
   const taskRows = sortedTasks
-    .map(
-      (t) => `
+    .map((t) => {
+      const colInfo = colMap.get(t.status);
+      const assigneeDisplay =
+        t.assignees && t.assignees.length > 0
+          ? t.assignees.join(', ')
+          : t.assignee || 'Nicht zugewiesen';
+      return `
       <tr>
         <td><strong>${escapeHtml(t.title)}</strong>${t.description ? `<br/><span style="font-size:8.5pt;color:#555;">${escapeHtml(t.description)}</span>` : ''}</td>
-        <td>${escapeHtml(statusLabels[t.status] || t.status)}</td>
-        <td>${escapeHtml(t.assignee || 'Nicht zugewiesen')}</td>
+        <td>${escapeHtml(colInfo?.label || t.status)}</td>
+        <td>${escapeHtml(assigneeDisplay)}</td>
         <td>${escapeHtml(priorityLabels[t.priority] || t.priority)}</td>
         <td style="font-variant-numeric: tabular-nums; white-space: nowrap;">${escapeHtml(t.startDate || '–')} – ${escapeHtml(t.dueDate || '–')}</td>
       </tr>
-    `
-    )
+    `;
+    })
     .join('');
+
+  // Visual Gantt / Timeline bars
+  let timelineHtml = '';
+  const datedTasks = sortedTasks.filter((t) => t.startDate && t.dueDate);
+  if (datedTasks.length > 0) {
+    const minMs = Math.min(...datedTasks.map((t) => new Date(`${t.startDate}T00:00:00`).getTime()));
+    const maxMsRaw = Math.max(...datedTasks.map((t) => new Date(`${t.dueDate}T00:00:00`).getTime()));
+    const spanMs = Math.max(86400000, maxMsRaw - minMs + 86400000);
+    const minLabel = new Date(minMs).toLocaleDateString('de-DE');
+    const maxLabel = new Date(maxMsRaw).toLocaleDateString('de-DE');
+
+    const ganttRows = datedTasks
+      .map((t) => {
+        const sMs = new Date(`${t.startDate}T00:00:00`).getTime();
+        const eMs = Math.max(sMs, new Date(`${t.dueDate}T00:00:00`).getTime()) + 86400000;
+        const leftPct = Math.max(0, ((sMs - minMs) / spanMs) * 100);
+        const widthPct = Math.max(3, Math.min(100 - leftPct, ((eMs - sMs) / spanMs) * 100));
+        const colColor = colMap.get(t.status)?.color || accentColor;
+        return `
+          <div class="gantt-row">
+            <div class="gantt-label">${escapeHtml(t.title)}</div>
+            <div class="gantt-track">
+              <div class="gantt-bar" style="left:${leftPct.toFixed(1)}%;width:${widthPct.toFixed(1)}%;background:${escapeHtml(colColor)};"></div>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+
+    timelineHtml = `
+      <h2>Zeitplan-Übersicht (Gantt · ${escapeHtml(minLabel)} – ${escapeHtml(maxLabel)})</h2>
+      <div class="gantt-wrap">${ganttRows}</div>
+    `;
+  }
 
   const linkedNotes = project.linkedNotePaths || [];
   const linkedWikis = project.linkedWikiSlugs || [];
@@ -771,7 +815,7 @@ export function printProjectA4(project: ProjectItem, accentColor = '#B45309') {
           .meta-bar { font-size: 9pt; color: #666; margin-bottom: 10px; }
           .kpi-row {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(${Math.min(6, Math.max(1, columns.length))}, 1fr);
             gap: 8px;
             margin: 10px 0 14px 0;
           }
@@ -783,6 +827,44 @@ export function printProjectA4(project: ProjectItem, accentColor = '#B45309') {
           }
           .kpi-num { font-size: 14pt; font-weight: 800; color: ${accentColor}; }
           .kpi-lbl { font-size: 8pt; color: #666; }
+          .gantt-wrap {
+            border: 1px solid #e5e3dc;
+            border-radius: 6px;
+            padding: 8px 10px;
+            background: #faf9f5;
+            margin-bottom: 12px;
+          }
+          .gantt-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 5px;
+          }
+          .gantt-row:last-child { margin-bottom: 0; }
+          .gantt-label {
+            width: 34%;
+            font-size: 8.5pt;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+          .gantt-track {
+            flex: 1;
+            height: 11px;
+            background: #ece9e0;
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+          }
+          .gantt-bar {
+            position: absolute;
+            top: 1px;
+            bottom: 1px;
+            border-radius: 3px;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
         </style>
       </head>
       <body>
@@ -791,13 +873,8 @@ export function printProjectA4(project: ProjectItem, accentColor = '#B45309') {
         </div>
         <h1>${escapeHtml(project.title)}</h1>
         ${project.description ? `<blockquote>${escapeHtml(project.description)}</blockquote>` : ''}
-        <div class="kpi-row">
-          <div class="kpi-box"><div class="kpi-num">${counts.todo}</div><div class="kpi-lbl">Offen</div></div>
-          <div class="kpi-box"><div class="kpi-num">${counts.in_progress}</div><div class="kpi-lbl">In Arbeit</div></div>
-          <div class="kpi-box"><div class="kpi-num">${counts.review}</div><div class="kpi-lbl">Prüfung</div></div>
-          <div class="kpi-box"><div class="kpi-num">${counts.done}</div><div class="kpi-lbl">Erledigt</div></div>
-        </div>
-        <h2>Kanban-Aufgaben &amp; Zeitplan (Timeline)</h2>
+        <div class="kpi-row">${kpiHtml}</div>
+        <h2>Kanban-Aufgaben &amp; Details</h2>
         ${
           taskRows
             ? `<table>
@@ -814,6 +891,7 @@ export function printProjectA4(project: ProjectItem, accentColor = '#B45309') {
               </table>`
             : '<p style="color:#666;">Noch keine Aufgaben in diesem Projekt.</p>'
         }
+        ${timelineHtml}
         ${linksHtml}
       </body>
     </html>

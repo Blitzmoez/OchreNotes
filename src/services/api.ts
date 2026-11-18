@@ -32,7 +32,9 @@ import {
   SmarthomeTile,
   SmarthomeLiveValue,
   SmarthomeState,
+  SmarthomeDiscoveredTopic,
   ProjectItem,
+  ChangelogResponse,
 } from '../types';
 
 const OFFLINE_QUEUE_KEY = 'ochrenotes_offline_queue';
@@ -788,6 +790,7 @@ class ApiService {
   async fetchCookbook(username: string): Promise<{
     hasLibrary: boolean;
     library: MealPlanLibrary | null;
+    libraries?: MealPlanLibrary[];
     invitations: MealPlanInvitation[];
     recipes: Recipe[];
     categories: string[];
@@ -811,6 +814,7 @@ class ApiService {
     name: string;
     visibility: 'private' | 'shared';
     invitedUsers?: string[];
+    createNew?: boolean;
   }): Promise<{ success: boolean; library: MealPlanLibrary }> {
     const res = await fetch('/api/cookbook/library', {
       method: 'POST',
@@ -822,6 +826,31 @@ class ApiService {
       throw new Error(err.error || 'Library konnte nicht gespeichert werden');
     }
     return await res.json();
+  }
+
+  async selectMealLibrary(username: string, libraryId: string): Promise<{ success: boolean; library: MealPlanLibrary }> {
+    const res = await fetch('/api/cookbook/library/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, libraryId }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Konnte Bibliothek nicht wechseln');
+    }
+    return await res.json();
+  }
+
+  async deleteMealLibrary(username: string, libraryId: string): Promise<boolean> {
+    const res = await fetch(
+      `/api/cookbook/library?username=${encodeURIComponent(username)}&libraryId=${encodeURIComponent(libraryId)}`,
+      { method: 'DELETE' }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Bibliothek konnte nicht gelöscht werden');
+    }
+    return true;
   }
 
   async joinMealLibrary(username: string, libraryId: string): Promise<{ success: boolean; library: MealPlanLibrary }> {
@@ -1124,6 +1153,28 @@ class ApiService {
     if (!res.ok) throw new Error('Vorgabe konnte nicht übernommen werden');
     const data = await res.json();
     return data.tile || data;
+  }
+
+  async fetchSmarthomeMqttTopics(brokerId?: string): Promise<SmarthomeDiscoveredTopic[]> {
+    try {
+      const q = brokerId ? `?brokerId=${encodeURIComponent(brokerId)}` : '';
+      const res = await fetch(`/api/smarthome/mqtt-topics${q}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return Array.isArray(data.topics) ? data.topics : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async fetchChangelog(): Promise<ChangelogResponse> {
+    try {
+      const res = await fetch('/api/system/changelog');
+      if (!res.ok) return { versions: [], raw: '' };
+      return await res.json();
+    } catch {
+      return { versions: [], raw: '' };
+    }
   }
 }
 

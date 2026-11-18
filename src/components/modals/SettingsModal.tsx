@@ -41,6 +41,9 @@ import {
   Cpu,
   FolderKanban,
   RefreshCw,
+  ArrowUp,
+  ArrowDown,
+  Sparkles,
 } from 'lucide-react';
 import {
   User,
@@ -56,12 +59,14 @@ import {
   MealPlanLibrary,
   MealPlanInvitation,
   MealSectionConfig,
+  ChangelogResponse,
 } from '../../types';
 import { api } from '../../services/api';
 import { useTranslation, Language } from '../../services/i18n';
 import {
   OCHRE_COLOR_PRESETS,
   DEFAULT_PROFILE_SETTINGS,
+  DEFAULT_MODULE_ORDER,
   DASHBOARD_WIDGET_CATALOG,
   DEFAULT_DASHBOARD_SETTINGS,
   MAX_DASHBOARD_WIDGETS,
@@ -97,7 +102,7 @@ interface SettingsModalProps {
   profileSettings: SuiteProfileSettings;
   onUpdateProfileSettings: (next: SuiteProfileSettings) => void;
   initialModuleContext?: SuiteModuleId;
-  initialSettingsTab?: 'general' | 'modules' | 'moduleSettings' | 'users' | 'backup';
+  initialSettingsTab?: 'general' | 'modules' | 'moduleSettings' | 'users' | 'backup' | 'about';
   dashboardSettings: DashboardSettings;
   onUpdateDashboardSettings: (next: DashboardSettings) => void;
   onCookbookUpdated?: () => void;
@@ -163,7 +168,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onCookbookSettingsChange,
 }) => {
   const { language, setLanguage, t } = useTranslation();
-  const [activeSettingsTab, setActiveSettingsTab] = useState<'general' | 'modules' | 'moduleSettings' | 'users' | 'backup'>(
+  const [activeSettingsTab, setActiveSettingsTab] = useState<'general' | 'modules' | 'moduleSettings' | 'users' | 'backup' | 'about'>(
     initialSettingsTab || 'general'
   );
   const [selectedModuleSettingsTab, setSelectedModuleSettingsTab] = useState<SuiteModuleId>(initialModuleContext);
@@ -220,6 +225,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [cookbookUnits, setCookbookUnits] = useState<string[]>(DEFAULT_MEAL_UNITS);
   const [newUnitInput, setNewUnitInput] = useState('');
   const [mealLibrary, setMealLibrary] = useState<MealPlanLibrary | null>(null);
+  const [mealLibraries, setMealLibraries] = useState<MealPlanLibrary[]>([]);
+  const [creatingNewMealLib, setCreatingNewMealLib] = useState<boolean>(false);
+  const [confirmDeleteMealLibId, setConfirmDeleteMealLibId] = useState<string | null>(null);
   const [mealInvitations, setMealInvitations] = useState<MealPlanInvitation[]>([]);
   const [libNameInput, setLibNameInput] = useState<string>('');
   const [libVisibilityInput, setLibVisibilityInput] = useState<'private' | 'shared'>('private');
@@ -238,6 +246,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     loadNotificationSettings(currentUser.username)
   );
   const [notifFeedback, setNotifFeedback] = useState<string | null>(null);
+  const [changelog, setChangelog] = useState<ChangelogResponse | null>(null);
+  const [loadingChangelog, setLoadingChangelog] = useState<boolean>(false);
 
   useEffect(() => {
     setNameInput(appTitle);
@@ -302,6 +312,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     activeBtn?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
   }, [selectedModuleSettingsTab, activeSettingsTab, isOpen]);
 
+  const loadChangelogData = async () => {
+    setLoadingChangelog(true);
+    try {
+      const data = await api.fetchChangelog();
+      setChangelog(data);
+    } catch {
+      // ignore transient errors
+    } finally {
+      setLoadingChangelog(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen && activeSettingsTab === 'about' && !changelog && !loadingChangelog) {
+      loadChangelogData();
+    }
+  }, [isOpen, activeSettingsTab]);
+
   const reloadCookbookSettings = () => {
     return api
       .fetchCookbook(currentUser.username)
@@ -326,6 +354,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             : DEFAULT_MEAL_UNITS
         );
         setMealLibrary(data.library || null);
+        setMealLibraries(data.libraries || (data.library ? [data.library] : []));
+        setCreatingNewMealLib(false);
+        setConfirmDeleteMealLibId(null);
         setMealInvitations(data.invitations || []);
         if (data.library) {
           setLibNameInput(data.library.name);
@@ -368,6 +399,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             : DEFAULT_MEAL_UNITS
         );
         setMealLibrary(data.library || null);
+        setMealLibraries(data.libraries || (data.library ? [data.library] : []));
+        setCreatingNewMealLib(false);
+        setConfirmDeleteMealLibId(null);
         setMealInvitations(data.invitations || []);
         if (data.library) {
           setLibNameInput(data.library.name);
@@ -841,6 +875,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <Database className="w-3.5 h-3.5" />
             <span>Backup &amp; Docker</span>
           </button>
+
+          <button
+            data-active-tab={activeSettingsTab === 'about' ? 'true' : undefined}
+            onClick={() => setActiveSettingsTab('about')}
+            className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+              activeSettingsTab === 'about'
+                ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
+                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Über / Updates</span>
+          </button>
         </div>
 
         {/* Tab Content (supports horizontal swipe left/right between tabs on mobile) */}
@@ -864,12 +911,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             const dy = e.changedTouches[0].clientY - settingsSwipeStartRef.current.y;
             settingsSwipeStartRef.current = null;
             if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.6) {
-              const order: Array<'general' | 'modules' | 'moduleSettings' | 'users' | 'backup'> = [
+              const order: Array<'general' | 'modules' | 'moduleSettings' | 'users' | 'backup' | 'about'> = [
                 'general',
                 'modules',
                 'moduleSettings',
                 'users',
                 'backup',
+                'about',
               ];
               const idx = order.indexOf(activeSettingsTab);
               if (dx < 0 && idx < order.length - 1) setActiveSettingsTab(order[idx + 1]);
@@ -1030,7 +1078,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {/* ============================================================== */}
           {activeSettingsTab === 'modules' && (() => {
             const activeModCount = (Object.values(enabledModules) as boolean[]).filter(Boolean).length;
-            const moduleCards: Array<{
+            const rawModuleCards: Array<{
               id: SuiteModuleId;
               title: string;
               desc: string;
@@ -1088,24 +1136,71 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               },
             ];
 
+            const cardMap = new Map(rawModuleCards.map((c) => [c.id, c]));
+            const savedOrder =
+              profileSettings.moduleOrder && profileSettings.moduleOrder.length > 0
+                ? profileSettings.moduleOrder
+                : DEFAULT_MODULE_ORDER;
+            const currentOrder: SuiteModuleId[] = [
+              ...savedOrder.filter((id, idx) => cardMap.has(id) && savedOrder.indexOf(id) === idx),
+              ...DEFAULT_MODULE_ORDER.filter((id) => !savedOrder.includes(id)),
+            ];
+            const moduleCards = currentOrder
+              .map((id) => cardMap.get(id))
+              .filter((c): c is NonNullable<typeof c> => Boolean(c));
+
+            const isDefaultOrder =
+              currentOrder.length === DEFAULT_MODULE_ORDER.length &&
+              currentOrder.every((id, idx) => id === DEFAULT_MODULE_ORDER[idx]);
+
+            const moveModule = (index: number, delta: -1 | 1) => {
+              const targetIdx = index + delta;
+              if (targetIdx < 0 || targetIdx >= currentOrder.length) return;
+              const nextOrder = [...currentOrder];
+              const [moved] = nextOrder.splice(index, 1);
+              nextOrder.splice(targetIdx, 0, moved);
+              onUpdateProfileSettings({
+                ...profileSettings,
+                moduleOrder: nextOrder,
+              });
+            };
+
             return (
               <div className="space-y-4">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div>
                     <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100">
-                      Module an- &amp; abschalten
+                      Module an- &amp; abschalten sowie sortieren
                     </h3>
                     <p className="text-[11px] text-neutral-500">
-                      Jedes Modul lässt sich flexibel aktivieren oder deaktivieren (mindestens 1 Modul bleibt aktiv).
+                      Reihenfolge gilt direkt im Modul-Menü (mindestens 1 Modul bleibt aktiv).
                     </p>
                   </div>
-                  <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-600 dark:text-neutral-300 tabular-nums">
-                    {activeModCount} / {moduleCards.length} aktiv
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {!isDefaultOrder && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateProfileSettings({
+                            ...profileSettings,
+                            moduleOrder: [...DEFAULT_MODULE_ORDER],
+                          })
+                        }
+                        className="flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-full border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-600 dark:text-neutral-300 hover:border-[var(--ochre-accent)] cursor-pointer"
+                        title="Standard-Reihenfolge wiederherstellen"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Reihenfolge zurücksetzen</span>
+                      </button>
+                    )}
+                    <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-600 dark:text-neutral-300 tabular-nums">
+                      {activeModCount} / {moduleCards.length} aktiv
+                    </span>
+                  </div>
                 </div>
 
                 <div className="space-y-2.5">
-                  {moduleCards.map((mod) => {
+                  {moduleCards.map((mod, idx) => {
                     const Icon = mod.icon;
                     const isEnabled = !!enabledModules[mod.id];
                     const isLastActive = isEnabled && activeModCount <= 1;
@@ -1130,7 +1225,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </span>
                           </div>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <div className="flex items-center gap-0.5 bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] rounded-lg p-0.5">
+                            <button
+                              type="button"
+                              disabled={idx === 0}
+                              onClick={() => moveModule(idx, -1)}
+                              className="p-1 rounded text-neutral-500 hover:text-neutral-900 dark:hover:text-white disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
+                              title="Nach oben"
+                              aria-label={`${mod.title} nach oben`}
+                            >
+                              <ArrowUp className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={idx === moduleCards.length - 1}
+                              onClick={() => moveModule(idx, 1)}
+                              className="p-1 rounded text-neutral-500 hover:text-neutral-900 dark:hover:text-white disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
+                              title="Nach unten"
+                              aria-label={`${mod.title} nach unten`}
+                            >
+                              <ArrowDown className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+
                           {isLastActive && (
                             <span className="text-[10px] text-neutral-400 font-semibold hidden sm:inline">
                               Mind. 1 Modul
@@ -1750,7 +1868,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                   )}
 
-                  {/* Essensplan Library Management (Create / Private vs Shared / Invite) */}
+                  {/* Essensplan Library Management (Switch / Create / Delete / Private vs Shared / Invite) */}
                   <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#18191B] space-y-3">
                     <div className="flex items-center justify-between gap-2 flex-wrap">
                       <div className="flex items-center gap-2 font-bold text-neutral-900 dark:text-neutral-100">
@@ -1760,60 +1878,180 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           <Lock className="w-4 h-4" style={{ color: activeColors.recipes }} />
                         )}
                         <span>
-                          {mealLibrary ? 'Aktive Essensplan-Bibliothek' : 'Essensplan-Bibliothek erstellen'}
+                          {creatingNewMealLib
+                            ? 'Neue Essensplan-Bibliothek erstellen'
+                            : mealLibrary
+                            ? 'Essensplan-Bibliotheken'
+                            : 'Essensplan-Bibliothek erstellen'}
                         </span>
                       </div>
-                      {mealLibrary && (
-                        <span
-                          style={{ backgroundColor: `${activeColors.recipes}1A`, color: activeColors.recipes }}
-                          className="text-[10px] font-bold px-2 py-0.5 rounded-full"
-                        >
-                          {mealLibrary.visibility === 'shared' ? 'Freigegeben (Gemeinsam)' : 'Privat'}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {mealLibrary && !creatingNewMealLib && (
+                          <span
+                            style={{ backgroundColor: `${activeColors.recipes}1A`, color: activeColors.recipes }}
+                            className="text-[10px] font-bold px-2 py-0.5 rounded-full"
+                          >
+                            {mealLibrary.visibility === 'shared' ? 'Freigegeben' : 'Privat'}
+                          </span>
+                        )}
+                        {mealLibrary && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!creatingNewMealLib) {
+                                setCreatingNewMealLib(true);
+                                setLibNameInput('');
+                                setLibVisibilityInput('private');
+                                setLibInvitedInput([]);
+                                setLibraryStatus(null);
+                              } else {
+                                setCreatingNewMealLib(false);
+                                setLibNameInput(mealLibrary.name);
+                                setLibVisibilityInput(mealLibrary.visibility);
+                                setLibInvitedInput(mealLibrary.invitedUsers || []);
+                              }
+                            }}
+                            style={!creatingNewMealLib ? { color: activeColors.recipes, borderColor: `${activeColors.recipes}55` } : undefined}
+                            className="text-[11px] font-bold px-2.5 py-1 rounded-lg border border-[#E5E3DC] dark:border-neutral-700 bg-white dark:bg-[#202225] cursor-pointer hover:opacity-90"
+                          >
+                            {creatingNewMealLib ? 'Abbrechen' : '+ Neue Bibliothek'}
+                          </button>
+                        )}
+                      </div>
                     </div>
 
-                    {!mealLibrary ? (
+                    {/* Multi-Library Switcher list */}
+                    {mealLibraries.length > 0 && !creatingNewMealLib && (
+                      <div className="space-y-1.5">
+                        {mealLibraries.map((lib) => {
+                          const isCurrent = mealLibrary?.id === lib.id;
+                          const isOwner = lib.ownerUsername === currentUser.username;
+                          const isConfirmDel = confirmDeleteMealLibId === lib.id;
+                          return (
+                            <div
+                              key={lib.id}
+                              style={isCurrent ? { borderColor: activeColors.recipes, backgroundColor: `${activeColors.recipes}0F` } : undefined}
+                              className={`px-2.5 py-2 rounded-xl border flex items-center justify-between gap-2 text-xs ${
+                                isCurrent
+                                  ? 'border-2'
+                                  : 'border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#202225]'
+                              }`}
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-bold text-neutral-900 dark:text-neutral-100 truncate">
+                                    {lib.name}
+                                  </span>
+                                  {isCurrent && (
+                                    <span
+                                      style={{ backgroundColor: activeColors.recipes }}
+                                      className="text-[9px] font-bold text-white px-1.5 py-0.5 rounded-full shrink-0"
+                                    >
+                                      Aktiv
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="text-[10px] text-neutral-500 block truncate">
+                                  {lib.visibility === 'shared' ? 'Freigegeben' : 'Privat'} · Eigentümer: {lib.ownerDisplayName}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {!isCurrent && (
+                                  <button
+                                    type="button"
+                                    disabled={librarySaving}
+                                    onClick={async () => {
+                                      setLibrarySaving(true);
+                                      setLibraryStatus(null);
+                                      try {
+                                        await api.selectMealLibrary(currentUser.username, lib.id);
+                                        await reloadCookbookSettings();
+                                        onCookbookUpdated?.();
+                                        setLibraryStatus(`Bibliothek „${lib.name}“ aktiviert.`);
+                                      } catch (err: any) {
+                                        setLibraryStatus(`Fehler: ${err.message}`);
+                                      } finally {
+                                        setLibrarySaving(false);
+                                      }
+                                    }}
+                                    style={{ backgroundColor: activeColors.recipes }}
+                                    className="px-2.5 py-1 rounded-lg text-white text-[11px] font-bold cursor-pointer hover:opacity-90"
+                                  >
+                                    Auswählen
+                                  </button>
+                                )}
+                                {isOwner ? (
+                                  <button
+                                    type="button"
+                                    disabled={librarySaving}
+                                    onClick={async () => {
+                                      if (!isConfirmDel) {
+                                        setConfirmDeleteMealLibId(lib.id);
+                                        return;
+                                      }
+                                      setLibrarySaving(true);
+                                      setLibraryStatus(null);
+                                      try {
+                                        await api.deleteMealLibrary(currentUser.username, lib.id);
+                                        await reloadCookbookSettings();
+                                        onCookbookUpdated?.();
+                                        setLibraryStatus(`Bibliothek „${lib.name}“ gelöscht.`);
+                                      } catch (err: any) {
+                                        setLibraryStatus(`Fehler: ${err.message}`);
+                                      } finally {
+                                        setLibrarySaving(false);
+                                      }
+                                    }}
+                                    className={`px-2 py-1 rounded-lg text-[11px] font-bold cursor-pointer border ${
+                                      isConfirmDel
+                                        ? 'bg-red-500 border-red-500 text-white'
+                                        : 'border-[#E5E3DC] dark:border-neutral-700 text-neutral-500 hover:text-red-500 bg-white dark:bg-[#1E2024]'
+                                    }`}
+                                    title={isConfirmDel ? 'Klick bestätigen zum Löschen' : 'Bibliothek löschen'}
+                                  >
+                                    {isConfirmDel ? 'Löschen bestätigen' : 'Löschen'}
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={librarySaving}
+                                    onClick={async () => {
+                                      setLibrarySaving(true);
+                                      try {
+                                        await api.leaveMealLibrary(currentUser.username, lib.id);
+                                        await reloadCookbookSettings();
+                                        onCookbookUpdated?.();
+                                        setLibraryStatus('Bibliothek verlassen.');
+                                      } finally {
+                                        setLibrarySaving(false);
+                                      }
+                                    }}
+                                    className="text-[11px] font-semibold text-red-500 hover:underline cursor-pointer px-1.5"
+                                  >
+                                    Verlassen
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {!mealLibrary && !creatingNewMealLib && (
                       <div className="space-y-2.5">
                         <p className="text-[11px] text-neutral-500">
                           Für @{currentUser.username} ist noch keine Essensplan-Bibliothek angelegt. Erstelle eine private Bibliothek oder gib sie direkt für andere Benutzer frei.
                         </p>
                       </div>
-                    ) : (
-                      <div className="text-[11px] text-neutral-500 flex items-center justify-between gap-2 flex-wrap">
-                        <span>
-                          Eigentümer: <strong className="text-neutral-800 dark:text-neutral-200">{mealLibrary.ownerDisplayName}</strong> ·{' '}
-                          Mitglieder: <strong className="text-neutral-800 dark:text-neutral-200">{mealLibrary.members.join(', ')}</strong>
-                        </span>
-                        {mealLibrary.ownerUsername !== currentUser.username && (
-                          <button
-                            type="button"
-                            disabled={librarySaving}
-                            onClick={async () => {
-                              setLibrarySaving(true);
-                              try {
-                                await api.leaveMealLibrary(currentUser.username, mealLibrary.id);
-                                await reloadCookbookSettings();
-                                onCookbookUpdated?.();
-                                setLibraryStatus('Bibliothek verlassen.');
-                              } finally {
-                                setLibrarySaving(false);
-                              }
-                            }}
-                            className="text-[11px] font-semibold text-red-500 hover:underline cursor-pointer"
-                          >
-                            Bibliothek verlassen
-                          </button>
-                        )}
-                      </div>
                     )}
 
-                    {(!mealLibrary || mealLibrary.ownerUsername === currentUser.username) && (
-                      <div className="space-y-2.5 pt-1 border-t border-[#E5E3DC] dark:border-[#2F3136]">
+                    {(creatingNewMealLib || !mealLibrary || mealLibrary.ownerUsername === currentUser.username) && (
+                      <div className="space-y-2.5 pt-2 border-t border-[#E5E3DC] dark:border-[#2F3136]">
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                           <div>
                             <label className="text-[11px] font-semibold text-neutral-500 block mb-1">
-                              Name der Bibliothek
+                              {creatingNewMealLib ? 'Name der neuen Bibliothek' : 'Name der aktiven Bibliothek'}
                             </label>
                             <input
                               type="text"
@@ -1863,7 +2101,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </span>
                             <div className="flex items-center gap-1.5 flex-wrap">
                               {otherUsers.map((u) => {
-                                const alreadyMember = mealLibrary?.members.includes(u.username);
+                                const alreadyMember = !creatingNewMealLib && mealLibrary?.members.includes(u.username);
                                 const isInvited = libInvitedInput.includes(u.username);
                                 return (
                                   <button
@@ -1913,14 +2151,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               try {
                                 await api.createOrUpdateMealLibrary({
                                   username: currentUser.username,
-                                  libraryId: mealLibrary?.id,
+                                  libraryId: creatingNewMealLib ? undefined : mealLibrary?.id,
                                   name: libNameInput.trim(),
                                   visibility: libVisibilityInput,
                                   invitedUsers: libVisibilityInput === 'shared' ? libInvitedInput : [],
+                                  createNew: creatingNewMealLib,
                                 });
                                 await reloadCookbookSettings();
                                 onCookbookUpdated?.();
-                                setLibraryStatus(mealLibrary ? 'Bibliothek aktualisiert.' : 'Bibliothek erstellt!');
+                                setLibraryStatus(
+                                  creatingNewMealLib
+                                    ? 'Neue Bibliothek erstellt & aktiviert!'
+                                    : mealLibrary
+                                    ? 'Bibliothek aktualisiert.'
+                                    : 'Bibliothek erstellt!'
+                                );
                               } catch (err: any) {
                                 setLibraryStatus(`Fehler: ${err.message}`);
                               } finally {
@@ -1930,7 +2175,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             style={{ backgroundColor: activeColors.recipes }}
                             className="px-3.5 py-1.5 rounded-lg text-white text-xs font-bold hover:opacity-90 disabled:opacity-50 cursor-pointer"
                           >
-                            {mealLibrary ? 'Bibliothek speichern' : 'Bibliothek erstellen'}
+                            {creatingNewMealLib
+                              ? 'Neue Bibliothek anlegen'
+                              : mealLibrary
+                              ? 'Bibliothek speichern'
+                              : 'Bibliothek erstellen'}
                           </button>
                         </div>
                       </div>
@@ -3099,6 +3348,97 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* ============================================================== */}
+          {/* TAB 6: ÜBER / UPDATES (Changelog aus UPDATE-Datei)             */}
+          {/* ============================================================== */}
+          {activeSettingsTab === 'about' && (
+            <div className="space-y-4">
+              <div className="p-3.5 rounded-2xl bg-[#F4F3EF] dark:bg-[#18191B] border border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-2.5">
+                  <img src="/favicon.svg" alt="Ochre Suite" className="w-8 h-8 rounded-xl shadow-xs shrink-0" />
+                  <div>
+                    <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100">
+                      {appTitle} – Release-Verlauf &amp; Updates
+                    </h3>
+                    <span className="text-[11px] text-neutral-500 block">
+                      {changelog?.updatedAt
+                        ? `Zuletzt aktualisiert: ${new Date(changelog.updatedAt).toLocaleDateString('de-DE')}`
+                        : 'Übersicht aller Neuerungen und Modul-Erweiterungen'}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={loadChangelogData}
+                  disabled={loadingChangelog}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[var(--ochre-accent)] text-xs font-semibold cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingChangelog ? 'animate-spin' : ''}`} />
+                  <span>Aktualisieren</span>
+                </button>
+              </div>
+
+              {loadingChangelog && !changelog ? (
+                <div className="p-6 text-center text-xs text-neutral-500">
+                  Lade Update-Verlauf...
+                </div>
+              ) : changelog?.versions && changelog.versions.length > 0 ? (
+                <div className="space-y-3">
+                  {changelog.versions.map((ver, vIdx) => (
+                    <div
+                      key={`${ver.version}-${vIdx}`}
+                      className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#202225] space-y-2.5"
+                    >
+                      <div className="flex items-center justify-between gap-2 pb-2 border-b border-[#E5E3DC] dark:border-[#2F3136]">
+                        <div className="flex items-center gap-2">
+                          <span
+                            style={{ backgroundColor: 'var(--ochre-accent)' }}
+                            className="px-2.5 py-0.5 rounded-full text-white font-bold text-[11px]"
+                          >
+                            {ver.version}
+                          </span>
+                          {vIdx === 0 && (
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+                              Aktuell
+                            </span>
+                          )}
+                        </div>
+                        {ver.date && (
+                          <span className="text-[11px] text-neutral-400 font-medium">{ver.date}</span>
+                        )}
+                      </div>
+
+                      <div className="space-y-2.5">
+                        {ver.sections.map((sec, sIdx) => (
+                          <div key={`${sec.title}-${sIdx}`} className="space-y-1">
+                            {sec.title && (
+                              <h4 className="text-xs font-bold text-neutral-800 dark:text-neutral-200">
+                                {sec.title}
+                              </h4>
+                            )}
+                            <ul className="space-y-1 pl-4 list-disc text-[11px] text-neutral-600 dark:text-neutral-300 leading-relaxed">
+                              {sec.items.map((item, iIdx) => (
+                                <li key={iIdx}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : changelog?.raw ? (
+                <pre className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#18191B] text-[11px] font-mono whitespace-pre-wrap leading-relaxed text-neutral-700 dark:text-neutral-300">
+                  {changelog.raw}
+                </pre>
+              ) : (
+                <div className="p-6 text-center text-xs text-neutral-500 rounded-2xl border border-dashed border-[#E5E3DC] dark:border-[#2F3136]">
+                  Keine Changelog-Einträge gefunden.
+                </div>
+              )}
             </div>
           )}
         </div>

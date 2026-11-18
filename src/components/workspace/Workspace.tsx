@@ -153,6 +153,20 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     }
   }, [activeNotePath, activeNoteTitle, isShared, sharedFrom]);
 
+  useEffect(() => {
+    if (!activeNotePath) return;
+    setTabContents((prev) => {
+      const existing = prev[activeNotePath];
+      if (existing && existing.content === content && existing.title === activeNoteTitle) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [activeNotePath]: { content, title: activeNoteTitle, lastSaved },
+      };
+    });
+  }, [activeNotePath, activeNoteTitle, content, lastSaved]);
+
   // Translate vertical mouse wheel into horizontal scroll & support mouse drag-to-swipe on tabs
   useEffect(() => {
     const el = tabsScrollRef.current;

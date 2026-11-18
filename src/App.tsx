@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { User, NoteMetadata, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId, WikiArticle, Recipe, CookbookTab, DashboardSettings, ProjectItem } from './types';
 import { api } from './services/api';
-import { DEFAULT_ENABLED_MODULES, DEFAULT_PROFILE_SETTINGS, DEFAULT_DASHBOARD_SETTINGS, MAX_DASHBOARD_WIDGETS, DASHBOARD_WIDGET_CATALOG } from './services/profileDefaults';
+import { DEFAULT_ENABLED_MODULES, DEFAULT_PROFILE_SETTINGS, DEFAULT_DASHBOARD_SETTINGS, MAX_DASHBOARD_WIDGETS, DASHBOARD_WIDGET_CATALOG, DEFAULT_MODULE_ORDER } from './services/profileDefaults';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { Workspace } from './components/workspace/Workspace';
@@ -14,6 +14,7 @@ import { ProjectsView } from './components/projects/ProjectsView';
 import { ShareModal } from './components/modals/ShareModal';
 import { SystemLogsModal } from './components/modals/SystemLogsModal';
 import { SettingsModal } from './components/modals/SettingsModal';
+import { TourOverlay } from './components/modals/TourOverlay';
 import { LoginScreen } from './components/auth/LoginScreen';
 import { BookOpen, CheckSquare, Network, ChevronRight, ChevronLeft, X, Inbox, Plus, Folder, FolderPlus, FilePlus, Layers } from 'lucide-react';
 import { printNoteA4, printWikiArticleA4, printMealPlanA4, printProjectA4 } from './services/printService';
@@ -21,10 +22,18 @@ import { checkAndNotifyDueTasks, querySyncedNotificationPermission } from './ser
 
 const mergeProfileSettings = (raw?: Partial<SuiteProfileSettings> | null): SuiteProfileSettings => {
   if (!raw) return DEFAULT_PROFILE_SETTINGS;
+  const rawOrder = Array.isArray(raw.moduleOrder) ? raw.moduleOrder : [];
+  const validSet = new Set<SuiteModuleId>(DEFAULT_MODULE_ORDER);
+  const dedupedSaved = rawOrder.filter((id, idx): id is SuiteModuleId => validSet.has(id) && rawOrder.indexOf(id) === idx);
+  const mergedOrder: SuiteModuleId[] = [
+    ...dedupedSaved,
+    ...DEFAULT_MODULE_ORDER.filter((id) => !dedupedSaved.includes(id)),
+  ];
   return {
     enableSecondProfile: raw.enableSecondProfile ?? DEFAULT_PROFILE_SETTINGS.enableSecondProfile,
     activeProfileId: raw.activeProfileId === 'profile2' ? 'profile2' : 'profile1',
     mobileBarPosition: raw.mobileBarPosition === 'bottom' ? 'bottom' : 'top',
+    moduleOrder: mergedOrder,
     profile1: {
       id: 'profile1',
       name: raw.profile1?.name ?? DEFAULT_PROFILE_SETTINGS.profile1.name,
@@ -98,9 +107,10 @@ export default function App() {
   const [enableCookbookShoppingList, setEnableCookbookShoppingList] = useState<boolean>(true);
   const [enableCookbookCycle, setEnableCookbookCycle] = useState<boolean>(true);
   const [settingsModalTarget, setSettingsModalTarget] = useState<{
-    tab?: 'general' | 'modules' | 'moduleSettings' | 'users' | 'backup';
+    tab?: 'general' | 'modules' | 'moduleSettings' | 'users' | 'backup' | 'about';
     module?: SuiteModuleId;
   }>({});
+  const [isTourOpen, setIsTourOpen] = useState(false);
 
   // User State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -546,6 +556,101 @@ export default function App() {
     }
   }, [currentUser, loadVaultData]);
 
+  // Live Vault SSE Sync + Window Focus / Visibility Refresh
+  const vaultSyncStateRef = useRef({
+    activeNotePath,
+    activeIsShared,
+    activeSharedFrom,
+    activeProfileId,
+    loadVaultData,
+  });
+  useEffect(() => {
+    vaultSyncStateRef.current = {
+      activeNotePath,
+      activeIsShared,
+      activeSharedFrom,
+      activeProfileId,
+      loadVaultData,
+    };
+  }, [activeNotePath, activeIsShared, activeSharedFrom, activeProfileId, loadVaultData]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    let es: EventSource | null = null;
+
+    const refreshFromRemote = async (changedPath?: string) => {
+      const {
+        activeNotePath: currPath,
+        activeIsShared: currIsShared,
+        activeSharedFrom: currSharedFrom,
+        activeProfileId: currProfile,
+        loadVaultData: reloadVault,
+      } = vaultSyncStateRef.current;
+
+      try {
+        await reloadVault();
+        if (
+          currPath &&
+          !pendingSaveRef.current &&
+          (!changedPath || changedPath === currPath || changedPath.endsWith(`/${currPath}`))
+        ) {
+          const data = await api.readNote(
+            currentUser.username,
+            currPath,
+            currIsShared,
+            currSharedFrom || '',
+            currProfile
+          );
+          if (data && typeof data.content === 'string' && data.content !== activeNoteContentRef.current) {
+            activeNoteContentRef.current = data.content;
+            setActiveNoteContent(data.content);
+            if (data.title) setActiveNoteTitle(data.title);
+          }
+        }
+      } catch {
+        // ignore transient network errors during live sync
+      }
+    };
+
+    try {
+      es = new EventSource(`/api/vault/stream?username=${encodeURIComponent(currentUser.username)}`);
+      es.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (
+            payload?.type === 'vault_changed' ||
+            payload?.type === 'note_saved' ||
+            payload?.type === 'note_deleted' ||
+            payload?.type === 'note_moved' ||
+            payload?.type === 'tasks_toggled'
+          ) {
+            const matchesUser =
+              !payload.username ||
+              payload.username === currentUser.username ||
+              vaultSyncStateRef.current.activeIsShared;
+            if (matchesUser) {
+              refreshFromRemote(typeof payload.path === 'string' ? payload.path : undefined);
+            }
+          }
+        } catch {}
+      };
+    } catch {}
+
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') {
+        refreshFromRemote();
+      }
+    };
+    window.addEventListener('focus', handleVisible);
+    document.addEventListener('visibilitychange', handleVisible);
+
+    return () => {
+      if (es) es.close();
+      window.removeEventListener('focus', handleVisible);
+      document.removeEventListener('visibilitychange', handleVisible);
+    };
+  }, [currentUser?.username]);
+
   // Periodic push notification check for tasks with due dates (Mobile PWA & Desktop)
   useEffect(() => {
     if (!currentUser) return;
@@ -986,9 +1091,11 @@ export default function App() {
         enableCookbookShoppingList={enableCookbookShoppingList}
         enableCookbookCycle={enableCookbookCycle}
         mobileBarPosition={profileSettings.mobileBarPosition || 'top'}
+        onStartTour={() => setIsTourOpen(true)}
       />
 
       {/* Main Container: Renders active Suite Module */}
+      <div data-tour="main-workspace" className="flex-1 flex overflow-hidden relative">
       {activeSuiteModule === 'dashboard' && enabledModules.dashboard && (
         <div className="flex-1 flex overflow-hidden">
           <DashboardView
@@ -1153,6 +1260,13 @@ export default function App() {
             initialProjectId={selectedProjectId}
             accentColor={profileSettings.profile1.colors.projects}
             mobileBarPosition={profileSettings.mobileBarPosition || 'top'}
+            enableSecondProfile={profileSettings.enableSecondProfile}
+            activeProfileId={activeProfileId}
+            profileNames={{
+              profile1: profileSettings.profile1.name,
+              profile2: profileSettings.profile2.name,
+            }}
+            onSwitchProfile={handleSwitchProfile}
             onNavigateToNote={(notePath) => {
               setActiveSuiteModule('notes');
               openNote(notePath, false);
@@ -1260,6 +1374,7 @@ export default function App() {
           />
         </div>
       )}
+      </div>
 
       {/* Floating Action Navigation (ONLY Mobile & Tablet - hidden on Desktop) */}
       {activeSuiteModule === 'notes' && isMobileNavExpanded && (
@@ -1751,6 +1866,15 @@ export default function App() {
           }}
         />
       )}
+
+      <TourOverlay
+        isOpen={isTourOpen}
+        onClose={() => setIsTourOpen(false)}
+        activeModule={activeSuiteModule}
+        enabledModules={enabledModules}
+        onSwitchModule={setActiveSuiteModule}
+        accentColor={activeAccentColor}
+      />
     </div>
   );
 }

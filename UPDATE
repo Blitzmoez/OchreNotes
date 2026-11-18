@@ -1,0 +1,33 @@
+# Ochre Suite – Änderungsprotokoll & Updates
+
+Diese Datei befindet sich im Wurzelverzeichnis (`UPDATE`) und kann jederzeit manuell gepflegt oder erweitert werden. Neue Abschnitte mit `## Version – Datum` werden automatisch unter **Einstellungen → Über / Updates** angezeigt.
+
+## v2.5.0 – 2026-11-18
+
+### Smarthome
+- **InfluxDB v1 & v2 Telemetrie**: Unterstützung für InfluxDB v1 (InfluxQL) und InfluxDB v2 (Flux) inklusive 24h-Verlaufskurven (SVG-Chart mit Min/Max und Zeitachse).
+- **Werte-Berechnung & Zählerstands-Vergleich**: Referenzwert zu einem festen Zeitpunkt X (z. B. `2026-01-01T00:00:00`) abfragen, mit dem aktuellen Messwert vergleichen und eigene Rechenformeln wie `(latest - ref) * 0.35` anwenden.
+- **Tabs & einklappbare Gruppen**: Sensor-Kacheln frei Tabs und Gruppen zuordnen, mit slidebarer Tableiste (analog zu Notes) und Collapse-Header.
+- **MQTT Topic-Auto-Discover**: Verbunde Broker abonnieren `#` im Hintergrund und zeigen gefundene Live-Topics direkt zur Auswahl im Kachel-Dialog an.
+
+### Notes
+- **Editor-Cursor & Fokus-Stabilität**: Kein Springen mehr ans Notizende beim Klicken in Abstände und kein Verlust des Cursors während des Auto-Save.
+- **Echtzeit-Synchronisation (PC ↔ Mobil)**: Neue SSE-Sync-Verbindung aktualisiert Notizen, Tabs und Aufgaben live zwischen Geräten ohne App-Neustart.
+
+### Wiki
+- **Mobiler Vault-Drawer & Ziehpfeil**: Linker Ziehpfeil ergänzt und Touch-Swipe korrigiert, damit der Drawer beim Herausziehen zuverlässig geöffnet bleibt.
+- **Code-Kopieren**: Robuste Clipboard-Funktion mit Fallback für HTTP-LAN-Umgebungen und visuelle Bestätigung.
+
+### Essensplan
+- **Drag & Drop repariert**: Gerichte lassen sich zuverlässig auf Kalender- und Zyklus-Abschnitte ziehen (Desktop HTML5 & Touch-Grip).
+- **Mehrere Bibliotheken**: Benutzer können mehrere Essensplan-Bibliotheken anlegen, zwischen ihnen wechseln und eigene Bibliotheken vollständig löschen.
+
+### Projekte
+- **Mehrfach-Zuständige**: Aufgaben unterstützen mehrere zugewiesene Personen parallel.
+- **Listen-Ansicht & Inline-Status**: Zusätzliche Listen-Ansicht mit direktem Status-Dropdown pro Zeile.
+- **Konfigurierbare Status-Spalten**: Spalten/Status je Projekt hinzufügen, umbenennen, sortieren, einfärben oder löschen.
+- **Privat/Business Profil-Umschalter & A4-Druck**: Profilwechsel analog zu Notes sowie verbesserter A4-Projektplan mit visueller Timeline.
+
+### Dashboard & Shell
+- **Dashboard Live-Sync**: Smarthome-Widget empfängt SSE-Echtzeitwerte mit subtilem Live-Impuls bei Aktualisierungen.
+- **Modul-Reihenfolge & Guided Tour**: Frei sortierbare Modul-Reihenfolge in den Einstellungen, interaktive Spotlight-Tour im Profilmenü und dieser integrierte Update-Verlauf.

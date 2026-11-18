@@ -266,7 +266,7 @@ interface MarkdownLineRowProps {
   selectedDueDate: string;
   ytDisplayMode: YouTubeDisplayMode | undefined;
   imgDisplayMode: 'embed' | 'link' | undefined;
-  activeTextareaRef: React.MutableRefObject<HTMLTextAreaElement | null>;
+  onRegisterTextarea: (idx: number, el: HTMLTextAreaElement | null) => void;
   onFocusLine: (idx: number, cursorPos?: number) => void;
   onBlurLine: (idx: number) => void;
   onUpdateLine: (idx: number, newText: string) => void;
@@ -295,7 +295,7 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
     selectedDueDate,
     ytDisplayMode,
     imgDisplayMode,
-    activeTextareaRef,
+    onRegisterTextarea,
     onFocusLine,
     onBlurLine,
     onUpdateLine,
@@ -321,6 +321,18 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
         setLocalDraft(rawLine);
       }
     }, [rawLine]);
+
+    useLayoutEffect(() => {
+      if (isActive && localInputRef.current) {
+        onRegisterTextarea(idx, localInputRef.current);
+        resizeTextarea(localInputRef.current);
+      } else {
+        onRegisterTextarea(idx, null);
+      }
+      return () => {
+        onRegisterTextarea(idx, null);
+      };
+    }, [isActive, idx, onRegisterTextarea]);
 
     useLayoutEffect(() => {
       if (isActive && localInputRef.current) {
@@ -461,7 +473,7 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
     };
 
     return (
-      <div data-line-row="true" className="group relative flex flex-col">
+      <div data-line-row="true" data-line-idx={idx} className="group relative flex flex-col py-[2px]">
         <div className="flex items-start gap-2">
           {/* Task Checkbox & Calendar Due Date Button */}
           {isTask && (
@@ -494,10 +506,7 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
           {/* Rendered vs. Editable Mode */}
           {isActive ? (
             <textarea
-              ref={(el) => {
-                localInputRef.current = el;
-                activeTextareaRef.current = el;
-              }}
+              ref={localInputRef}
               value={localDraft}
               onClick={(e) => e.stopPropagation()}
               onCompositionStart={() => {
@@ -769,13 +778,30 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
   draftLinesRef.current = draftLines;
 
   const lastEmittedRef = useRef<string>(content);
+  const lastNotePathRef = useRef<string | null | undefined>(noteContext?.notePath);
   const pendingCursorRef = useRef<{ line: number; pos: number } | null>(null);
+  const textareaMapRef = useRef<Map<number, HTMLTextAreaElement>>(new Map());
   const activeTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const blurTimerRef = useRef<number | null>(null);
   const toolbarScrollRef = useRef<HTMLDivElement>(null);
   const toolbarDraggedRef = useRef<boolean>(false);
   const imageFileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+
+  const registerTextarea = useCallback((idx: number, el: HTMLTextAreaElement | null) => {
+    if (el) {
+      textareaMapRef.current.set(idx, el);
+      if (focusedLineRef.current === idx) {
+        activeTextareaRef.current = el;
+      }
+    } else {
+      textareaMapRef.current.delete(idx);
+      // Only clear activeTextareaRef if NO active textarea exists for the current focused line
+      if (focusedLineRef.current === null || !textareaMapRef.current.has(focusedLineRef.current)) {
+        activeTextareaRef.current = null;
+      }
+    }
+  }, []);
 
   // Due Date popover picker state
   const [datePickerLine, setDatePickerLine] = useState<number | null>(null);
@@ -825,24 +851,37 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
     setIsImageMenuOpen(false);
   }, [refreshNoteMedia]);
 
-  // Sync incoming content ONLY when external change / note switch occurs (never on echo of our own edits)
+  // Sync incoming content ONLY when external change / note switch occurs (never wipe focus on same-note updates)
   useEffect(() => {
-    if (content !== lastEmittedRef.current) {
+    const noteSwitched = noteContext?.notePath !== lastNotePathRef.current;
+    lastNotePathRef.current = noteContext?.notePath;
+
+    if (content !== lastEmittedRef.current || noteSwitched) {
       const nextLines = content.length > 0 ? content.split('\n') : [''];
       lastEmittedRef.current = content;
       draftLinesRef.current = nextLines;
       setDraftLines(nextLines);
-      setFocusedLineIndex(null);
-      focusedLineRef.current = null;
+      if (noteSwitched) {
+        setFocusedLineIndex(null);
+        focusedLineRef.current = null;
+        pendingCursorRef.current = null;
+      } else if (focusedLineRef.current !== null && focusedLineRef.current >= nextLines.length) {
+        const clamped = Math.max(0, nextLines.length - 1);
+        focusedLineRef.current = clamped;
+        setFocusedLineIndex(clamped);
+      }
     }
-  }, [content]);
+  }, [content, noteContext?.notePath]);
 
-  // Synchronous layout-phase cursor positioning (zero timer race, instant focus)
+  // Synchronous layout-phase cursor positioning (zero race when switching lines cleanly)
   useLayoutEffect(() => {
+    if (focusedLineIndex === null) return;
+    const el = textareaMapRef.current.get(focusedLineIndex) || null;
+    if (!el) return;
+    activeTextareaRef.current = el;
+
     const pending = pendingCursorRef.current;
-    if (!pending || focusedLineIndex !== pending.line) return;
-    const el = activeTextareaRef.current;
-    if (el) {
+    if (pending && pending.line === focusedLineIndex) {
       if (document.activeElement !== el) {
         el.focus({ preventScroll: false });
       }
@@ -851,8 +890,11 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
         el.setSelectionRange(pos, pos);
       } catch {}
       resizeTextarea(el);
+      pendingCursorRef.current = null;
+    } else if (document.activeElement !== el) {
+      el.focus({ preventScroll: false });
+      resizeTextarea(el);
     }
-    pendingCursorRef.current = null;
   }, [focusedLineIndex, draftLines]);
 
   // Translate wheel & desktop mouse-drag into crisp horizontal scroll (touch uses native OS momentum pan-x)
@@ -1286,7 +1328,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
     }
   };
 
-  // Focus editor immediately when clicking/tapping anywhere in empty canvas area
+  // Focus editor intelligently when clicking empty canvas area without jumping unexpectedly to end
   const handleCanvasEmptyClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (isReadOnly) return;
     const sel = window.getSelection();
@@ -1294,16 +1336,52 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
       return;
     }
     if ((e.target as HTMLElement).closest('[data-line-row]')) return;
+
     const currentLines = draftLinesRef.current;
-    const lastIdx = Math.max(0, currentLines.length - 1);
-    const lastLine = currentLines[lastIdx] || '';
-    if (lastLine.trim() !== '') {
-      const updated = [...currentLines, ''];
-      commitLines(updated);
-      focusLineAt(updated.length - 1, 0);
-    } else {
-      focusLineAt(lastIdx, lastLine.length);
+    const rowNodes = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[data-line-row="true"]'));
+
+    if (rowNodes.length > 0) {
+      const lastRow = rowNodes[rowNodes.length - 1];
+      const lastRect = lastRow.getBoundingClientRect();
+      // If user clicked cleanly BELOW the last line -> append or focus last line
+      if (e.clientY > lastRect.bottom + 12) {
+        const lastIdx = Math.max(0, currentLines.length - 1);
+        const lastLine = currentLines[lastIdx] || '';
+        if (lastLine.trim() !== '') {
+          const updated = [...currentLines, ''];
+          commitLines(updated);
+          focusLineAt(updated.length - 1, 0);
+        } else {
+          focusLineAt(lastIdx, lastLine.length);
+        }
+        return;
+      }
+
+      // Otherwise user clicked a horizontal margin / inter-line area: focus the closest row at click Y
+      let closestIdx = 0;
+      let minDistance = Infinity;
+      rowNodes.forEach((row) => {
+        const rect = row.getBoundingClientRect();
+        const center = (rect.top + rect.bottom) / 2;
+        const dist =
+          e.clientY >= rect.top && e.clientY <= rect.bottom
+            ? 0
+            : Math.abs(e.clientY - center);
+        if (dist < minDistance) {
+          minDistance = dist;
+          const parsed = Number(row.dataset.lineIdx);
+          if (!Number.isNaN(parsed)) closestIdx = parsed;
+        }
+      });
+      const targetRect = rowNodes[closestIdx]?.getBoundingClientRect();
+      const clickedLeftSide = targetRect ? e.clientX < targetRect.left + 12 : false;
+      const targetLen = (currentLines[closestIdx] || '').length;
+      focusLineAt(closestIdx, clickedLeftSide ? 0 : targetLen);
+      return;
     }
+
+    const lastIdx = Math.max(0, currentLines.length - 1);
+    focusLineAt(lastIdx, (currentLines[lastIdx] || '').length);
   };
 
   const toolbarButtons = [
@@ -1710,8 +1788,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
         className="flex-1 relative overflow-y-auto px-4 md:px-12 py-6 cursor-text select-text"
       >
         <div
-          onClick={handleCanvasEmptyClick}
-          className="max-w-3xl mx-auto space-y-1 min-h-[calc(100%-1rem)] pb-24 select-text"
+          className="max-w-3xl mx-auto min-h-[calc(100%-1rem)] pb-24 select-text"
         >
           {/* Bidirectional Linked Projects Bar */}
           {linkedProjects && linkedProjects.length > 0 && (
@@ -1754,7 +1831,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
                 const img = getImageEmbed(rawLine);
                 return img ? imgDisplayModes[img.url] : undefined;
               })()}
-              activeTextareaRef={activeTextareaRef}
+              onRegisterTextarea={registerTextarea}
               onFocusLine={handleRowFocus}
               onBlurLine={handleRowBlur}
               onUpdateLine={updateLine}

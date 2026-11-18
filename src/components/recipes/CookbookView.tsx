@@ -272,9 +272,12 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
   const [loading, setLoading] = useState(true);
   const [hasLibrary, setHasLibrary] = useState<boolean>(true);
   const [mealLibrary, setMealLibrary] = useState<MealPlanLibrary | null>(null);
+  const [libraries, setLibraries] = useState<MealPlanLibrary[]>([]);
   const [pendingInvitations, setPendingInvitations] = useState<MealPlanInvitation[]>([]);
+  const [showNewLibraryModal, setShowNewLibraryModal] = useState<boolean>(false);
+  const [confirmDeleteLibId, setConfirmDeleteLibId] = useState<string | null>(null);
 
-  // Library onboarding state when user has no library yet
+  // Library onboarding / create state
   const [newLibName, setNewLibName] = useState<string>(`Essensplan von ${currentUser.displayName}`);
   const [newLibVisibility, setNewLibVisibility] = useState<'private' | 'shared'>('private');
   const [newLibInvited, setNewLibInvited] = useState<string[]>([]);
@@ -482,6 +485,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
         const libraryActive = data.hasLibrary !== false;
         setHasLibrary(libraryActive);
         setMealLibrary(data.library || null);
+        setLibraries(data.libraries || (data.library ? [data.library] : []));
         setPendingInvitations(data.invitations || []);
         setNewLibName(`Essensplan von ${currentUser.displayName}`);
         setRecipes(data.recipes || []);
@@ -1069,20 +1073,22 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     }, 550);
   }, []);
 
-  const handleDropOnDate = (dateIso: string, sectionId?: string) => {
-    if (!draggedRecipeId || isViewingSharedPlan) return;
+  const handleDropOnDate = (dateIso: string, sectionId?: string, transferredId?: string) => {
+    const rid = (transferredId || draggedRecipeId || '').trim();
+    if (!rid || isViewingSharedPlan) return;
     const sec = sectionId || mealSections[0]?.id || 'mittag';
-    handleAssignRecipeToDate(dateIso, draggedRecipeId, sec);
-    triggerDropFlash(dateIso, sec, draggedRecipeId);
+    handleAssignRecipeToDate(dateIso, rid, sec);
+    triggerDropFlash(dateIso, sec, rid);
     setDraggedRecipeId(null);
     scheduleCatalogRestoreAfterDrop();
   };
 
-  const handleDropOnCycleDay = (dayIndex: number, sectionId?: string) => {
-    if (!draggedRecipeId || isViewingSharedPlan) return;
+  const handleDropOnCycleDay = (dayIndex: number, sectionId?: string, transferredId?: string) => {
+    const rid = (transferredId || draggedRecipeId || '').trim();
+    if (!rid || isViewingSharedPlan) return;
     const sec = sectionId || mealSections[0]?.id || 'mittag';
-    handleAssignRecipeToCycleDay(dayIndex, draggedRecipeId, sec);
-    triggerDropFlash(String(dayIndex), sec, draggedRecipeId);
+    handleAssignRecipeToCycleDay(dayIndex, rid, sec);
+    triggerDropFlash(String(dayIndex), sec, rid);
     setDraggedRecipeId(null);
     scheduleCatalogRestoreAfterDrop();
   };
@@ -1631,6 +1637,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                     type="button"
                     data-grip-drag="true"
                     onPointerDown={(e) => {
+                      if (e.pointerType === 'mouse') return;
                       e.stopPropagation();
                       pointerDragOriginRef.current = {
                         recipe,
@@ -1992,28 +1999,27 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 />
               )}
 
-              {/* Pull-out Katalog Panel: 1:1 finger-tracked swipe + retracts to 20% while dragging a dish */}
+              {/* Pull-out Katalog Panel: pure inline transform (no Tailwind v4 translate-x conflict) */}
               <div
-                style={
-                  catalogDragX !== null
-                    ? {
-                        transform: `translateX(${catalogDragX}px)`,
-                        transition: 'none',
-                      }
-                    : undefined
-                }
+                style={{
+                  transform:
+                    catalogDragX !== null
+                      ? `translateX(${catalogDragX}px)`
+                      : !isLightCatalogOpen
+                      ? 'translateX(-100%)'
+                      : isLightCatalogRetracted
+                      ? 'translateX(-80%)'
+                      : 'translateX(0)',
+                  transition: catalogDragX !== null ? 'none' : undefined,
+                }}
                 className={`fixed ${
                   mobileBarPosition === 'bottom' ? 'top-0 bottom-[3.75rem]' : 'top-14 bottom-0'
                 } left-0 z-40 w-[300px] bg-white dark:bg-[#1A1C1F] border-r border-[#E5E3DC] dark:border-[#2B2D31] shadow-2xl p-3 flex flex-col ${
                   catalogDragX === null ? 'transition-transform duration-200 ease-out' : ''
                 } ${
-                  catalogDragX !== null
-                    ? ''
-                    : !isLightCatalogOpen
-                    ? '-translate-x-full pointer-events-none'
-                    : isLightCatalogRetracted
-                    ? '-translate-x-[80%] pointer-events-none'
-                    : 'translate-x-0'
+                  catalogDragX === null && (!isLightCatalogOpen || isLightCatalogRetracted)
+                    ? 'pointer-events-none'
+                    : ''
                 }`}
               >
                 {renderCatalogSidebarContent(true)}
@@ -2069,12 +2075,87 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                   )}
                 </div>
 
-                {/* Plan Switcher if shared plans exist */}
-                <div className="flex items-center gap-2 flex-wrap">
+                {/* Library Switcher + Plan Switcher */}
+                <div className="flex items-center gap-1.5 flex-wrap">
                   {mealLibrary && (
-                    <span className="text-[11px] font-semibold text-neutral-500 hidden sm:inline">
-                      {mealLibrary.name}
-                    </span>
+                    <div className="flex items-center gap-1">
+                      {libraries.length > 1 ? (
+                        <select
+                          value={mealLibrary.id}
+                          onChange={async (e) => {
+                            const targetId = e.target.value;
+                            if (!targetId || targetId === mealLibrary.id) return;
+                            try {
+                              await api.selectMealLibrary(currentUser.username, targetId);
+                              await loadCookbookData();
+                            } catch (err) {
+                              console.error('Bibliothek-Wechsel fehlgeschlagen:', err);
+                            }
+                          }}
+                          className="text-xs px-2.5 py-1 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#202225] font-semibold outline-hidden cursor-pointer max-w-[180px]"
+                          title="Essensplan-Bibliothek wechseln"
+                        >
+                          {libraries.map((lib) => (
+                            <option key={lib.id} value={lib.id}>
+                              {lib.name} ({lib.visibility === 'shared' ? 'Geteilt' : 'Privat'})
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="text-[11px] font-semibold text-neutral-600 dark:text-neutral-300 hidden sm:inline px-1">
+                          {mealLibrary.name}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNewLibName('');
+                          setNewLibVisibility('private');
+                          setNewLibInvited([]);
+                          setLibActionError(null);
+                          setShowNewLibraryModal(true);
+                        }}
+                        className="p-1 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#202225] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300 cursor-pointer"
+                        title="Neue Essensplan-Bibliothek anlegen"
+                      >
+                        <FolderPlus className="w-3.5 h-3.5" />
+                      </button>
+                      {mealLibrary.ownerUsername === currentUser.username && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (confirmDeleteLibId !== mealLibrary.id) {
+                              setConfirmDeleteLibId(mealLibrary.id);
+                              setTimeout(() => setConfirmDeleteLibId((prev) => (prev === mealLibrary.id ? null : prev)), 3500);
+                              return;
+                            }
+                            try {
+                              await api.deleteMealLibrary(currentUser.username, mealLibrary.id);
+                              setConfirmDeleteLibId(null);
+                              await loadCookbookData();
+                            } catch (err) {
+                              console.error('Bibliothek löschen fehlgeschlagen:', err);
+                            }
+                          }}
+                          className={`p-1 rounded-lg border cursor-pointer transition-colors ${
+                            confirmDeleteLibId === mealLibrary.id
+                              ? 'border-red-500 bg-red-500 text-white px-2 text-[10px] font-bold'
+                              : 'border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#202225] text-neutral-400 hover:text-red-500'
+                          }`}
+                          title={
+                            confirmDeleteLibId === mealLibrary.id
+                              ? 'Nochmal klicken zum endgültigen Löschen'
+                              : 'Aktive Bibliothek löschen'
+                          }
+                        >
+                          {confirmDeleteLibId === mealLibrary.id ? (
+                            'Löschen?'
+                          ) : (
+                            <Trash2 className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      )}
+                    </div>
                   )}
                   {sharedPlans.length > 0 && (
                     <select
@@ -2115,7 +2196,8 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       }}
                       onDrop={(e) => {
                         e.preventDefault();
-                        handleDropOnDate(day.date, mealSections[0]?.id);
+                        const rid = e.dataTransfer.getData('text/plain');
+                        handleDropOnDate(day.date, mealSections[0]?.id, rid);
                       }}
                       style={
                         isDayDropHovered
@@ -2232,7 +2314,8 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                               onDrop={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                handleDropOnDate(day.date, sec.id);
+                                const rid = e.dataTransfer.getData('text/plain');
+                                handleDropOnDate(day.date, sec.id, rid);
                               }}
                               style={
                                 isSectionHovered || isSlotDropped
@@ -2446,7 +2529,8 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                         }}
                         onDrop={(e) => {
                           e.preventDefault();
-                          handleDropOnCycleDay(cd.dayIndex, mealSections[0]?.id);
+                          const rid = e.dataTransfer.getData('text/plain');
+                          handleDropOnCycleDay(cd.dayIndex, mealSections[0]?.id, rid);
                         }}
                         style={
                           isDayDropHovered
@@ -2520,7 +2604,8 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                 onDrop={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
-                                  handleDropOnCycleDay(cd.dayIndex, sec.id);
+                                  const rid = e.dataTransfer.getData('text/plain');
+                                  handleDropOnCycleDay(cd.dayIndex, sec.id, rid);
                                 }}
                                 style={
                                   isSecHovered || isSlotDropped
@@ -5468,6 +5553,174 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
               />
             </button>
           )}
+        </div>
+      )}
+
+      {/* Create New Meal Library Modal */}
+      {showNewLibraryModal && (
+        <div
+          onClick={() => setShowNewLibraryModal(false)}
+          className="fixed inset-0 z-[125] bg-black/55 backdrop-blur-xs flex items-start sm:items-center justify-center p-3 pt-16 sm:p-4"
+        >
+          <form
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!newLibName.trim()) return;
+              setLibActionLoading(true);
+              setLibActionError(null);
+              try {
+                await api.createOrUpdateMealLibrary({
+                  username: currentUser.username,
+                  name: newLibName.trim(),
+                  visibility: newLibVisibility,
+                  invitedUsers: newLibVisibility === 'shared' ? newLibInvited : [],
+                  createNew: true,
+                });
+                setShowNewLibraryModal(false);
+                await loadCookbookData();
+              } catch (err: any) {
+                setLibActionError(err?.message || 'Bibliothek konnte nicht erstellt werden.');
+              } finally {
+                setLibActionLoading(false);
+              }
+            }}
+            className="bg-white dark:bg-[#1E2024] w-full max-w-md rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2B2D31] p-5 space-y-4 text-xs"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
+                <FolderPlus className="w-4 h-4" style={{ color: accentColor }} />
+                <span>Neue Essensplan-Bibliothek</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowNewLibraryModal(false)}
+                className="p-1 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
+              >
+                <X className="w-4 h-4 text-neutral-500" />
+              </button>
+            </div>
+
+            <div>
+              <label className="font-semibold block mb-1 text-neutral-700 dark:text-neutral-300">
+                Name der Bibliothek
+              </label>
+              <input
+                type="text"
+                required
+                autoFocus
+                value={newLibName}
+                onChange={(e) => setNewLibName(e.target.value)}
+                placeholder="z. B. Wochenplan Sommer oder Familienplan"
+                className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setNewLibVisibility('private')}
+                style={
+                  newLibVisibility === 'private'
+                    ? { borderColor: accentColor, backgroundColor: `${accentColor}12` }
+                    : undefined
+                }
+                className={`p-2.5 rounded-xl border text-left cursor-pointer flex items-center gap-2 ${
+                  newLibVisibility === 'private'
+                    ? 'border-2'
+                    : 'border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF]/70 dark:bg-[#25272C]'
+                }`}
+              >
+                <Lock className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
+                <div>
+                  <span className="font-bold block text-neutral-900 dark:text-neutral-100">Privat</span>
+                  <span className="text-[10px] text-neutral-500">Nur für dich</span>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setNewLibVisibility('shared')}
+                style={
+                  newLibVisibility === 'shared'
+                    ? { borderColor: accentColor, backgroundColor: `${accentColor}12` }
+                    : undefined
+                }
+                className={`p-2.5 rounded-xl border text-left cursor-pointer flex items-center gap-2 ${
+                  newLibVisibility === 'shared'
+                    ? 'border-2'
+                    : 'border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF]/70 dark:bg-[#25272C]'
+                }`}
+              >
+                <Globe className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
+                <div>
+                  <span className="font-bold block text-neutral-900 dark:text-neutral-100">Freigegeben</span>
+                  <span className="text-[10px] text-neutral-500">Gemeinsam planen</span>
+                </div>
+              </button>
+            </div>
+
+            {newLibVisibility === 'shared' && allUsers.filter((u) => u.username !== currentUser.username).length > 0 && (
+              <div className="space-y-1.5">
+                <label className="font-semibold block text-neutral-700 dark:text-neutral-300">
+                  Benutzer einladen
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {allUsers
+                    .filter((u) => u.username !== currentUser.username)
+                    .map((u) => {
+                      const isInvited = newLibInvited.includes(u.username);
+                      return (
+                        <button
+                          key={u.username}
+                          type="button"
+                          onClick={() =>
+                            setNewLibInvited((prev) =>
+                              isInvited ? prev.filter((x) => x !== u.username) : [...prev, u.username]
+                            )
+                          }
+                          style={
+                            isInvited
+                              ? { backgroundColor: accentColor, borderColor: accentColor, color: '#fff' }
+                              : undefined
+                          }
+                          className={`px-2.5 py-1 rounded-full border text-[11px] font-semibold cursor-pointer ${
+                            isInvited
+                              ? 'shadow-2xs'
+                              : 'border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C]'
+                          }`}
+                        >
+                          {u.displayName} {isInvited ? '✓' : '+'}
+                        </button>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+
+            {libActionError && (
+              <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-500 text-[11px]">
+                {libActionError}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowNewLibraryModal(false)}
+                className="px-3.5 py-1.5 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 font-semibold cursor-pointer"
+              >
+                Abbrechen
+              </button>
+              <button
+                type="submit"
+                disabled={libActionLoading || !newLibName.trim()}
+                style={{ backgroundColor: accentColor }}
+                className="px-4 py-1.5 rounded-full text-white font-bold shadow-xs hover:opacity-95 disabled:opacity-50 cursor-pointer"
+              >
+                {libActionLoading ? 'Erstelle...' : 'Erstellen & Aktivieren'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

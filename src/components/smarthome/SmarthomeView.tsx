@@ -11,6 +11,12 @@ import {
 } from '../../types';
 import { api } from '../../services/api';
 import {
+  SmarthomeTimeRange,
+  SmarthomeTileCalculation,
+  SmarthomeDiscoveredTopic,
+  SmarthomeSeriesPoint,
+} from '../../types';
+import {
   Cpu,
   Plus,
   Search,
@@ -29,8 +35,12 @@ import {
   Radio,
   Server,
   ChevronRight,
+  ChevronDown,
   Clock,
   ShieldCheck,
+  Calculator,
+  FolderOpen,
+  TrendingUp,
 } from 'lucide-react';
 
 interface SmarthomeViewProps {
@@ -43,35 +53,146 @@ type SmarthomeTab = 'tiles' | 'brokers' | 'sources';
 
 const PRESET_TILE_ICONS = ['thermometer', 'zap', 'droplets', 'home', 'sun', 'gauge'];
 
-const renderSparkline = (history: number[], color: string) => {
-  if (!history || history.length < 2) return null;
-  const min = Math.min(...history);
-  const max = Math.max(...history);
-  const range = max - min || 1;
-  const w = 160;
-  const h = 42;
-  const pad = 3;
-  const pts = history
-    .map((val, idx) => {
-      const x = pad + (idx / (history.length - 1)) * (w - pad * 2);
-      const y = h - pad - ((val - min) / range) * (h - pad * 2);
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(' ');
-  const areaPts = `${pad},${h - pad} ${pts} ${w - pad},${h - pad}`;
+const TIME_RANGE_OPTIONS: Array<{ id: SmarthomeTimeRange; label: string }> = [
+  { id: '1h', label: '1 Std' },
+  { id: '6h', label: '6 Std' },
+  { id: '24h', label: '24 Std' },
+  { id: '7d', label: '7 Tage' },
+  { id: '30d', label: '30 Tage' },
+  { id: 'ytd', label: 'Dieses Jahr (YTD)' },
+];
+
+const formatChartTime = (ts: number, range?: SmarthomeTimeRange): string => {
+  const d = new Date(ts);
+  if (range === '7d' || range === '30d' || range === 'ytd') {
+    return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+  }
+  return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+};
+
+const formatCompactNum = (v: number): string => {
+  if (Math.abs(v) >= 1000) return v.toFixed(0);
+  if (Math.abs(v) >= 10) return v.toFixed(1);
+  return v.toFixed(2).replace(/\.?0+$/, '');
+};
+
+interface TelemetryChartProps {
+  tileId: string;
+  points: SmarthomeSeriesPoint[];
+  color: string;
+  unit?: string;
+  timeRange?: SmarthomeTimeRange;
+  tall?: boolean;
+}
+
+const TelemetryCurveChart: React.FC<TelemetryChartProps> = ({
+  tileId,
+  points,
+  color,
+  unit,
+  timeRange = '24h',
+  tall = false,
+}) => {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  if (!points || points.length < 2) return null;
+
+  const minVal = Math.min(...points.map((p) => p.v));
+  const maxVal = Math.max(...points.map((p) => p.v));
+  const valRange = maxVal - minVal || 1;
+  const minT = points[0].t;
+  const maxT = points[points.length - 1].t;
+  const tRange = maxT - minT || 1;
+
+  const w = 260;
+  const h = tall ? 110 : 72;
+  const padX = 4;
+  const padY = 6;
+
+  const coords = points.map((p, idx) => {
+    const xRatio = tRange > 0 ? (p.t - minT) / tRange : idx / (points.length - 1);
+    const x = padX + xRatio * (w - padX * 2);
+    const y = h - padY - ((p.v - minVal) / valRange) * (h - padY * 2);
+    return { x, y, pt: p };
+  });
+
+  const linePts = coords.map((c) => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ');
+  const areaPts = `${coords[0].x.toFixed(1)},${h - padY} ${linePts} ${coords[coords.length - 1].x.toFixed(1)},${h - padY}`;
+  const activeCoord = hoverIdx !== null && coords[hoverIdx] ? coords[hoverIdx] : coords[coords.length - 1];
+  const gradId = `sh_grad_${tileId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
 
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-11 overflow-visible">
-      <polygon points={areaPts} fill={`${color}1F`} />
-      <polyline
-        fill="none"
-        stroke={color}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        points={pts}
-      />
-    </svg>
+    <div className="space-y-1 pt-1 select-none">
+      <div className="flex items-center justify-between text-[10px] text-neutral-400 tabular-nums">
+        <span>
+          Min {formatCompactNum(minVal)} · Max {formatCompactNum(maxVal)} {unit || ''}
+        </span>
+        {hoverIdx !== null && activeCoord ? (
+          <span className="font-bold text-neutral-700 dark:text-neutral-200">
+            {formatCompactNum(activeCoord.pt.v)} {unit || ''} · {formatChartTime(activeCoord.pt.t, timeRange)}
+          </span>
+        ) : (
+          <span className="uppercase tracking-wider font-semibold">{timeRange}</span>
+        )}
+      </div>
+
+      <svg
+        viewBox={`0 0 ${w} ${h}`}
+        className={`w-full ${tall ? 'h-28' : 'h-18'} overflow-visible touch-pan-y`}
+        onMouseLeave={() => setHoverIdx(null)}
+        onMouseMove={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const relX = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+          const idx = Math.min(coords.length - 1, Math.max(0, Math.round(relX * (coords.length - 1))));
+          setHoverIdx(idx);
+        }}
+      >
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.28" />
+            <stop offset="100%" stopColor={color} stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        <line
+          x1={padX}
+          y1={h / 2}
+          x2={w - padX}
+          y2={h / 2}
+          stroke="currentColor"
+          strokeOpacity="0.12"
+          strokeDasharray="3 3"
+        />
+        <polygon points={areaPts} fill={`url(#${gradId})`} />
+        <polyline
+          fill="none"
+          stroke={color}
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          points={linePts}
+        />
+        {activeCoord && (
+          <>
+            {hoverIdx !== null && (
+              <line
+                x1={activeCoord.x}
+                y1={padY}
+                x2={activeCoord.x}
+                y2={h - padY}
+                stroke={color}
+                strokeOpacity="0.35"
+                strokeWidth="1"
+              />
+            )}
+            <circle cx={activeCoord.x} cy={activeCoord.y} r="3.2" fill={color} stroke="#fff" strokeWidth="1.2" />
+          </>
+        )}
+      </svg>
+
+      <div className="flex items-center justify-between text-[9px] text-neutral-400 tabular-nums">
+        <span>{formatChartTime(minT, timeRange)}</span>
+        <span>{formatChartTime(maxT, timeRange)}</span>
+      </div>
+    </div>
   );
 };
 
@@ -98,20 +219,36 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
   // Mobile floating nav
   const [isMobileNavExpanded, setIsMobileNavExpanded] = useState(false);
 
+  // Tile Organization: Tabs & Collapsible Groups
+  const [selectedTileTab, setSelectedTileTab] = useState<string>('Alle');
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+
   // Tile Modal
   const [tileModalOpen, setTileModalOpen] = useState(false);
   const [editingTile, setEditingTile] = useState<SmarthomeTile | null>(null);
   const [tileTitle, setTileTitle] = useState('');
   const [tileSubtitle, setTileSubtitle] = useState('');
+  const [tileTab, setTileTab] = useState('');
+  const [tileGroup, setTileGroup] = useState('');
   const [tileSize, setTileSize] = useState<SmarthomeTileSize>('sm');
   const [tileDisplayMode, setTileDisplayMode] = useState<'value' | 'chart'>('value');
+  const [tileTimeRange, setTileTimeRange] = useState<SmarthomeTimeRange>('24h');
   const [tileSourceType, setTileSourceType] = useState<'mqtt' | 'db'>('mqtt');
   const [tileSourceId, setTileSourceId] = useState('');
   const [tileTopicOrPath, setTileTopicOrPath] = useState('');
   const [tileJsonPath, setTileJsonPath] = useState('');
   const [tileUnit, setTileUnit] = useState('');
+  const [tileCalcMode, setTileCalcMode] = useState<SmarthomeTileCalculation['mode']>('none');
+  const [tileCalcFormula, setTileCalcFormula] = useState('');
+  const [tileCalcRefTs, setTileCalcRefTs] = useState('');
   const [tileIsPreset, setTileIsPreset] = useState(false);
   const [tileSaving, setTileSaving] = useState(false);
+
+  // MQTT # Auto-Discovery Topic Picker
+  const [showTopicPicker, setShowTopicPicker] = useState(false);
+  const [loadingTopics, setLoadingTopics] = useState(false);
+  const [discoveredTopics, setDiscoveredTopics] = useState<SmarthomeDiscoveredTopic[]>([]);
+  const [topicFilterQuery, setTopicFilterQuery] = useState('');
 
   // Broker Modal
   const [brokerModalOpen, setBrokerModalOpen] = useState(false);
@@ -125,14 +262,20 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
   const [brokerEnabled, setBrokerEnabled] = useState(true);
   const [brokerSaving, setBrokerSaving] = useState(false);
 
-  // DB Source Modal
+  // DB Source Modal (http-json | influx-v1 | influx-v2 | prometheus)
   const [dbModalOpen, setDbModalOpen] = useState(false);
   const [editingDbId, setEditingDbId] = useState<string | null>(null);
   const [dbName, setDbName] = useState('');
-  const [dbKind, setDbKind] = useState<'http-json' | 'influx-v2' | 'prometheus'>('http-json');
+  const [dbKind, setDbKind] = useState<SmarthomeDbSource['kind']>('http-json');
   const [dbUrl, setDbUrl] = useState('');
   const [dbPollSec, setDbPollSec] = useState('30');
   const [dbAuthHeader, setDbAuthHeader] = useState('');
+  const [dbDatabase, setDbDatabase] = useState('');
+  const [dbRetentionPolicy, setDbRetentionPolicy] = useState('');
+  const [dbOrg, setDbOrg] = useState('');
+  const [dbBucket, setDbBucket] = useState('');
+  const [dbUsername, setDbUsername] = useState('');
+  const [dbPassword, setDbPassword] = useState('');
   const [dbEnabled, setDbEnabled] = useState(true);
   const [dbSaving, setDbSaving] = useState(false);
   const [pollingSourceId, setPollingSourceId] = useState<string | null>(null);
@@ -210,12 +353,71 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
     [state.tiles, currentUser.username]
   );
 
+  const availableTileTabs = useMemo(() => {
+    const tabSet = new Set<string>();
+    ownAndUserTiles.forEach((t) => {
+      if (t.tab?.trim()) tabSet.add(t.tab.trim());
+    });
+    return ['Alle', ...Array.from(tabSet)];
+  }, [ownAndUserTiles]);
+
+  const existingGroupNames = useMemo(() => {
+    const gSet = new Set<string>();
+    ownAndUserTiles.forEach((t) => {
+      if (t.group?.trim()) gSet.add(t.group.trim());
+    });
+    return Array.from(gSet);
+  }, [ownAndUserTiles]);
+
+  const existingTabNames = useMemo(
+    () => availableTileTabs.filter((t) => t !== 'Alle'),
+    [availableTileTabs]
+  );
+
+  useEffect(() => {
+    if (selectedTileTab !== 'Alle' && !availableTileTabs.includes(selectedTileTab)) {
+      setSelectedTileTab('Alle');
+    }
+  }, [availableTileTabs, selectedTileTab]);
+
+  const groupedVisibleTiles = useMemo(() => {
+    const filtered =
+      selectedTileTab === 'Alle'
+        ? ownAndUserTiles
+        : ownAndUserTiles.filter((t) => (t.tab?.trim() || '') === selectedTileTab);
+    const groupMap = new Map<string, SmarthomeTile[]>();
+    filtered.forEach((t) => {
+      const gName = t.group?.trim() || 'Allgemein';
+      const arr = groupMap.get(gName) || [];
+      arr.push(t);
+      groupMap.set(gName, arr);
+    });
+    return Array.from(groupMap.entries()).map(([groupName, items]) => ({
+      groupName,
+      items,
+    }));
+  }, [ownAndUserTiles, selectedTileTab]);
+
+  const handleLoadMqttTopics = async (brokerIdOverride?: string) => {
+    setLoadingTopics(true);
+    setShowTopicPicker(true);
+    try {
+      const topics = await api.fetchSmarthomeMqttTopics(brokerIdOverride || tileSourceId || undefined);
+      setDiscoveredTopics(topics);
+    } finally {
+      setLoadingTopics(false);
+    }
+  };
+
   const openCreateTileModal = () => {
     setEditingTile(null);
     setTileTitle('');
     setTileSubtitle('');
+    setTileTab(selectedTileTab !== 'Alle' ? selectedTileTab : '');
+    setTileGroup('');
     setTileSize('sm');
     setTileDisplayMode('value');
+    setTileTimeRange('24h');
     const defaultMqtt = state.brokers[0];
     const defaultDb = state.dbSources[0];
     if (defaultMqtt) {
@@ -231,7 +433,12 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
     setTileTopicOrPath('');
     setTileJsonPath('');
     setTileUnit('');
+    setTileCalcMode('none');
+    setTileCalcFormula('');
+    setTileCalcRefTs('');
     setTileIsPreset(false);
+    setShowTopicPicker(false);
+    setTopicFilterQuery('');
     setTileModalOpen(true);
   };
 
@@ -239,14 +446,22 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
     setEditingTile(tile);
     setTileTitle(tile.title);
     setTileSubtitle(tile.subtitle || '');
+    setTileTab(tile.tab || '');
+    setTileGroup(tile.group || '');
     setTileSize(tile.size);
     setTileDisplayMode(tile.displayMode || 'value');
+    setTileTimeRange(tile.timeRange || '24h');
     setTileSourceType(tile.sourceType);
     setTileSourceId(tile.sourceId);
     setTileTopicOrPath(tile.topicOrPath);
     setTileJsonPath(tile.jsonPath || '');
     setTileUnit(tile.unit || '');
+    setTileCalcMode(tile.calculation?.mode || 'none');
+    setTileCalcFormula(tile.calculation?.formula || '');
+    setTileCalcRefTs(tile.calculation?.referenceTimestamp || '');
     setTileIsPreset(Boolean(tile.isAdminPreset));
+    setShowTopicPicker(false);
+    setTopicFilterQuery('');
     setTileModalOpen(true);
   };
 
@@ -255,13 +470,24 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
     if (!tileTitle.trim() || !tileTopicOrPath.trim()) return;
     setTileSaving(true);
     try {
+      const calcPayload: SmarthomeTileCalculation | undefined =
+        tileCalcMode !== 'none' || tileCalcFormula.trim() || tileCalcRefTs.trim()
+          ? {
+              mode: tileCalcMode === 'none' && tileCalcFormula.trim() ? 'formula' : tileCalcMode,
+              formula: tileCalcFormula.trim() || undefined,
+              referenceTimestamp: tileCalcRefTs.trim() || undefined,
+            }
+          : undefined;
       const payload: SmarthomeTile = {
         id: editingTile?.id || `tile_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         ownerUsername: editingTile?.ownerUsername || currentUser.username,
         title: tileTitle.trim(),
         subtitle: tileSubtitle.trim() || undefined,
+        tab: tileTab.trim() || undefined,
+        group: tileGroup.trim() || undefined,
         size: tileSize,
         displayMode: tileDisplayMode,
+        timeRange: tileTimeRange,
         sourceType: tileSourceType,
         sourceId:
           tileSourceId ||
@@ -269,6 +495,7 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
         topicOrPath: tileTopicOrPath.trim(),
         jsonPath: tileJsonPath.trim() || undefined,
         unit: tileUnit.trim() || undefined,
+        calculation: calcPayload,
         icon: editingTile?.icon || PRESET_TILE_ICONS[0],
         isAdminPreset: currentUser.role === 'admin' ? tileIsPreset : false,
       };
@@ -280,6 +507,16 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
           tiles: exists ? prev.tiles.map((t) => (t.id === saved.id ? saved : t)) : [...prev.tiles, saved],
         };
       });
+      if (saved.sourceType === 'db') {
+        api.pollSmarthomeDbSource(saved.sourceId).then((res) => {
+          if (res.values) {
+            setState((prev) => ({
+              ...prev,
+              values: { ...prev.values, ...res.values },
+            }));
+          }
+        }).catch(() => {});
+      }
       setTileModalOpen(false);
     } catch (err) {
       console.error(err);
@@ -410,10 +647,16 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
   const openCreateDbModal = () => {
     setEditingDbId(null);
     setDbName('');
-    setDbKind('http-json');
+    setDbKind('influx-v1');
     setDbUrl('');
     setDbPollSec('30');
     setDbAuthHeader('');
+    setDbDatabase('');
+    setDbRetentionPolicy('');
+    setDbOrg('');
+    setDbBucket('');
+    setDbUsername('');
+    setDbPassword('');
     setDbEnabled(true);
     setDbModalOpen(true);
   };
@@ -425,6 +668,12 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
     setDbUrl(src.url);
     setDbPollSec(String(src.pollIntervalSec || 30));
     setDbAuthHeader(src.authHeader || '');
+    setDbDatabase(src.database || '');
+    setDbRetentionPolicy(src.retentionPolicy || '');
+    setDbOrg(src.org || '');
+    setDbBucket(src.bucket || '');
+    setDbUsername(src.username || '');
+    setDbPassword(src.password || '');
     setDbEnabled(src.enabled);
     setDbModalOpen(true);
   };
@@ -441,6 +690,12 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
         url: dbUrl.trim(),
         pollIntervalSec: Math.max(5, Number(dbPollSec) || 30),
         authHeader: dbAuthHeader.trim() || undefined,
+        database: dbDatabase.trim() || undefined,
+        retentionPolicy: dbRetentionPolicy.trim() || undefined,
+        org: dbOrg.trim() || undefined,
+        bucket: dbBucket.trim() || undefined,
+        username: dbUsername.trim() || undefined,
+        password: dbPassword || undefined,
         enabled: dbEnabled,
       };
       const saved = await api.saveSmarthomeDbSource(payload);
@@ -485,6 +740,8 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
   };
 
   const resolveTileLive = (tile: SmarthomeTile): SmarthomeLiveValue | undefined => {
+    const tileKey = `tile:${tile.id}`;
+    if (state.values[tileKey]) return state.values[tileKey];
     const primaryKey = `${tile.sourceId}::${tile.topicOrPath}`;
     if (state.values[primaryKey]) return state.values[primaryKey];
     const fallbackMatch = Object.values(state.values).find((v) =>
@@ -695,7 +952,48 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
               </div>
             )}
 
-            {/* Tiles Grid */}
+            {/* Notes-style Horizontal Slideable Tab Strip */}
+            {ownAndUserTiles.length > 0 && availableTileTabs.length > 1 && (
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 -mx-1 px-1">
+                {availableTileTabs.map((tabLabel) => {
+                  const isActive = selectedTileTab === tabLabel;
+                  const count =
+                    tabLabel === 'Alle'
+                      ? ownAndUserTiles.length
+                      : ownAndUserTiles.filter((t) => (t.tab?.trim() || '') === tabLabel).length;
+                  return (
+                    <button
+                      key={tabLabel}
+                      type="button"
+                      onClick={() => setSelectedTileTab(tabLabel)}
+                      style={
+                        isActive
+                          ? { backgroundColor: accentColor, borderColor: accentColor, color: '#fff' }
+                          : undefined
+                      }
+                      className={`px-3.5 py-1.5 rounded-full border text-xs font-bold whitespace-nowrap shrink-0 flex items-center gap-1.5 transition-all cursor-pointer ${
+                        isActive
+                          ? 'shadow-xs'
+                          : 'bg-[#FFFDF9] dark:bg-[#1E2025] border-[#E5E3DC] dark:border-[#2F3136] text-neutral-600 dark:text-neutral-300 hover:border-neutral-400'
+                      }`}
+                    >
+                      <span>{tabLabel}</span>
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded-full tabular-nums ${
+                          isActive
+                            ? 'bg-white/25 text-white'
+                            : 'bg-[#F4F3EF] dark:bg-[#2A2C32] text-neutral-500'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Tiles Grid (Grouped & Collapsible) */}
             {ownAndUserTiles.length === 0 ? (
               <div className="p-8 rounded-3xl bg-[#FFFDF9] dark:bg-[#1E2025] border border-dashed border-[#D6D3C9] dark:border-[#32353D] text-center space-y-3">
                 <div
@@ -709,7 +1007,7 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
                     Noch keine Smarthome-Kacheln eingerichtet
                   </h3>
                   <p className="text-xs text-neutral-500">
-                    Verbinde zuerst einen MQTT-Broker oder eine HTTP/JSON-Quelle und lege Sensor-Kacheln für Temperaturen, Energie oder Statuswerte an.
+                    Verbinde zuerst einen MQTT-Broker oder eine InfluxDB-/HTTP-Quelle und lege Sensor-Kacheln für Temperaturen, Energie oder Berechnungen an.
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
@@ -731,96 +1029,175 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
                 </div>
               </div>
             ) : (
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 auto-rows-[minmax(140px,auto)]">
-                {ownAndUserTiles.map((tile) => {
-                  const live = resolveTileLive(tile);
-                  const sizeClass =
-                    tile.size === 'lg'
-                      ? 'col-span-2 row-span-2'
-                      : tile.size === 'wide'
-                      ? 'col-span-2'
-                      : 'col-span-1';
-                  const canEdit =
-                    tile.ownerUsername === currentUser.username || currentUser.role === 'admin';
-                  const valText = live?.value ?? tile.lastValue ?? '–';
-
+              <div className="space-y-5">
+                {groupedVisibleTiles.map(({ groupName, items }) => {
+                  const isCollapsed = !!collapsedGroups[groupName];
                   return (
-                    <div
-                      key={tile.id}
-                      className={`${sizeClass} p-4 rounded-2xl bg-[#FFFDF9] dark:bg-[#1E2025] border border-[#E5E3DC] dark:border-[#2F3136] shadow-2xs flex flex-col justify-between gap-2 group relative overflow-hidden transition-all hover:border-neutral-300 dark:hover:border-neutral-600`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <h4 className="text-xs sm:text-sm font-bold text-neutral-900 dark:text-neutral-100 truncate">
-                              {tile.title}
-                            </h4>
-                            {tile.isAdminPreset && (
-                              <span
-                                style={{ backgroundColor: `${accentColor}1F`, color: accentColor }}
-                                className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-md"
+                    <section key={groupName} className="space-y-2.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setCollapsedGroups((prev) => ({
+                            ...prev,
+                            [groupName]: !prev[groupName],
+                          }))
+                        }
+                        className="flex items-center gap-2 px-1 py-1 text-left cursor-pointer group/grp"
+                      >
+                        {isCollapsed ? (
+                          <ChevronRight className="w-4 h-4 text-neutral-400" />
+                        ) : (
+                          <ChevronDown className="w-4 h-4 text-neutral-400" />
+                        )}
+                        <FolderOpen className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                        <span className="text-xs font-extrabold uppercase tracking-wider text-neutral-700 dark:text-neutral-200">
+                          {groupName}
+                        </span>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#ECEAE2] dark:bg-[#25272D] text-neutral-500 tabular-nums">
+                          {items.length}
+                        </span>
+                      </button>
+
+                      {!isCollapsed && (
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 auto-rows-[minmax(145px,auto)]">
+                          {items.map((tile) => {
+                            const live = resolveTileLive(tile);
+                            const sizeClass =
+                              tile.size === 'lg'
+                                ? 'col-span-2 row-span-2'
+                                : tile.size === 'wide'
+                                ? 'col-span-2'
+                                : 'col-span-1';
+                            const canEdit =
+                              tile.ownerUsername === currentUser.username || currentUser.role === 'admin';
+                            const valText = live?.value ?? tile.lastValue ?? '–';
+                            const chartPoints: SmarthomeSeriesPoint[] =
+                              live?.series && live.series.length > 1
+                                ? live.series
+                                : live?.history && live.history.length > 1
+                                ? live.history.map((v, i, arr) => ({
+                                    t: (live.timestamp || Date.now()) - (arr.length - 1 - i) * 60000,
+                                    v,
+                                  }))
+                                : [];
+                            const hasCalcDetails =
+                              Boolean(tile.calculation?.formula) ||
+                              live?.referenceValue !== undefined;
+
+                            return (
+                              <div
+                                key={tile.id}
+                                className={`${sizeClass} p-4 rounded-2xl bg-[#FFFDF9] dark:bg-[#1E2025] border border-[#E5E3DC] dark:border-[#2F3136] shadow-2xs flex flex-col justify-between gap-2 group relative overflow-hidden transition-all hover:border-neutral-300 dark:hover:border-neutral-600`}
                               >
-                                <ShieldCheck className="w-2.5 h-2.5" /> Preset
-                              </span>
-                            )}
-                          </div>
-                          {tile.subtitle && (
-                            <p className="text-[11px] text-neutral-500 truncate">{tile.subtitle}</p>
-                          )}
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <h4 className="text-xs sm:text-sm font-bold text-neutral-900 dark:text-neutral-100 truncate">
+                                        {tile.title}
+                                      </h4>
+                                      {tile.isAdminPreset && (
+                                        <span
+                                          style={{ backgroundColor: `${accentColor}1F`, color: accentColor }}
+                                          className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-md"
+                                        >
+                                          <ShieldCheck className="w-2.5 h-2.5" /> Preset
+                                        </span>
+                                      )}
+                                      {tile.calculation && tile.calculation.mode !== 'none' && (
+                                        <span
+                                          style={{ backgroundColor: `${accentColor}15`, color: accentColor }}
+                                          className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-md"
+                                          title={tile.calculation.formula || 'Zeitvergleich aktiv'}
+                                        >
+                                          <Calculator className="w-2.5 h-2.5" /> Formel
+                                        </span>
+                                      )}
+                                    </div>
+                                    {tile.subtitle && (
+                                      <p className="text-[11px] text-neutral-500 truncate">{tile.subtitle}</p>
+                                    )}
+                                  </div>
+
+                                  {canEdit && (
+                                    <div className="flex items-center gap-1 shrink-0 opacity-90 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
+                                      <button
+                                        type="button"
+                                        onClick={() => openEditTileModal(tile)}
+                                        className="p-1.5 rounded-lg bg-[#F4F3EF] dark:bg-[#2A2D34] text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 cursor-pointer"
+                                        title="Kachel bearbeiten"
+                                      >
+                                        <Edit3 className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeleteTile(tile.id)}
+                                        className="p-1.5 rounded-lg bg-[#F4F3EF] dark:bg-[#2A2D34] text-neutral-500 hover:text-red-500 cursor-pointer"
+                                        title="Kachel löschen"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Value, Calculation Summary & SVG Telemetry Curve */}
+                                <div className="space-y-1.5 my-auto">
+                                  <div className="flex items-baseline gap-1.5 flex-wrap">
+                                    <span
+                                      style={{ color: live ? accentColor : undefined }}
+                                      className="text-2xl sm:text-3xl font-black tracking-tight text-neutral-900 dark:text-neutral-100 tabular-nums break-all"
+                                    >
+                                      {valText}
+                                    </span>
+                                    {tile.unit && (
+                                      <span className="text-xs sm:text-sm font-bold text-neutral-500">
+                                        {tile.unit}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {hasCalcDetails && (
+                                    <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-neutral-500 dark:text-neutral-400 tabular-nums">
+                                      {live?.rawValue && live.rawValue !== valText && (
+                                        <span className="px-1.5 py-0.5 rounded bg-[#F4F3EF] dark:bg-[#282A30]">
+                                          Aktuell: {live.rawValue}
+                                        </span>
+                                      )}
+                                      {live?.referenceValue !== undefined && (
+                                        <span className="px-1.5 py-0.5 rounded bg-[#F4F3EF] dark:bg-[#282A30]">
+                                          Ref: {formatCompactNum(live.referenceValue)}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {tile.displayMode === 'chart' && chartPoints.length > 1 && (
+                                    <TelemetryCurveChart
+                                      tileId={tile.id}
+                                      points={chartPoints}
+                                      color={accentColor}
+                                      unit={tile.unit}
+                                      timeRange={tile.timeRange || '24h'}
+                                      tall={tile.size === 'lg'}
+                                    />
+                                  )}
+                                </div>
+
+                                <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#F0EFEA] dark:border-[#2A2C32] text-[10px] text-neutral-400">
+                                  <span className="font-mono truncate" title={tile.topicOrPath}>
+                                    {tile.sourceType === 'mqtt' ? 'MQTT' : 'DB/HTTP'} · {tile.topicOrPath}
+                                  </span>
+                                  <span className="inline-flex items-center gap-1 shrink-0 tabular-nums">
+                                    <Clock className="w-2.5 h-2.5" />
+                                    {formatTimestamp(live?.timestamp)}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
-
-                        {canEdit && (
-                          <div className="flex items-center gap-1 shrink-0 opacity-90 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
-                            <button
-                              type="button"
-                              onClick={() => openEditTileModal(tile)}
-                              className="p-1.5 rounded-lg bg-[#F4F3EF] dark:bg-[#2A2D34] text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 cursor-pointer"
-                              title="Kachel bearbeiten"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteTile(tile.id)}
-                              className="p-1.5 rounded-lg bg-[#F4F3EF] dark:bg-[#2A2D34] text-neutral-500 hover:text-red-500 cursor-pointer"
-                              title="Kachel löschen"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Value & Optional Sparkline */}
-                      <div className="space-y-1.5 my-auto">
-                        <div className="flex items-baseline gap-1.5 flex-wrap">
-                          <span
-                            style={{ color: live ? accentColor : undefined }}
-                            className="text-2xl sm:text-3xl font-black tracking-tight text-neutral-900 dark:text-neutral-100 tabular-nums break-all"
-                          >
-                            {valText}
-                          </span>
-                          {tile.unit && (
-                            <span className="text-xs sm:text-sm font-bold text-neutral-500">
-                              {tile.unit}
-                            </span>
-                          )}
-                        </div>
-                        {tile.displayMode === 'chart' && live?.history && live.history.length > 1 && (
-                          <div className="pt-1">{renderSparkline(live.history, accentColor)}</div>
-                        )}
-                      </div>
-
-                      <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#F0EFEA] dark:border-[#2A2C32] text-[10px] text-neutral-400">
-                        <span className="font-mono truncate" title={tile.topicOrPath}>
-                          {tile.sourceType === 'mqtt' ? 'MQTT' : 'HTTP/DB'} · {tile.topicOrPath}
-                        </span>
-                        <span className="inline-flex items-center gap-1 shrink-0 tabular-nums">
-                          <Clock className="w-2.5 h-2.5" />
-                          {formatTimestamp(live?.timestamp)}
-                        </span>
-                      </div>
-                    </div>
+                      )}
+                    </section>
                   );
                 })}
               </div>
@@ -964,10 +1341,10 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
             <div className="p-4 sm:p-5 rounded-3xl bg-[#FFFDF9] dark:bg-[#1E2025] border border-[#E5E3DC] dark:border-[#2F3136] flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-extrabold text-neutral-900 dark:text-neutral-100">
-                  Datenbank-, Influx-, Prometheus- &amp; HTTP-JSON-Quellen
+                  Datenbank-, InfluxDB v1/v2-, Prometheus- &amp; HTTP-JSON-Quellen
                 </h3>
                 <p className="text-xs text-neutral-500">
-                  Fragt zyklisch REST-JSON-APIs, Home-Assistant-Endpunkte, InfluxDB v2 oder Prometheus-Metriken ab.
+                  Fragt zyklisch InfluxDB v1 (InfluxQL), InfluxDB v2 (Flux), Prometheus-Metriken oder REST-JSON-APIs inkl. Verlaufsdaten ab.
                 </p>
               </div>
               <button
@@ -1115,7 +1492,7 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
           <form
             onClick={(e) => e.stopPropagation()}
             onSubmit={handleSaveTile}
-            className="w-full max-w-md bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] p-5 space-y-3.5"
+            className="w-full max-w-lg max-h-[86dvh] overflow-y-auto bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] p-5 space-y-3.5"
           >
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-extrabold text-neutral-900 dark:text-neutral-100">
@@ -1138,7 +1515,7 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
                 <input
                   type="text"
                   required
-                  placeholder="z.B. Wohnzimmer Temperatur"
+                  placeholder="z.B. Hausverbrauch Leistung"
                   value={tileTitle}
                   onChange={(e) => setTileTitle(e.target.value)}
                   className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
@@ -1150,7 +1527,7 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="z.B. EG Südseite"
+                  placeholder="z.B. Smartmeter Zähler"
                   value={tileSubtitle}
                   onChange={(e) => setTileSubtitle(e.target.value)}
                   className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
@@ -1158,7 +1535,47 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
               </div>
             </div>
 
+            {/* Tab & Gruppe Organization */}
             <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                  Tab (Reiter)
+                </label>
+                <input
+                  type="text"
+                  list="sh-tab-suggestions"
+                  placeholder="z.B. Energie, Klima, Solar"
+                  value={tileTab}
+                  onChange={(e) => setTileTab(e.target.value)}
+                  className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                />
+                <datalist id="sh-tab-suggestions">
+                  {existingTabNames.map((t) => (
+                    <option key={t} value={t} />
+                  ))}
+                </datalist>
+              </div>
+              <div>
+                <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                  Gruppe (klappbar)
+                </label>
+                <input
+                  type="text"
+                  list="sh-group-suggestions"
+                  placeholder="z.B. Stromzähler, Erdgeschoss"
+                  value={tileGroup}
+                  onChange={(e) => setTileGroup(e.target.value)}
+                  className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                />
+                <datalist id="sh-group-suggestions">
+                  {existingGroupNames.map((g) => (
+                    <option key={g} value={g} />
+                  ))}
+                </datalist>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2.5">
               <div>
                 <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
                   Größe
@@ -1166,7 +1583,7 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
                 <select
                   value={tileSize}
                   onChange={(e) => setTileSize(e.target.value as SmarthomeTileSize)}
-                  className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                  className="w-full text-xs px-2.5 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
                 >
                   <option value="sm">Kompakt (1x1)</option>
                   <option value="wide">Breit (2x1)</option>
@@ -1180,10 +1597,26 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
                 <select
                   value={tileDisplayMode}
                   onChange={(e) => setTileDisplayMode(e.target.value as 'value' | 'chart')}
-                  className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                  className="w-full text-xs px-2.5 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
                 >
                   <option value="value">Einzelwert</option>
-                  <option value="chart">Wert + Verlaufskurve</option>
+                  <option value="chart">Wert + Kurve</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                  Zeitraum
+                </label>
+                <select
+                  value={tileTimeRange}
+                  onChange={(e) => setTileTimeRange(e.target.value as SmarthomeTimeRange)}
+                  className="w-full text-xs px-2.5 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                >
+                  {TIME_RANGE_OPTIONS.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -1198,6 +1631,7 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
                   onChange={(e) => {
                     const nextType = e.target.value as 'mqtt' | 'db';
                     setTileSourceType(nextType);
+                    setShowTopicPicker(false);
                     setTileSourceId(
                       nextType === 'mqtt'
                         ? state.brokers[0]?.id || ''
@@ -1207,7 +1641,7 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
                   className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
                 >
                   <option value="mqtt">MQTT Broker</option>
-                  <option value="db">DB / HTTP Quelle</option>
+                  <option value="db">DB / Influx / HTTP Quelle</option>
                 </select>
               </div>
               <div>
@@ -1232,7 +1666,7 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
                   ) : state.dbSources.length > 0 ? (
                     state.dbSources.map((d) => (
                       <option key={d.id} value={d.id}>
-                        {d.name}
+                        {d.name} ({d.kind})
                       </option>
                     ))
                   ) : (
@@ -1242,32 +1676,115 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
               </div>
             </div>
 
-            <div>
-              <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
-                {tileSourceType === 'mqtt' ? 'MQTT Topic *' : 'JSON-Pfad oder Metrik-Name *'}
-              </label>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300">
+                  {tileSourceType === 'mqtt'
+                    ? 'MQTT Topic *'
+                    : 'Measurement / Metrik / Query *'}
+                </label>
+                {tileSourceType === 'mqtt' && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      showTopicPicker ? setShowTopicPicker(false) : handleLoadMqttTopics()
+                    }
+                    style={{ color: accentColor }}
+                    className="text-[11px] font-bold flex items-center gap-1 hover:underline cursor-pointer"
+                  >
+                    <Radio className="w-3 h-3" />
+                    <span>
+                      {showTopicPicker ? 'Liste ausblenden' : 'Live Topics durchsuchen (#)'}
+                    </span>
+                  </button>
+                )}
+              </div>
               <input
                 type="text"
                 required
                 placeholder={
                   tileSourceType === 'mqtt'
                     ? 'z.B. zigbee2mqtt/wohnzimmer/temperature'
-                    : 'z.B. state oder sensors.temp'
+                    : 'z.B. smartmeterenergybuy oder smartmeter.power'
                 }
                 value={tileTopicOrPath}
                 onChange={(e) => setTileTopicOrPath(e.target.value)}
                 className="w-full text-xs font-mono px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
               />
+
+              {tileSourceType === 'mqtt' && showTopicPicker && (
+                <div className="p-2.5 rounded-xl bg-[#F4F3EF] dark:bg-[#25272D] border border-[#E5E3DC] dark:border-[#343740] space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={topicFilterQuery}
+                      onChange={(e) => setTopicFilterQuery(e.target.value)}
+                      placeholder="Topics filtern..."
+                      className="flex-1 text-[11px] px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#1E1F23] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleLoadMqttTopics()}
+                      className="p-1.5 rounded-lg bg-white dark:bg-[#1E1F23] border border-[#E5E3DC] dark:border-[#343740] cursor-pointer"
+                      title="Topics neu laden"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${loadingTopics ? 'animate-spin' : ''}`} />
+                    </button>
+                  </div>
+                  <div className="max-h-36 overflow-y-auto space-y-1">
+                    {loadingTopics ? (
+                      <div className="text-[11px] text-neutral-400 py-2 text-center">
+                        Lade erkannte Topics vom Broker...
+                      </div>
+                    ) : discoveredTopics.filter(
+                        (dt) =>
+                          !topicFilterQuery.trim() ||
+                          dt.topic.toLowerCase().includes(topicFilterQuery.trim().toLowerCase())
+                      ).length === 0 ? (
+                      <div className="text-[11px] text-neutral-400 py-2 text-center">
+                        Noch keine Topics empfangen (Broker aktivieren & warten).
+                      </div>
+                    ) : (
+                      discoveredTopics
+                        .filter(
+                          (dt) =>
+                            !topicFilterQuery.trim() ||
+                            dt.topic.toLowerCase().includes(topicFilterQuery.trim().toLowerCase())
+                        )
+                        .slice(0, 60)
+                        .map((dt) => (
+                          <button
+                            key={`${dt.brokerId}-${dt.topic}`}
+                            type="button"
+                            onClick={() => {
+                              setTileTopicOrPath(dt.topic);
+                              if (dt.brokerId) setTileSourceId(dt.brokerId);
+                              setShowTopicPicker(false);
+                            }}
+                            className="w-full text-left px-2 py-1.5 rounded-lg bg-white dark:bg-[#1E1F23] hover:bg-neutral-100 dark:hover:bg-neutral-800 flex items-center justify-between gap-2 text-[11px] cursor-pointer"
+                          >
+                            <span className="font-mono truncate text-neutral-800 dark:text-neutral-200">
+                              {dt.topic}
+                            </span>
+                            <span className="font-mono text-[10px] text-neutral-400 shrink-0 max-w-[90px] truncate">
+                              {dt.lastPayload}
+                            </span>
+                          </button>
+                        ))
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
-                  JSON-Feld (optional)
+                  Feld / JSON-Pfad (optional)
                 </label>
                 <input
                   type="text"
-                  placeholder="z.B. temperature"
+                  placeholder="z.B. value oder temperature"
                   value={tileJsonPath}
                   onChange={(e) => setTileJsonPath(e.target.value)}
                   className="w-full text-xs font-mono px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
@@ -1279,12 +1796,77 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="z.B. °C, W, %, kWh"
+                  placeholder="z.B. °C, W, kWh, €"
                   value={tileUnit}
                   onChange={(e) => setTileUnit(e.target.value)}
                   className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
                 />
               </div>
+            </div>
+
+            {/* Berechnung & Historischer Zeitvergleich */}
+            <div className="p-3 rounded-xl bg-[#F4F3EF]/80 dark:bg-[#25272D] border border-[#E5E3DC] dark:border-[#343740] space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-bold text-neutral-800 dark:text-neutral-200 flex items-center gap-1.5">
+                  <Calculator className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                  <span>Berechnung &amp; Zeitvergleich</span>
+                </span>
+                <select
+                  value={tileCalcMode}
+                  onChange={(e) =>
+                    setTileCalcMode(e.target.value as SmarthomeTileCalculation['mode'])
+                  }
+                  className="text-[11px] px-2 py-1 rounded-lg bg-white dark:bg-[#1E1F23] border border-[#E5E3DC] dark:border-[#343740] font-semibold outline-hidden cursor-pointer"
+                >
+                  <option value="none">Keine Berechnung (Direktwert)</option>
+                  <option value="delta_since">Differenz ab Zeitpunkt X</option>
+                  <option value="formula">Eigene Formel (z.B. Kosten)</option>
+                </select>
+              </div>
+
+              {tileCalcMode !== 'none' && (
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-[10px] font-semibold text-neutral-500 block mb-1">
+                      Referenz-Zeitpunkt X (optional, z. B. Zählerstand am 01.01.2026)
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={tileCalcRefTs}
+                      onChange={(e) => setTileCalcRefTs(e.target.value)}
+                      className="w-full text-xs font-mono px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#1E1F23] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-neutral-500 block mb-1">
+                      Formel (Variablen: <code>latest</code>, <code>ref</code>, <code>diff</code>)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="(latest - ref) * 0.35"
+                      value={tileCalcFormula}
+                      onChange={(e) => setTileCalcFormula(e.target.value)}
+                      className="w-full text-xs font-mono px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#1E1F23] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                    />
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {[
+                        { label: 'Differenz', formula: 'latest - ref' },
+                        { label: 'Stromkosten (0,35 €)', formula: '(latest - ref) * 0.35' },
+                        { label: 'Wh → kWh', formula: 'latest / 1000' },
+                      ].map((preset) => (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => setTileCalcFormula(preset.formula)}
+                          className="text-[10px] px-2 py-0.5 rounded-md bg-white dark:bg-[#1E1F23] border border-[#E5E3DC] dark:border-[#343740] text-neutral-600 dark:text-neutral-300 hover:border-neutral-400 cursor-pointer"
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {currentUser.role === 'admin' && (
@@ -1464,11 +2046,11 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
           <form
             onClick={(e) => e.stopPropagation()}
             onSubmit={handleSaveDbSource}
-            className="w-full max-w-md bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] p-5 space-y-3.5"
+            className="w-full max-w-md max-h-[86dvh] overflow-y-auto bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] p-5 space-y-3.5"
           >
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-extrabold text-neutral-900 dark:text-neutral-100">
-                {editingDbId ? 'Datenquelle bearbeiten' : 'HTTP / Datenbank-Quelle anlegen'}
+                {editingDbId ? 'Datenquelle bearbeiten' : 'InfluxDB / HTTP / Prometheus Quelle'}
               </h3>
               <button
                 type="button"
@@ -1487,7 +2069,7 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
                 <input
                   type="text"
                   required
-                  placeholder="z.B. Wechselrichter API"
+                  placeholder="z.B. InfluxDB Smartmeter"
                   value={dbName}
                   onChange={(e) => setDbName(e.target.value)}
                   className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
@@ -1499,14 +2081,13 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
                 </label>
                 <select
                   value={dbKind}
-                  onChange={(e) =>
-                    setDbKind(e.target.value as 'http-json' | 'influx-v2' | 'prometheus')
-                  }
+                  onChange={(e) => setDbKind(e.target.value as SmarthomeDbSource['kind'])}
                   className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
                 >
-                  <option value="http-json">HTTP JSON Endpoint</option>
-                  <option value="influx-v2">InfluxDB v2 Query</option>
+                  <option value="influx-v1">InfluxDB v1 (InfluxQL)</option>
+                  <option value="influx-v2">InfluxDB v2 (Flux)</option>
                   <option value="prometheus">Prometheus Metrics</option>
+                  <option value="http-json">HTTP JSON Endpoint</option>
                 </select>
               </div>
             </div>
@@ -1518,12 +2099,98 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
               <input
                 type="url"
                 required
-                placeholder="http://192.168.1.20/api/status"
+                placeholder={
+                  dbKind === 'influx-v1'
+                    ? 'http://192.168.1.20:8086'
+                    : dbKind === 'influx-v2'
+                    ? 'http://192.168.1.20:8086'
+                    : 'http://192.168.1.20/api/status'
+                }
                 value={dbUrl}
                 onChange={(e) => setDbUrl(e.target.value)}
                 className="w-full text-xs font-mono px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
               />
             </div>
+
+            {dbKind === 'influx-v1' && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                    Datenbank *
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="z.B. telegraf oder smarthome"
+                    value={dbDatabase}
+                    onChange={(e) => setDbDatabase(e.target.value)}
+                    className="w-full text-xs font-mono px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                    Retention Policy (opt.)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="autogen"
+                    value={dbRetentionPolicy}
+                    onChange={(e) => setDbRetentionPolicy(e.target.value)}
+                    className="w-full text-xs font-mono px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                    Benutzer (opt.)
+                  </label>
+                  <input
+                    type="text"
+                    value={dbUsername}
+                    onChange={(e) => setDbUsername(e.target.value)}
+                    className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                    Passwort (opt.)
+                  </label>
+                  <input
+                    type="password"
+                    value={dbPassword}
+                    onChange={(e) => setDbPassword(e.target.value)}
+                    className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                  />
+                </div>
+              </div>
+            )}
+
+            {dbKind === 'influx-v2' && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                    Organisation (Org)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="z.B. home"
+                    value={dbOrg}
+                    onChange={(e) => setDbOrg(e.target.value)}
+                    className="w-full text-xs font-mono px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                    Bucket *
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="z.B. energy"
+                    value={dbBucket}
+                    onChange={(e) => setDbBucket(e.target.value)}
+                    className="w-full text-xs font-mono px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                  />
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -1540,11 +2207,11 @@ export const SmarthomeView: React.FC<SmarthomeViewProps> = ({
               </div>
               <div>
                 <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
-                  Auth Header (optional)
+                  {dbKind === 'influx-v2' ? 'API Token / Auth Header' : 'Auth Header (optional)'}
                 </label>
                 <input
                   type="text"
-                  placeholder="Bearer ..."
+                  placeholder={dbKind === 'influx-v2' ? 'Token ...' : 'Bearer ...'}
                   value={dbAuthHeader}
                   onChange={(e) => setDbAuthHeader(e.target.value)}
                   className="w-full text-xs font-mono px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"

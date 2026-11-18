@@ -24,9 +24,11 @@ import {
   Sparkles,
   LayoutDashboard,
   Cpu,
-  FolderKanban
+  FolderKanban,
+  HelpCircle
 } from 'lucide-react';
 import { User, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId, CookbookTab } from '../../types';
+import { DEFAULT_MODULE_ORDER } from '../../services/profileDefaults';
 import { useTranslation } from '../../services/i18n.tsx';
 
 interface HeaderProps {
@@ -53,6 +55,7 @@ interface HeaderProps {
   enableCookbookShoppingList?: boolean;
   enableCookbookCycle?: boolean;
   mobileBarPosition?: 'top' | 'bottom';
+  onStartTour?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -79,6 +82,7 @@ export const Header: React.FC<HeaderProps> = ({
   enableCookbookShoppingList = true,
   enableCookbookCycle = true,
   mobileBarPosition = 'top',
+  onStartTour,
 }) => {
   const activeProfile = profileSettings[profileSettings.activeProfileId] || profileSettings.profile1;
   const activeColors: Record<SuiteModuleId, string> = {
@@ -185,6 +189,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           <button
             type="button"
+            data-tour="module-switcher"
             onClick={(e) => {
               e.stopPropagation();
               if (isSuiteMenuOpen && !isSuiteMenuClosing) {
@@ -313,308 +318,114 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
               </div>
 
-              {/* Module Items with rounded box cards for switching */}
+              {/* Module Items sorted by user-configured moduleOrder */}
               <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
-                {/* Module 0: Dashboard (Overview across all modules) */}
-                {enabledModules.dashboard ? (
-                  <div
-                    onClick={() => {
-                      onSelectSuiteModule('dashboard');
-                      setIsSuiteMenuOpen(false);
-                    }}
-                    style={
-                      activeSuiteModule === 'dashboard'
-                        ? { borderColor: activeColors.dashboard, backgroundColor: `${activeColors.dashboard}14` }
-                        : undefined
+                {(() => {
+                  const descriptors: Record<
+                    SuiteModuleId,
+                    {
+                      label: string;
+                      subtitle: string;
+                      icon: React.ComponentType<{ className?: string }>;
                     }
-                    className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
-                      activeSuiteModule === 'dashboard'
-                        ? 'border-2'
-                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div
-                        style={{ backgroundColor: activeColors.dashboard }}
-                        className="w-8 h-8 rounded-xl text-white flex items-center justify-center shadow-xs"
-                      >
-                        <LayoutDashboard className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <span className="font-bold text-neutral-900 dark:text-neutral-100 block">Dashboard</span>
-                        <span className="text-[11px] text-neutral-500">Alle Module, Aufgaben &amp; Forecast</span>
-                      </div>
-                    </div>
-                    {activeSuiteModule === 'dashboard' ? (
-                      <span
-                        style={{ backgroundColor: activeColors.dashboard }}
-                        className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
-                      >
-                        Aktiv
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-neutral-400">Öffnen →</span>
-                    )}
-                  </div>
-                ) : null}
+                  > = {
+                    dashboard: {
+                      label: 'Dashboard',
+                      subtitle: 'Alle Module, Aufgaben & Forecast',
+                      icon: LayoutDashboard,
+                    },
+                    notes: {
+                      label: 'Notes',
+                      subtitle: 'Obsidian Markdown & Aufgaben',
+                      icon: BookOpen,
+                    },
+                    wiki: {
+                      label: 'Wiki',
+                      subtitle: 'Anleitungen, Fotos & Code-Ablage',
+                      icon: BookMarked,
+                    },
+                    recipes: {
+                      label: 'Essensplan',
+                      subtitle: 'Kalender, Rezepte & Einkaufsliste',
+                      icon: Utensils,
+                    },
+                    finance: {
+                      label: 'Finanzen',
+                      subtitle: 'CSV Bankimport, Kreditoren & Bar',
+                      icon: BarChart3,
+                    },
+                    projects: {
+                      label: 'Projekte',
+                      subtitle: 'Kanban, Timeline & Notiz-Links',
+                      icon: FolderKanban,
+                    },
+                    smarthome: {
+                      label: 'Smarthome',
+                      subtitle: 'Live MQTT, Sensoren & Telemetrie',
+                      icon: Cpu,
+                    },
+                  };
 
-                {/* Module 1: Notes */}
-                {enabledModules.notes ? (
-                  <div 
-                    onClick={() => {
-                      onSelectSuiteModule('notes');
-                      setIsSuiteMenuOpen(false);
-                    }}
-                    style={
-                      activeSuiteModule === 'notes'
-                        ? { borderColor: activeColors.notes, backgroundColor: `${activeColors.notes}14` }
-                        : undefined
-                    }
-                    className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
-                      activeSuiteModule === 'notes'
-                        ? 'border-2'
-                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div
-                        style={{ backgroundColor: activeColors.notes }}
-                        className="w-8 h-8 rounded-xl text-white flex items-center justify-center font-bold text-sm shadow-xs"
-                      >
-                        <BookOpen className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <span className="font-bold text-neutral-900 dark:text-neutral-100 block">Notes</span>
-                        <span className="text-[11px] text-neutral-500">Obsidian Markdown & Aufgaben</span>
-                      </div>
-                    </div>
-                    {activeSuiteModule === 'notes' ? (
-                      <span
-                        style={{ backgroundColor: activeColors.notes }}
-                        className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
-                      >
-                        Aktiv
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-neutral-400">Öffnen →</span>
-                    )}
-                  </div>
-                ) : null}
+                  const rawOrder = profileSettings.moduleOrder && profileSettings.moduleOrder.length > 0
+                    ? profileSettings.moduleOrder
+                    : DEFAULT_MODULE_ORDER;
+                  const orderedModules: SuiteModuleId[] = [
+                    ...rawOrder.filter((id, idx) => Boolean(descriptors[id]) && rawOrder.indexOf(id) === idx),
+                    ...DEFAULT_MODULE_ORDER.filter((id) => !rawOrder.includes(id)),
+                  ];
 
-                {/* Module 2: Wiki (Open-Standard Knowledge Base) */}
-                {enabledModules.wiki ? (
-                  <div 
-                    onClick={() => {
-                      onSelectSuiteModule('wiki');
-                      setIsSuiteMenuOpen(false);
-                    }}
-                    style={
-                      activeSuiteModule === 'wiki'
-                        ? { borderColor: activeColors.wiki, backgroundColor: `${activeColors.wiki}14` }
-                        : undefined
-                    }
-                    className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
-                      activeSuiteModule === 'wiki'
-                        ? 'border-2'
-                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
+                  return orderedModules.map((modId) => {
+                    if (!enabledModules[modId]) return null;
+                    const desc = descriptors[modId];
+                    const ModIcon = desc.icon;
+                    const color = activeColors[modId];
+                    const isActive = activeSuiteModule === modId;
+                    return (
                       <div
-                        style={{ backgroundColor: activeColors.wiki }}
-                        className="w-8 h-8 rounded-xl text-white flex items-center justify-center shadow-xs"
+                        key={modId}
+                        onClick={() => {
+                          onSelectSuiteModule(modId);
+                          setIsSuiteMenuOpen(false);
+                        }}
+                        style={
+                          isActive
+                            ? { borderColor: color, backgroundColor: `${color}14` }
+                            : undefined
+                        }
+                        className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
+                          isActive
+                            ? 'border-2'
+                            : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
+                        }`}
                       >
-                        <BookMarked className="w-4 h-4" />
+                        <div className="flex items-center gap-2.5">
+                          <div
+                            style={{ backgroundColor: color }}
+                            className="w-8 h-8 rounded-xl text-white flex items-center justify-center shadow-xs"
+                          >
+                            <ModIcon className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
+                              {desc.label}
+                            </span>
+                            <span className="text-[11px] text-neutral-500">{desc.subtitle}</span>
+                          </div>
+                        </div>
+                        {isActive ? (
+                          <span
+                            style={{ backgroundColor: color }}
+                            className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
+                          >
+                            Aktiv
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-neutral-400">Öffnen →</span>
+                        )}
                       </div>
-                      <div>
-                        <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">Wiki</span>
-                        <span className="text-[11px] text-neutral-500">Anleitungen, Fotos & Code-Ablage</span>
-                      </div>
-                    </div>
-                    {activeSuiteModule === 'wiki' ? (
-                      <span
-                        style={{ backgroundColor: activeColors.wiki }}
-                        className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
-                      >
-                        Aktiv
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-neutral-400">Öffnen →</span>
-                    )}
-                  </div>
-                ) : null}
-
-                {/* Module 3: Essensplan */}
-                {enabledModules.recipes ? (
-                  <div 
-                    onClick={() => {
-                      onSelectSuiteModule('recipes');
-                      setIsSuiteMenuOpen(false);
-                    }}
-                    style={
-                      activeSuiteModule === 'recipes'
-                        ? { borderColor: activeColors.recipes, backgroundColor: `${activeColors.recipes}14` }
-                        : undefined
-                    }
-                    className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
-                      activeSuiteModule === 'recipes'
-                        ? 'border-2'
-                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div
-                        style={{ backgroundColor: activeColors.recipes }}
-                        className="w-8 h-8 rounded-xl text-white flex items-center justify-center shadow-xs"
-                      >
-                        <Utensils className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">Essensplan</span>
-                        <span className="text-[11px] text-neutral-500">Kalender, Rezepte &amp; Einkaufsliste</span>
-                      </div>
-                    </div>
-                    {activeSuiteModule === 'recipes' ? (
-                      <span
-                        style={{ backgroundColor: activeColors.recipes }}
-                        className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
-                      >
-                        Aktiv
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-neutral-400">Öffnen →</span>
-                    )}
-                  </div>
-                ) : null}
-
-                {/* Module 4: Finanzen */}
-                {enabledModules.finance ? (
-                  <div 
-                    onClick={() => {
-                      onSelectSuiteModule('finance');
-                      setIsSuiteMenuOpen(false);
-                    }}
-                    style={
-                      activeSuiteModule === 'finance'
-                        ? { borderColor: activeColors.finance, backgroundColor: `${activeColors.finance}14` }
-                        : undefined
-                    }
-                    className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
-                      activeSuiteModule === 'finance'
-                        ? 'border-2'
-                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div
-                        style={{ backgroundColor: activeColors.finance }}
-                        className="w-8 h-8 rounded-xl text-white flex items-center justify-center shadow-xs"
-                      >
-                        <BarChart3 className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">Finanzen</span>
-                        <span className="text-[11px] text-neutral-500">CSV Bankimport, Kreditoren &amp; Bar</span>
-                      </div>
-                    </div>
-                    {activeSuiteModule === 'finance' ? (
-                      <span
-                        style={{ backgroundColor: activeColors.finance }}
-                        className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
-                      >
-                        Aktiv
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-neutral-400">Öffnen →</span>
-                    )}
-                  </div>
-                ) : null}
-
-                {/* Module 5: Projekte */}
-                {enabledModules.projects ? (
-                  <div
-                    onClick={() => {
-                      onSelectSuiteModule('projects');
-                      setIsSuiteMenuOpen(false);
-                    }}
-                    style={
-                      activeSuiteModule === 'projects'
-                        ? { borderColor: activeColors.projects, backgroundColor: `${activeColors.projects}14` }
-                        : undefined
-                    }
-                    className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
-                      activeSuiteModule === 'projects'
-                        ? 'border-2'
-                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div
-                        style={{ backgroundColor: activeColors.projects }}
-                        className="w-8 h-8 rounded-xl text-white flex items-center justify-center shadow-xs"
-                      >
-                        <FolderKanban className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">Projekte</span>
-                        <span className="text-[11px] text-neutral-500">Kanban, Timeline &amp; Notiz-Links</span>
-                      </div>
-                    </div>
-                    {activeSuiteModule === 'projects' ? (
-                      <span
-                        style={{ backgroundColor: activeColors.projects }}
-                        className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
-                      >
-                        Aktiv
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-neutral-400">Öffnen →</span>
-                    )}
-                  </div>
-                ) : null}
-
-                {/* Module 6: Smarthome */}
-                {enabledModules.smarthome ? (
-                  <div
-                    onClick={() => {
-                      onSelectSuiteModule('smarthome');
-                      setIsSuiteMenuOpen(false);
-                    }}
-                    style={
-                      activeSuiteModule === 'smarthome'
-                        ? { borderColor: activeColors.smarthome, backgroundColor: `${activeColors.smarthome}14` }
-                        : undefined
-                    }
-                    className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer transition-all ${
-                      activeSuiteModule === 'smarthome'
-                        ? 'border-2'
-                        : 'border-[#E5E3DC] dark:border-[#2F3136] hover:border-neutral-400 bg-white dark:bg-[#202225]'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div
-                        style={{ backgroundColor: activeColors.smarthome }}
-                        className="w-8 h-8 rounded-xl text-white flex items-center justify-center shadow-xs"
-                      >
-                        <Cpu className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">Smarthome</span>
-                        <span className="text-[11px] text-neutral-500">Live MQTT, Sensoren &amp; Telemetrie</span>
-                      </div>
-                    </div>
-                    {activeSuiteModule === 'smarthome' ? (
-                      <span
-                        style={{ backgroundColor: activeColors.smarthome }}
-                        className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold"
-                      >
-                        Aktiv
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-neutral-400">Öffnen →</span>
-                    )}
-                  </div>
-                ) : null}
+                    );
+                  });
+                })()}
               </div>
 
               {/* Split Thumb-Zone Footer: 2/3 Close Button + 1/3 Module Verwalten */}
@@ -790,6 +601,7 @@ export const Header: React.FC<HeaderProps> = ({
           )}
 
           <button
+            data-tour="user-menu"
             onClick={() => {
               if (isUserMenuOpen && !isUserMenuClosing) {
                 closeUserMenu();
@@ -1012,6 +824,27 @@ export const Header: React.FC<HeaderProps> = ({
                     </div>
                     <ChevronRight className="w-4 h-4 text-neutral-400" />
                   </button>
+
+                  {onStartTour && (
+                    <button
+                      onClick={() => {
+                        setIsUserMenuOpen(false);
+                        onStartTour();
+                      }}
+                      className="w-full flex items-center justify-between p-3 text-xs rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#202225] hover:border-[var(--ochre-accent)] hover:bg-amber-500/10 text-neutral-800 dark:text-neutral-200 transition-all text-left group cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div
+                          className="w-8 h-8 rounded-xl flex items-center justify-center transition-colors"
+                          style={{ backgroundColor: `${currentModuleColor}1A`, color: currentModuleColor }}
+                        >
+                          <HelpCircle className="w-4 h-4" />
+                        </div>
+                        <span className="font-semibold">Hilfe / Geführte Tour</span>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-neutral-400" />
+                    </button>
+                  )}
 
                   <button
                     onClick={() => {

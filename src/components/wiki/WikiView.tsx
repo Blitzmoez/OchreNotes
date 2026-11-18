@@ -14,6 +14,7 @@ import {
   FolderOpen,
   X,
   Menu,
+  ChevronLeft,
   ChevronRight,
   ChevronDown,
   Save,
@@ -232,6 +233,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
       if (
         target?.closest('[data-no-swipe="true"]') ||
         target?.closest('header') ||
+        target?.closest('button') ||
         target?.closest('input') ||
         target?.closest('select') ||
         target?.closest('textarea')
@@ -299,7 +301,9 @@ export const WikiView: React.FC<WikiViewProps> = ({
       const dt = Math.max(16, performance.now() - s.lastTime);
       const velocity = (endX - s.lastX) / dt;
       const progress = (s.currentX + DRAWER_W) / DRAWER_W;
-      const shouldOpen = velocity > 0.3 || (velocity >= -0.3 && progress > 0.38);
+      const shouldOpen = !isMobileIndexOpen
+        ? velocity > 0.25 || (velocity >= -0.2 && progress > 0.28)
+        : !(velocity < -0.25 || (velocity <= 0.2 && progress < 0.7));
       setWikiDragX(null);
       setIsMobileIndexOpen(shouldOpen);
     };
@@ -369,11 +373,36 @@ export const WikiView: React.FC<WikiViewProps> = ({
   }, [articles, searchQuery, selectedCategory]);
 
   const handleCopyCode = async (id: string, code: string) => {
+    let copied = false;
     try {
-      await navigator.clipboard.writeText(code);
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(code);
+        copied = true;
+      }
+    } catch {}
+
+    if (!copied) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = code;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-9999px';
+        ta.style.left = '-9999px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        copied = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {}
+    }
+
+    if (copied) {
       setCopiedId(id);
       setTimeout(() => setCopiedId((prev) => (prev === id ? null : prev)), 2000);
-    } catch {}
+    }
   };
 
   const handleWikilinkClick = (rawTarget: string) => {
@@ -1020,158 +1049,203 @@ export const WikiView: React.FC<WikiViewProps> = ({
 
       {/* Main Split Body */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Mobile Backdrop for Index Drawer (live synced with 1:1 finger swipe) */}
-        {(isMobileIndexOpen || (wikiDragX !== null && wikiDragX > -285)) && (
-          <div
-            onClick={() => {
-              setWikiDragX(null);
-              setIsMobileIndexOpen(false);
-            }}
-            style={
-              wikiDragX !== null
-                ? {
-                    opacity: Math.max(0, Math.min(1, (wikiDragX + 288) / 288)),
-                    transition: 'none',
-                  }
-                : undefined
-            }
-            className="fixed inset-0 bg-black/40 z-30 lg:hidden backdrop-blur-2xs"
-          />
-        )}
-
-        {/* Left Index Sidebar (Desktop static, Mobile 1:1 swipe drawer) */}
-        <aside
-          style={
-            wikiDragX !== null
-              ? { transform: `translateX(${wikiDragX}px)`, transition: 'none' }
-              : undefined
-          }
-          className={`fixed lg:static ${
-            mobileBarPosition === 'bottom' ? 'top-0 bottom-[3.75rem]' : 'top-14 bottom-0'
-          } lg:top-0 lg:bottom-0 left-0 z-40 w-72 bg-[#F4F3EF] dark:bg-[#1D1F23] border-r border-[#E5E3DC] dark:border-[#2F3136] flex flex-col ${
-            wikiDragX === null ? 'transition-transform duration-200 ease-out' : ''
+        {/* Mobile Left-Edge Pull Tab (matching Notes & Projects) */}
+        <button
+          type="button"
+          onClick={() => setIsMobileIndexOpen((v) => !v)}
+          style={{
+            backgroundColor: accentColor,
+            ...(wikiDragX !== null
+              ? { left: `${Math.max(0, 288 + wikiDragX)}px`, transition: 'none' }
+              : {}),
+          }}
+          className={`lg:hidden fixed top-1/2 -translate-y-1/2 z-40 h-14 flex items-center justify-center text-white shadow-lg cursor-pointer active:scale-95 ${
+            wikiDragX !== null ? 'transition-none' : 'transition-all duration-200'
           } ${
             wikiDragX !== null
-              ? ''
+              ? 'w-6 rounded-r-xl'
               : isMobileIndexOpen
-              ? 'translate-x-0'
-              : '-translate-x-full lg:translate-x-0'
+              ? 'left-72 w-7 rounded-r-xl'
+              : 'left-0 w-5 rounded-r-xl opacity-90 hover:opacity-100 hover:w-6.5'
           }`}
+          title={isMobileIndexOpen ? 'Wiki Light Vault schließen' : 'Wiki Light Vault öffnen'}
+          aria-label="Wiki Light Vault umschalten"
         >
-          <div className="p-3 border-b border-[#E5E3DC] dark:border-[#2F3136] space-y-2">
-            <div className="flex items-center justify-between lg:hidden">
-              <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider">
-                Wiki-Einträge ({articles.length})
-              </span>
-              <button
-                type="button"
-                onClick={() => setIsMobileIndexOpen(false)}
-                className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+          {isMobileIndexOpen ? (
+            <ChevronLeft className="w-4 h-4" />
+          ) : (
+            <div className="flex flex-col items-center gap-1 py-1">
+              <ChevronRight className="w-3.5 h-3.5" />
+              <span className="w-1 h-3 rounded-full bg-white/70"></span>
             </div>
+          )}
+        </button>
 
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Wiki durchsuchen..."
-                className="w-full text-xs pl-8 pr-3 py-2 rounded-lg bg-white dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-800 dark:text-neutral-200 outline-hidden"
-              />
-            </div>
-
-            {categories.length > 0 && (
-              <select
-                value={selectedCategory}
-                onChange={(e) => setSelectedCategory(e.target.value)}
-                className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-700 dark:text-neutral-300 outline-hidden cursor-pointer"
-              >
-                <option value="all">Alle Kategorien ({articles.length})</option>
-                {categories.map((cat) => (
-                  <option key={cat} value={cat}>
-                    {cat}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-
-          <div className="flex-1 overflow-y-auto overscroll-y-contain p-2 space-y-1">
-            {loading ? (
-              <div className="p-4 text-xs text-neutral-400">Lade Wiki-Einträge...</div>
-            ) : filteredArticles.length === 0 ? (
-              <div className="p-4 text-center space-y-2">
-                <p className="text-xs text-neutral-500">Keine Wiki-Einträge gefunden.</p>
-                <button
-                  type="button"
-                  onClick={handleStartNewArticle}
-                  className="text-xs font-semibold underline cursor-pointer"
-                  style={{ color: accentColor }}
-                >
-                  Ersten Artikel erstellen
-                </button>
-              </div>
-            ) : (
-              filteredArticles.map((art) => {
-                const isActive = art.slug === selectedSlug && mode === 'read';
-                const blockCount = ensureArticleBlocks(art).length;
-                const isPrivate = art.visibility === 'private';
-                return (
+        {(() => {
+          const wikiIndexContent = (
+            <div className="h-full w-72 bg-[#F4F3EF] dark:bg-[#1D1F23] border-r border-[#E5E3DC] dark:border-[#2F3136] flex flex-col">
+              <div className="p-3 border-b border-[#E5E3DC] dark:border-[#2F3136] space-y-2">
+                <div className="flex items-center justify-between lg:hidden">
+                  <span className="text-xs font-semibold text-neutral-500 uppercase tracking-wider">
+                    Wiki-Einträge ({articles.length})
+                  </span>
                   <button
-                    key={art.slug}
                     type="button"
-                    onClick={() => {
-                      setSelectedSlug(art.slug);
-                      setMode('read');
-                      setDraft(null);
-                      setIsMobileIndexOpen(false);
-                    }}
-                    className={`w-full text-left p-2.5 rounded-xl transition-colors cursor-pointer flex items-start justify-between gap-2 border ${
-                      isActive
-                        ? 'bg-white dark:bg-[#25272C] border-[#E5E3DC] dark:border-[#383A40] font-semibold'
-                        : 'border-transparent hover:bg-neutral-200/50 dark:hover:bg-neutral-800/60'
-                    }`}
+                    onClick={() => setIsMobileIndexOpen(false)}
+                    className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
                   >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5">
-                        {isPrivate ? (
-                          <span title="Privat" className="inline-flex shrink-0">
-                            <Lock className="w-3 h-3 text-neutral-400" />
-                          </span>
-                        ) : (
-                          <span title="Öffentlich (Shared)" className="inline-flex shrink-0">
-                            <Globe className="w-3 h-3" style={{ color: accentColor }} />
-                          </span>
-                        )}
-                        <span
-                          className="text-xs block truncate"
-                          style={isActive ? { color: accentColor } : undefined}
-                        >
-                          {art.title}
-                        </span>
-                      </div>
-                      <span className="text-[11px] text-neutral-500 dark:text-neutral-400 block truncate mt-0.5">
-                        {art.category} · {blockCount} Bausteine
-                      </span>
-                    </div>
-                    <ChevronRight className="w-3.5 h-3.5 text-neutral-400 shrink-0 mt-0.5" />
+                    <X className="w-4 h-4" />
                   </button>
-                );
-              })
-            )}
-          </div>
+                </div>
 
-          <div className="p-2.5 px-3 border-t border-[#E5E3DC] dark:border-[#2F3136] text-[11px] text-neutral-500 flex items-center justify-between gap-2">
-            <span className="flex items-center gap-1.5 truncate">
-              <FolderOpen className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">Wiki/Public &amp; Privat</span>
-            </span>
-            <span className="tabular-nums shrink-0">{articles.length} .md</span>
-          </div>
-        </aside>
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Wiki durchsuchen..."
+                    className="w-full text-xs pl-8 pr-3 py-2 rounded-lg bg-white dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-800 dark:text-neutral-200 outline-hidden"
+                  />
+                </div>
+
+                {categories.length > 0 && (
+                  <select
+                    value={selectedCategory}
+                    onChange={(e) => setSelectedCategory(e.target.value)}
+                    className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#161719] border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-700 dark:text-neutral-300 outline-hidden cursor-pointer"
+                  >
+                    <option value="all">Alle Kategorien ({articles.length})</option>
+                    {categories.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <div className="flex-1 overflow-y-auto overscroll-y-contain p-2 space-y-1">
+                {loading ? (
+                  <div className="p-4 text-xs text-neutral-400">Lade Wiki-Einträge...</div>
+                ) : filteredArticles.length === 0 ? (
+                  <div className="p-4 text-center space-y-2">
+                    <p className="text-xs text-neutral-500">Keine Wiki-Einträge gefunden.</p>
+                    <button
+                      type="button"
+                      onClick={handleStartNewArticle}
+                      className="text-xs font-semibold underline cursor-pointer"
+                      style={{ color: accentColor }}
+                    >
+                      Ersten Artikel erstellen
+                    </button>
+                  </div>
+                ) : (
+                  filteredArticles.map((art) => {
+                    const isActive = art.slug === selectedSlug && mode === 'read';
+                    const blockCount = ensureArticleBlocks(art).length;
+                    const isPrivate = art.visibility === 'private';
+                    return (
+                      <button
+                        key={art.slug}
+                        type="button"
+                        onClick={() => {
+                          setSelectedSlug(art.slug);
+                          setMode('read');
+                          setDraft(null);
+                          setIsMobileIndexOpen(false);
+                        }}
+                        className={`w-full text-left p-2.5 rounded-xl transition-colors cursor-pointer flex items-start justify-between gap-2 border ${
+                          isActive
+                            ? 'bg-white dark:bg-[#25272C] border-[#E5E3DC] dark:border-[#383A40] font-semibold'
+                            : 'border-transparent hover:bg-neutral-200/50 dark:hover:bg-neutral-800/60'
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            {isPrivate ? (
+                              <span title="Privat" className="inline-flex shrink-0">
+                                <Lock className="w-3 h-3 text-neutral-400" />
+                              </span>
+                            ) : (
+                              <span title="Öffentlich (Shared)" className="inline-flex shrink-0">
+                                <Globe className="w-3 h-3" style={{ color: accentColor }} />
+                              </span>
+                            )}
+                            <span
+                              className="text-xs block truncate"
+                              style={isActive ? { color: accentColor } : undefined}
+                            >
+                              {art.title}
+                            </span>
+                          </div>
+                          <span className="text-[11px] text-neutral-500 dark:text-neutral-400 block truncate mt-0.5">
+                            {art.category} · {blockCount} Bausteine
+                          </span>
+                        </div>
+                        <ChevronRight className="w-3.5 h-3.5 text-neutral-400 shrink-0 mt-0.5" />
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="p-2.5 px-3 border-t border-[#E5E3DC] dark:border-[#2F3136] text-[11px] text-neutral-500 flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 truncate">
+                  <FolderOpen className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Wiki/Public &amp; Privat</span>
+                </span>
+                <span className="tabular-nums shrink-0">{articles.length} .md</span>
+              </div>
+            </div>
+          );
+
+          return (
+            <>
+              {/* Desktop Static Left Sidebar */}
+              <aside className="hidden lg:flex w-72 shrink-0 flex-col">
+                {wikiIndexContent}
+              </aside>
+
+              {/* Mobile Light Vault Swipe Drawer */}
+              {(isMobileIndexOpen || wikiDragX !== null) && (
+                <div
+                  onClick={() => {
+                    setWikiDragX(null);
+                    setIsMobileIndexOpen(false);
+                  }}
+                  style={
+                    wikiDragX !== null
+                      ? {
+                          opacity: Math.max(0.08, Math.min(1, (wikiDragX + 288) / 288)),
+                          transition: 'none',
+                        }
+                      : undefined
+                  }
+                  className="lg:hidden fixed inset-0 z-50 bg-black/35 backdrop-blur-2xs"
+                >
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                      transform:
+                        wikiDragX !== null
+                          ? `translateX(${wikiDragX}px)`
+                          : isMobileIndexOpen
+                          ? 'translateX(0)'
+                          : 'translateX(-100%)',
+                      transition: wikiDragX !== null ? 'none' : 'transform 220ms ease-out',
+                    }}
+                    className={`w-72 ${
+                      mobileBarPosition === 'bottom' ? 'h-[calc(100dvh-3.75rem)]' : 'h-full'
+                    } shadow-2xl`}
+                  >
+                    {wikiIndexContent}
+                  </div>
+                </div>
+              )}
+            </>
+          );
+        })()}
 
         {/* Main Content Canvas: Reader or Modular Block Editor */}
         <main className="flex-1 overflow-y-auto overscroll-y-contain p-4 md:p-8 pb-24 lg:pb-10">

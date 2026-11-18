@@ -8,14 +8,18 @@ import {
   ProjectTaskStatus,
   ProjectVisibility,
   ProjectStatus,
+  ProjectColumnConfig,
+  NoteProfileId,
 } from '../../types';
 import { api } from '../../services/api';
+import { DEFAULT_PROJECT_COLUMNS } from '../../services/profileDefaults';
 import { printProjectA4 } from '../../services/printService';
 import {
   FolderKanban,
   Plus,
   Columns3,
   GanttChartSquare,
+  List,
   Printer,
   Settings,
   Trash2,
@@ -32,6 +36,9 @@ import {
   Flag,
   UserCheck,
   Check,
+  ArrowUp,
+  ArrowDown,
+  SlidersHorizontal,
 } from 'lucide-react';
 
 interface ProjectsViewProps {
@@ -44,16 +51,13 @@ interface ProjectsViewProps {
   initialProjectId?: string | null;
   accentColor?: string;
   mobileBarPosition?: 'top' | 'bottom';
+  enableSecondProfile?: boolean;
+  activeProfileId?: NoteProfileId;
+  profileNames?: Record<NoteProfileId, string>;
+  onSwitchProfile?: (id: NoteProfileId) => void;
   onNavigateToNote: (path: string) => void;
   onNavigateToWiki: (slug: string) => void;
 }
-
-const COLUMNS: { id: ProjectTaskStatus; label: string; badgeClass: string }[] = [
-  { id: 'todo', label: 'Offen', badgeClass: 'bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300' },
-  { id: 'in_progress', label: 'In Arbeit', badgeClass: 'bg-amber-500/15 text-amber-700 dark:text-amber-300' },
-  { id: 'review', label: 'Prüfung', badgeClass: 'bg-blue-500/15 text-blue-700 dark:text-blue-300' },
-  { id: 'done', label: 'Erledigt', badgeClass: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' },
-];
 
 const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
   planning: 'Planung',
@@ -67,13 +71,23 @@ const PRIORITY_META: Record<ProjectTask['priority'], { label: string; cls: strin
   low: { label: 'Niedrig', cls: 'bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400' },
 };
 
-const PROJECT_COLORS = ['#B45309', '#C87D20', '#0F766E', '#1D4ED8', '#7C3AED', '#BE123C'];
+const PROJECT_COLORS = ['#B45309', '#C87D20', '#0F766E', '#1D4ED8', '#7C3AED', '#BE123C', '#6B7280', '#10B981'];
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const addDaysIso = (iso: string, days: number) => {
   const d = new Date(`${iso}T00:00:00`);
   d.setDate(d.getDate() + days);
   return d.toISOString().slice(0, 10);
+};
+
+const getTaskAssignees = (task: ProjectTask): string[] => {
+  if (Array.isArray(task.assignees) && task.assignees.length > 0) {
+    return task.assignees.filter((s) => s && s.trim() && s !== 'Nicht zugewiesen');
+  }
+  if (task.assignee && task.assignee.trim() && task.assignee !== 'Nicht zugewiesen') {
+    return [task.assignee.trim()];
+  }
+  return [];
 };
 
 export const ProjectsView: React.FC<ProjectsViewProps> = ({
@@ -86,13 +100,17 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   initialProjectId,
   accentColor = '#B45309',
   mobileBarPosition = 'top',
+  enableSecondProfile = false,
+  activeProfileId = 'profile1',
+  profileNames,
+  onSwitchProfile,
   onNavigateToNote,
   onNavigateToWiki,
 }) => {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
     initialProjectId || projects[0]?.id || null
   );
-  const [viewMode, setViewMode] = useState<'kanban' | 'timeline'>('kanban');
+  const [viewMode, setViewMode] = useState<'kanban' | 'list' | 'timeline'>('kanban');
   const [scopeFilter, setScopeFilter] = useState<'all' | 'private' | 'shared'>('all');
 
   // Mobile Left-Edge Pixel-Launcher 1:1 Swipe Project Drawer
@@ -131,29 +149,46 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const [taskDesc, setTaskDesc] = useState('');
   const [taskStatus, setTaskStatus] = useState<ProjectTaskStatus>('todo');
   const [taskPriority, setTaskPriority] = useState<ProjectTask['priority']>('medium');
-  const [taskAssignee, setTaskAssignee] = useState(currentUser.displayName);
+  const [taskAssignees, setTaskAssignees] = useState<string[]>([currentUser.displayName]);
+  const [customAssigneeInput, setCustomAssigneeInput] = useState('');
   const [taskStartDate, setTaskStartDate] = useState(todayIso());
   const [taskDueDate, setTaskDueDate] = useState(addDaysIso(todayIso(), 5));
+
+  // Column Configuration Modal
+  const [columnsModalOpen, setColumnsModalOpen] = useState(false);
+  const [draftColumns, setDraftColumns] = useState<ProjectColumnConfig[]>(DEFAULT_PROJECT_COLUMNS);
+  const [newColumnLabel, setNewColumnLabel] = useState('');
+  const [newColumnColor, setNewColumnColor] = useState('#2563EB');
 
   // Link Notes / Wiki Modal
   const [linksModalOpen, setLinksModalOpen] = useState(false);
 
+  const profileFilteredProjects = useMemo(() => {
+    if (!enableSecondProfile) return projects;
+    return projects.filter((p) => (p.profile || 'profile1') === activeProfileId);
+  }, [projects, enableSecondProfile, activeProfileId]);
+
   useEffect(() => {
-    if (initialProjectId && projects.some((p) => p.id === initialProjectId)) {
+    if (initialProjectId && profileFilteredProjects.some((p) => p.id === initialProjectId)) {
       setSelectedProjectId(initialProjectId);
-    } else if (!selectedProjectId || !projects.some((p) => p.id === selectedProjectId)) {
-      setSelectedProjectId(projects[0]?.id || null);
+    } else if (!selectedProjectId || !profileFilteredProjects.some((p) => p.id === selectedProjectId)) {
+      setSelectedProjectId(profileFilteredProjects[0]?.id || null);
     }
-  }, [initialProjectId, projects, selectedProjectId]);
+  }, [initialProjectId, profileFilteredProjects, selectedProjectId]);
 
   const filteredProjects = useMemo(() => {
-    if (scopeFilter === 'all') return projects;
-    return projects.filter((p) => p.visibility === scopeFilter);
-  }, [projects, scopeFilter]);
+    if (scopeFilter === 'all') return profileFilteredProjects;
+    return profileFilteredProjects.filter((p) => p.visibility === scopeFilter);
+  }, [profileFilteredProjects, scopeFilter]);
 
   const activeProject = useMemo(
-    () => projects.find((p) => p.id === selectedProjectId) || filteredProjects[0] || null,
-    [projects, filteredProjects, selectedProjectId]
+    () => profileFilteredProjects.find((p) => p.id === selectedProjectId) || filteredProjects[0] || null,
+    [profileFilteredProjects, filteredProjects, selectedProjectId]
+  );
+
+  const projectColumns: ProjectColumnConfig[] = useMemo(
+    () => (activeProject?.columns && activeProject.columns.length > 0 ? activeProject.columns : DEFAULT_PROJECT_COLUMNS),
+    [activeProject]
   );
 
   // Pixel-launcher 1:1 edge swipe listener (< 1024px)
@@ -294,12 +329,14 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
           description: projDesc.trim(),
           ownerUsername: currentUser.username,
           ownerDisplayName: currentUser.displayName,
+          profile: activeProfileId || 'profile1',
           visibility: projVisibility,
           sharedWithUsers: projVisibility === 'shared' ? projSharedWith : [],
           status: projStatus,
           color: projColor,
           startDate: projStartDate,
           dueDate: projDueDate,
+          columns: DEFAULT_PROJECT_COLUMNS.map((c) => ({ ...c })),
           linkedNotePaths: [],
           linkedWikiSlugs: [],
           tasks: [],
@@ -320,13 +357,42 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     }
   };
 
-  const openCreateTaskModal = (defaultStatus: ProjectTaskStatus = 'todo') => {
+  const openColumnsModal = () => {
+    setDraftColumns(projectColumns.map((c) => ({ ...c })));
+    setNewColumnLabel('');
+    setNewColumnColor('#2563EB');
+    setColumnsModalOpen(true);
+  };
+
+  const handleSaveColumns = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeProject || draftColumns.length === 0) return;
+    const validCols = draftColumns
+      .map((c) => ({ ...c, label: c.label.trim() || c.id }))
+      .filter((c) => c.label.trim().length > 0);
+    if (validCols.length === 0) return;
+    const validIds = new Set(validCols.map((c) => c.id));
+    const fallbackStatus = validCols[0].id;
+    const remappedTasks = (activeProject.tasks || []).map((t) =>
+      validIds.has(t.status) ? t : { ...t, status: fallbackStatus }
+    );
+    await persistProject({
+      ...activeProject,
+      columns: validCols,
+      tasks: remappedTasks,
+      updatedAt: Date.now(),
+    });
+    setColumnsModalOpen(false);
+  };
+
+  const openCreateTaskModal = (defaultStatus?: ProjectTaskStatus) => {
     setEditingTask(null);
     setTaskTitle('');
     setTaskDesc('');
-    setTaskStatus(defaultStatus);
+    setTaskStatus(defaultStatus || projectColumns[0]?.id || 'todo');
     setTaskPriority('medium');
-    setTaskAssignee(currentUser.displayName);
+    setTaskAssignees([currentUser.displayName]);
+    setCustomAssigneeInput('');
     setTaskStartDate(todayIso());
     setTaskDueDate(addDaysIso(todayIso(), 5));
     setTaskModalOpen(true);
@@ -338,7 +404,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     setTaskDesc(task.description || '');
     setTaskStatus(task.status);
     setTaskPriority(task.priority);
-    setTaskAssignee(task.assignee || '');
+    setTaskAssignees(getTaskAssignees(task));
+    setCustomAssigneeInput('');
     setTaskStartDate(task.startDate || todayIso());
     setTaskDueDate(task.dueDate || addDaysIso(todayIso(), 5));
     setTaskModalOpen(true);
@@ -348,13 +415,21 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     e.preventDefault();
     if (!activeProject || !taskTitle.trim()) return;
     const cleanDue = taskDueDate < taskStartDate ? taskStartDate : taskDueDate;
+    const combinedAssignees = Array.from(
+      new Set(
+        [...taskAssignees, customAssigneeInput]
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0 && s !== 'Nicht zugewiesen')
+      )
+    );
     const taskPayload: ProjectTask = {
       id: editingTask?.id || `task_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       title: taskTitle.trim(),
       description: taskDesc.trim() || undefined,
       status: taskStatus,
       priority: taskPriority,
-      assignee: taskAssignee.trim() || 'Nicht zugewiesen',
+      assignee: combinedAssignees[0] || 'Nicht zugewiesen',
+      assignees: combinedAssignees,
       startDate: taskStartDate,
       dueDate: cleanDue,
       createdAt: editingTask?.createdAt || Date.now(),
@@ -470,7 +545,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
             <FolderKanban className="w-4 h-4" />
           </div>
           <span className="text-xs font-extrabold text-neutral-900 dark:text-neutral-100 truncate">
-            Projekte ({projects.length})
+            Projekte ({profileFilteredProjects.length})
           </span>
         </div>
         <button
@@ -483,6 +558,29 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
           <span>Neu</span>
         </button>
       </div>
+
+      {enableSecondProfile && profileNames && onSwitchProfile && (
+        <div className="px-2 pt-2 grid grid-cols-2 gap-1">
+          {(['profile1', 'profile2'] as NoteProfileId[]).map((pid) => {
+            const active = activeProfileId === pid;
+            return (
+              <button
+                key={pid}
+                type="button"
+                onClick={() => onSwitchProfile(pid)}
+                style={active ? { backgroundColor: accentColor, color: '#fff' } : undefined}
+                className={`py-1 px-2 rounded-lg text-[11px] font-bold truncate cursor-pointer transition-colors ${
+                  active
+                    ? 'shadow-2xs'
+                    : 'bg-white dark:bg-[#22242A] border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-600 dark:text-neutral-300'
+                }`}
+              >
+                {profileNames[pid] || (pid === 'profile1' ? 'Profil 1' : 'Profil 2')}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className="p-2 grid grid-cols-3 gap-1 border-b border-[#E5E3DC] dark:border-[#2F3136]">
         {(
@@ -698,7 +796,20 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                       }`}
                     >
                       <Columns3 className="w-3.5 h-3.5" />
-                      <span>Kanban-Board</span>
+                      <span>Kanban</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setViewMode('list')}
+                      style={viewMode === 'list' ? { color: projectAccent } : undefined}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer ${
+                        viewMode === 'list'
+                          ? 'bg-white dark:bg-[#2C2F36] shadow-xs font-bold'
+                          : 'text-neutral-500'
+                      }`}
+                    >
+                      <List className="w-3.5 h-3.5" />
+                      <span>Liste</span>
                     </button>
                     <button
                       type="button"
@@ -711,9 +822,19 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                       }`}
                     >
                       <GanttChartSquare className="w-3.5 h-3.5" />
-                      <span>Timeline (Gantt)</span>
+                      <span>Timeline</span>
                     </button>
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={openColumnsModal}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#23252A] text-xs font-semibold text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 cursor-pointer"
+                    title="Kanban-Spalten / Status anpassen"
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Spalten</span>
+                  </button>
 
                   <button
                     type="button"
@@ -748,7 +869,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => openCreateTaskModal('todo')}
+                    onClick={() => openCreateTaskModal()}
                     style={{ backgroundColor: projectAccent }}
                     className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-white text-xs font-bold shadow-xs cursor-pointer active:scale-95"
                   >
@@ -798,13 +919,16 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
               </div>
             </div>
 
-            {/* Content Area: Kanban or Gantt Timeline */}
+            {/* Content Area: Kanban, List or Gantt Timeline */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-5 pb-24 lg:pb-8">
               {viewMode === 'kanban' ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3.5 items-start">
-                  {COLUMNS.map((col, colIdx) => {
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-3.5 items-start">
+                  {projectColumns.map((col, colIdx) => {
+                    const colColor = col.color || projectAccent;
                     const colTasks = (activeProject.tasks || []).filter(
-                      (t) => t.status === col.id
+                      (t) =>
+                        t.status === col.id ||
+                        (colIdx === 0 && !projectColumns.some((c) => c.id === t.status))
                     );
                     return (
                       <div
@@ -819,18 +943,21 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                         className="rounded-2xl bg-[#F4F3EF]/85 dark:bg-[#1E2025] border border-[#E5E3DC] dark:border-[#2F3136] p-3 space-y-2.5"
                       >
                         <div className="flex items-center justify-between gap-2 px-1">
-                          <div className="flex items-center gap-2">
-                            <span className={`text-[11px] font-extrabold px-2.5 py-0.5 rounded-full ${col.badgeClass}`}>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              style={{ backgroundColor: `${colColor}20`, color: colColor }}
+                              className="text-[11px] font-extrabold px-2.5 py-0.5 rounded-full truncate"
+                            >
                               {col.label}
                             </span>
-                            <span className="text-xs font-bold text-neutral-400 tabular-nums">
+                            <span className="text-xs font-bold text-neutral-400 tabular-nums shrink-0">
                               {colTasks.length}
                             </span>
                           </div>
                           <button
                             type="button"
                             onClick={() => openCreateTaskModal(col.id)}
-                            className="p-1 rounded-lg text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 cursor-pointer"
+                            className="p-1 rounded-lg text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 cursor-pointer shrink-0"
                             title={`Aufgabe in "${col.label}" erstellen`}
                           >
                             <Plus className="w-4 h-4" />
@@ -845,6 +972,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                           ) : (
                             colTasks.map((task) => {
                               const prio = PRIORITY_META[task.priority] || PRIORITY_META.medium;
+                              const assignees = getTaskAssignees(task);
                               return (
                                 <div
                                   key={task.id}
@@ -888,10 +1016,22 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                       <Flag className="w-2.5 h-2.5" />
                                       {prio.label}
                                     </span>
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#1B1D21] text-neutral-700 dark:text-neutral-300">
-                                      <UserCheck className="w-2.5 h-2.5" />
-                                      <span className="max-w-[120px] truncate">{task.assignee}</span>
-                                    </span>
+                                    {assignees.length === 0 ? (
+                                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#1B1D21] text-neutral-500">
+                                        <UserCheck className="w-2.5 h-2.5" />
+                                        <span>Nicht zugewiesen</span>
+                                      </span>
+                                    ) : (
+                                      assignees.map((name) => (
+                                        <span
+                                          key={name}
+                                          className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#1B1D21] text-neutral-700 dark:text-neutral-300"
+                                        >
+                                          <UserCheck className="w-2.5 h-2.5" />
+                                          <span className="max-w-[110px] truncate">{name}</span>
+                                        </span>
+                                      ))
+                                    )}
                                   </div>
 
                                   <div className="flex items-center justify-between pt-1.5 border-t border-[#F1F0EA] dark:border-[#2F3139] text-[10px] text-neutral-400">
@@ -904,22 +1044,22 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                         <button
                                           type="button"
                                           onClick={() =>
-                                            handleMoveTaskStatus(task.id, COLUMNS[colIdx - 1].id)
+                                            handleMoveTaskStatus(task.id, projectColumns[colIdx - 1].id)
                                           }
                                           className="p-1 rounded-md bg-[#F4F3EF] dark:bg-[#1B1D21] hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-600 dark:text-neutral-300 cursor-pointer"
-                                          title={`Nach "${COLUMNS[colIdx - 1].label}" verschieben`}
+                                          title={`Nach "${projectColumns[colIdx - 1].label}" verschieben`}
                                         >
                                           <ChevronLeft className="w-3 h-3" />
                                         </button>
                                       )}
-                                      {colIdx < COLUMNS.length - 1 && (
+                                      {colIdx < projectColumns.length - 1 && (
                                         <button
                                           type="button"
                                           onClick={() =>
-                                            handleMoveTaskStatus(task.id, COLUMNS[colIdx + 1].id)
+                                            handleMoveTaskStatus(task.id, projectColumns[colIdx + 1].id)
                                           }
                                           className="p-1 rounded-md bg-[#F4F3EF] dark:bg-[#1B1D21] hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-600 dark:text-neutral-300 cursor-pointer"
-                                          title={`Nach "${COLUMNS[colIdx + 1].label}" verschieben`}
+                                          title={`Nach "${projectColumns[colIdx + 1].label}" verschieben`}
                                         >
                                           <ChevronRight className="w-3 h-3" />
                                         </button>
@@ -934,6 +1074,120 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                       </div>
                     );
                   })}
+                </div>
+              ) : viewMode === 'list' ? (
+                /* LIST VIEW */
+                <div className="rounded-2xl bg-[#FFFDF9] dark:bg-[#1E2025] border border-[#E5E3DC] dark:border-[#2F3136] overflow-hidden">
+                  {(activeProject.tasks || []).length === 0 ? (
+                    <div className="py-12 text-center text-xs text-neutral-400">
+                      Noch keine Aufgaben in diesem Projekt.
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <thead>
+                          <tr className="border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF]/70 dark:bg-[#23252A] text-[11px] font-bold text-neutral-500">
+                            <th className="py-2.5 px-3.5">Aufgabe</th>
+                            <th className="py-2.5 px-3">Status</th>
+                            <th className="py-2.5 px-3">Zuständig</th>
+                            <th className="py-2.5 px-3">Priorität</th>
+                            <th className="py-2.5 px-3">Zeitraum</th>
+                            <th className="py-2.5 px-3.5 text-right">Aktionen</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#E5E3DC]/70 dark:divide-[#2F3136]">
+                          {[...(activeProject.tasks || [])]
+                            .sort((a, b) => a.startDate.localeCompare(b.startDate))
+                            .map((task) => {
+                              const prio = PRIORITY_META[task.priority] || PRIORITY_META.medium;
+                              const assignees = getTaskAssignees(task);
+                              const colObj = projectColumns.find((c) => c.id === task.status);
+                              const statusColor = colObj?.color || projectAccent;
+                              return (
+                                <tr
+                                  key={task.id}
+                                  className="hover:bg-[#FAF9F5] dark:hover:bg-[#24262C] transition-colors"
+                                >
+                                  <td className="py-2.5 px-3.5 min-w-[200px]">
+                                    <div className="font-bold text-neutral-900 dark:text-neutral-100">
+                                      {task.title}
+                                    </div>
+                                    {task.description && (
+                                      <div className="text-[11px] text-neutral-500 line-clamp-1">
+                                        {task.description}
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="py-2.5 px-3 whitespace-nowrap">
+                                    <select
+                                      value={task.status}
+                                      onChange={(e) => handleMoveTaskStatus(task.id, e.target.value)}
+                                      style={{
+                                        borderColor: `${statusColor}55`,
+                                        color: statusColor,
+                                        backgroundColor: `${statusColor}12`,
+                                      }}
+                                      className="text-[11px] font-bold px-2.5 py-1 rounded-full border outline-hidden cursor-pointer"
+                                    >
+                                      {projectColumns.map((col) => (
+                                        <option key={col.id} value={col.id}>
+                                          {col.label}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </td>
+                                  <td className="py-2.5 px-3">
+                                    <div className="flex flex-wrap gap-1 max-w-[220px]">
+                                      {assignees.length === 0 ? (
+                                        <span className="text-[11px] text-neutral-400">Nicht zugewiesen</span>
+                                      ) : (
+                                        assignees.map((name) => (
+                                          <span
+                                            key={name}
+                                            className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#1B1D21] text-neutral-700 dark:text-neutral-300"
+                                          >
+                                            {name}
+                                          </span>
+                                        ))
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className="py-2.5 px-3 whitespace-nowrap">
+                                    <span className={`inline-flex items-center gap-0.5 text-[10px] font-bold px-2 py-0.5 rounded-full ${prio.cls}`}>
+                                      <Flag className="w-2.5 h-2.5" />
+                                      {prio.label}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-3 whitespace-nowrap tabular-nums text-[11px] text-neutral-500">
+                                    {task.startDate} – {task.dueDate}
+                                  </td>
+                                  <td className="py-2.5 px-3.5 text-right whitespace-nowrap">
+                                    <div className="inline-flex items-center gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => openEditTaskModal(task)}
+                                        className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
+                                        title="Bearbeiten"
+                                      >
+                                        <Edit3 className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeleteTask(task.id)}
+                                        className="p-1.5 rounded-lg text-neutral-400 hover:text-red-500 cursor-pointer"
+                                        title="Löschen"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               ) : (
                 /* TIMELINE (GANTT) VIEW */
@@ -995,14 +1249,9 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                               100 - leftPct,
                               (spanDays / timelineData.totalDays) * 100
                             );
-                            const barColor =
-                              task.status === 'done'
-                                ? '#059669'
-                                : task.status === 'review'
-                                ? '#2563EB'
-                                : task.status === 'in_progress'
-                                ? projectAccent
-                                : '#6B7280';
+                            const matchedCol = projectColumns.find((c) => c.id === task.status);
+                            const barColor = matchedCol?.color || projectAccent;
+                            const assignees = getTaskAssignees(task);
 
                             return (
                               <div
@@ -1015,7 +1264,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                     {task.title}
                                   </div>
                                   <div className="text-[10px] text-neutral-500 truncate">
-                                    {task.assignee}
+                                    {assignees.length > 0 ? assignees.join(', ') : 'Nicht zugewiesen'}
                                   </div>
                                 </div>
                                 <div className="flex-1 h-7 relative bg-[#F4F3EF]/60 dark:bg-[#17181C] rounded-lg overflow-hidden">
@@ -1077,7 +1326,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                   setIsMobileNavExpanded(false);
                 }}
                 style={viewMode === 'kanban' ? { backgroundColor: projectAccent } : undefined}
-                className={`flex-1 h-9.5 px-2.5 rounded-full flex items-center justify-center gap-1.5 text-xs font-semibold cursor-pointer ${
+                className={`flex-1 h-9.5 px-2 rounded-full flex items-center justify-center gap-1 text-xs font-semibold cursor-pointer ${
                   viewMode === 'kanban' ? 'text-white shadow-xs' : 'text-neutral-700 dark:text-neutral-300'
                 }`}
               >
@@ -1087,11 +1336,25 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  setViewMode('list');
+                  setIsMobileNavExpanded(false);
+                }}
+                style={viewMode === 'list' ? { backgroundColor: projectAccent } : undefined}
+                className={`flex-1 h-9.5 px-2 rounded-full flex items-center justify-center gap-1 text-xs font-semibold cursor-pointer ${
+                  viewMode === 'list' ? 'text-white shadow-xs' : 'text-neutral-700 dark:text-neutral-300'
+                }`}
+              >
+                <List className="w-4 h-4 shrink-0" />
+                <span>Liste</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
                   setViewMode('timeline');
                   setIsMobileNavExpanded(false);
                 }}
                 style={viewMode === 'timeline' ? { backgroundColor: projectAccent } : undefined}
-                className={`flex-1 h-9.5 px-2.5 rounded-full flex items-center justify-center gap-1.5 text-xs font-semibold cursor-pointer ${
+                className={`flex-1 h-9.5 px-2 rounded-full flex items-center justify-center gap-1 text-xs font-semibold cursor-pointer ${
                   viewMode === 'timeline' ? 'text-white shadow-xs' : 'text-neutral-700 dark:text-neutral-300'
                 }`}
               >
@@ -1102,7 +1365,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                 type="button"
                 onClick={() => {
                   setIsMobileNavExpanded(false);
-                  openCreateTaskModal('todo');
+                  openCreateTaskModal();
                 }}
                 style={{ backgroundColor: projectAccent }}
                 className="h-9.5 px-3 rounded-full text-white text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0"
@@ -1129,6 +1392,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
           >
             {viewMode === 'kanban' ? (
               <Columns3 className="w-5 h-5" />
+            ) : viewMode === 'list' ? (
+              <List className="w-5 h-5" />
             ) : (
               <GanttChartSquare className="w-5 h-5" />
             )}
@@ -1374,7 +1639,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                   onChange={(e) => setTaskStatus(e.target.value as ProjectTaskStatus)}
                   className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
                 >
-                  {COLUMNS.map((c) => (
+                  {projectColumns.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.label}
                     </option>
@@ -1397,37 +1662,88 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
               </div>
             </div>
 
-            {/* Assignee: Suite User Chips + Custom External Name */}
+            {/* Multi-Assignees: Suite User Chips + Custom External Names */}
             <div className="space-y-1.5">
               <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block">
-                Zuständig (Suite-Nutzer oder eigener/externer Name)
+                Zuständig (Mehrfachauswahl · Suite-Nutzer oder externe Namen)
               </label>
               <div className="flex flex-wrap gap-1">
-                {allUsers.map((u) => (
-                  <button
-                    key={u.username}
-                    type="button"
-                    onClick={() => setTaskAssignee(u.displayName)}
-                    style={
-                      taskAssignee === u.displayName ? { backgroundColor: projectAccent } : undefined
-                    }
-                    className={`px-2 py-1 rounded-full text-[11px] font-semibold cursor-pointer ${
-                      taskAssignee === u.displayName
-                        ? 'text-white'
-                        : 'bg-[#F4F3EF] dark:bg-[#282A30] text-neutral-700 dark:text-neutral-300'
-                    }`}
-                  >
-                    {u.displayName}
-                  </button>
-                ))}
+                {allUsers.map((u) => {
+                  const isSelected = taskAssignees.includes(u.displayName);
+                  return (
+                    <button
+                      key={u.username}
+                      type="button"
+                      onClick={() =>
+                        setTaskAssignees((prev) =>
+                          isSelected ? prev.filter((x) => x !== u.displayName) : [...prev, u.displayName]
+                        )
+                      }
+                      style={isSelected ? { backgroundColor: projectAccent } : undefined}
+                      className={`px-2.5 py-1 rounded-full text-[11px] font-semibold cursor-pointer ${
+                        isSelected
+                          ? 'text-white shadow-2xs'
+                          : 'bg-[#F4F3EF] dark:bg-[#282A30] text-neutral-700 dark:text-neutral-300'
+                      }`}
+                    >
+                      {u.displayName} {isSelected ? '✓' : '+'}
+                    </button>
+                  );
+                })}
               </div>
-              <input
-                type="text"
-                placeholder="Beliebiger Name (z.B. Elektro Meier)..."
-                value={taskAssignee}
-                onChange={(e) => setTaskAssignee(e.target.value)}
-                className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
-              />
+
+              {taskAssignees.filter((a) => !allUsers.some((u) => u.displayName === a)).length > 0 && (
+                <div className="flex flex-wrap gap-1 pt-0.5">
+                  {taskAssignees
+                    .filter((a) => !allUsers.some((u) => u.displayName === a))
+                    .map((ext) => (
+                      <span
+                        key={ext}
+                        style={{ borderColor: projectAccent }}
+                        className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border bg-[#FAF9F5] dark:bg-[#25272D]"
+                      >
+                        <span>{ext}</span>
+                        <button
+                          type="button"
+                          onClick={() => setTaskAssignees((prev) => prev.filter((x) => x !== ext))}
+                          className="text-neutral-400 hover:text-red-500 cursor-pointer"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))}
+                </div>
+              )}
+
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  placeholder="Externen Namen hinzufügen (z.B. Elektro Meier)..."
+                  value={customAssigneeInput}
+                  onChange={(e) => setCustomAssigneeInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && customAssigneeInput.trim()) {
+                      e.preventDefault();
+                      const val = customAssigneeInput.trim();
+                      setTaskAssignees((prev) => (prev.includes(val) ? prev : [...prev, val]));
+                      setCustomAssigneeInput('');
+                    }
+                  }}
+                  className="flex-1 text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const val = customAssigneeInput.trim();
+                    if (!val) return;
+                    setTaskAssignees((prev) => (prev.includes(val) ? prev : [...prev, val]));
+                    setCustomAssigneeInput('');
+                  }}
+                  className="px-2.5 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] text-xs font-semibold cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-700"
+                >
+                  +
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -1560,6 +1876,158 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Configurable Kanban Columns / Status Modal */}
+      {columnsModalOpen && activeProject && (
+        <div
+          onClick={() => setColumnsModalOpen(false)}
+          className="fixed inset-0 z-[120] bg-black/50 backdrop-blur-xs flex items-start lg:items-center justify-center px-3 pt-10 lg:pt-4 pb-4 overflow-y-auto"
+        >
+          <form
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={handleSaveColumns}
+            className="w-full max-w-md bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] p-5 space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-extrabold text-neutral-900 dark:text-neutral-100">
+                Kanban-Spalten / Status verwalten
+              </h3>
+              <button
+                type="button"
+                onClick={() => setColumnsModalOpen(false)}
+                className="p-1.5 rounded-full text-neutral-400 hover:text-neutral-700 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+              {draftColumns.map((col, idx) => (
+                <div
+                  key={col.id}
+                  className="p-2.5 rounded-xl bg-[#F4F3EF] dark:bg-[#25272D] border border-[#E5E3DC] dark:border-[#343740] flex items-center gap-2"
+                >
+                  <input
+                    type="color"
+                    value={col.color || '#B45309'}
+                    onChange={(e) =>
+                      setDraftColumns((prev) =>
+                        prev.map((c, i) => (i === idx ? { ...c, color: e.target.value } : c))
+                      )
+                    }
+                    className="w-7 h-7 rounded-lg border-0 bg-transparent cursor-pointer shrink-0"
+                    title="Spaltenfarbe"
+                  />
+                  <input
+                    type="text"
+                    value={col.label}
+                    onChange={(e) =>
+                      setDraftColumns((prev) =>
+                        prev.map((c, i) => (i === idx ? { ...c, label: e.target.value } : c))
+                      )
+                    }
+                    className="flex-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#1B1D21] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                  />
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <button
+                      type="button"
+                      disabled={idx === 0}
+                      onClick={() =>
+                        setDraftColumns((prev) => {
+                          const next = [...prev];
+                          [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+                          return next;
+                        })
+                      }
+                      className="p-1 rounded-md text-neutral-500 hover:text-neutral-900 disabled:opacity-30 cursor-pointer"
+                      title="Nach oben"
+                    >
+                      <ArrowUp className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={idx === draftColumns.length - 1}
+                      onClick={() =>
+                        setDraftColumns((prev) => {
+                          const next = [...prev];
+                          [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+                          return next;
+                        })
+                      }
+                      className="p-1 rounded-md text-neutral-500 hover:text-neutral-900 disabled:opacity-30 cursor-pointer"
+                      title="Nach unten"
+                    >
+                      <ArrowDown className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={draftColumns.length <= 1}
+                      onClick={() =>
+                        setDraftColumns((prev) => prev.filter((_, i) => i !== idx))
+                      }
+                      className="p-1 rounded-md text-neutral-400 hover:text-red-500 disabled:opacity-30 cursor-pointer"
+                      title="Spalte entfernen"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Add new column */}
+            <div className="flex items-center gap-2 pt-1 border-t border-[#E5E3DC] dark:border-[#2F3136]">
+              <input
+                type="color"
+                value={newColumnColor}
+                onChange={(e) => setNewColumnColor(e.target.value)}
+                className="w-7 h-7 rounded-lg border-0 bg-transparent cursor-pointer shrink-0"
+              />
+              <input
+                type="text"
+                placeholder="Neue Spalte (z.B. Blockiert, Warten)..."
+                value={newColumnLabel}
+                onChange={(e) => setNewColumnLabel(e.target.value)}
+                className="flex-1 text-xs px-2.5 py-1.5 rounded-lg bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const label = newColumnLabel.trim();
+                  if (!label) return;
+                  const id = `col_${label
+                    .toLowerCase()
+                    .replace(/[^a-z0-9]+/g, '_')
+                    .replace(/^_|_$/g, '')}_${Date.now().toString(36).slice(-3)}`;
+                  setDraftColumns((prev) => [...prev, { id, label, color: newColumnColor }]);
+                  setNewColumnLabel('');
+                }}
+                style={{ backgroundColor: projectAccent }}
+                className="px-3 py-1.5 rounded-lg text-white text-xs font-bold cursor-pointer shrink-0"
+              >
+                + Hinzufügen
+              </button>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setColumnsModalOpen(false)}
+                className="px-3.5 py-2 rounded-xl text-xs font-semibold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 cursor-pointer"
+              >
+                Abbrechen
+              </button>
+              <button
+                type="submit"
+                style={{ backgroundColor: projectAccent }}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-white shadow-xs cursor-pointer"
+              >
+                Spalten speichern
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

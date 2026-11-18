@@ -183,6 +183,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [smarthomeState, setSmarthomeState] = useState<SmarthomeState | null>(null);
+  const [pulseTiles, setPulseTiles] = useState<Record<string, number>>({});
   const [globalSearch, setGlobalSearch] = useState('');
 
   const [financeTx, setFinanceTx] = useState<FinanceTransaction[]>(() => {
@@ -269,6 +270,85 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   useEffect(() => {
     loadDashboardData();
   }, [loadDashboardData, refreshTick]);
+
+  // Real-time Smarthome SSE live updates & subtle pulse dot on updated sensors
+  useEffect(() => {
+    if (!enabledModules.smarthome || !currentUser.username) return;
+    let es: EventSource | null = null;
+    try {
+      es = new EventSource('/api/smarthome/stream');
+      es.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === 'live_value' && msg.entry) {
+            const entry = msg.entry;
+            const now = Date.now();
+            setSmarthomeState((prev) => {
+              if (!prev) return prev;
+              const matchedIds = prev.tiles
+                .filter(
+                  (t) =>
+                    `tile:${t.id}` === entry.key ||
+                    `${t.sourceId}::${t.topicOrPath || t.topic || ''}` === entry.key
+                )
+                .map((t) => t.id);
+              if (matchedIds.length > 0) {
+                setPulseTiles((p) => {
+                  const next = { ...p };
+                  matchedIds.forEach((id) => {
+                    next[id] = now;
+                  });
+                  return next;
+                });
+              }
+              return {
+                ...prev,
+                values: {
+                  ...prev.values,
+                  [entry.key]: entry,
+                },
+              };
+            });
+          } else if (msg.type === 'broker_status' && msg.brokerId) {
+            setSmarthomeState((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    brokers: prev.brokers.map((b) =>
+                      b.id === msg.brokerId ? { ...b, status: msg.status, lastError: msg.error } : b
+                    ),
+                  }
+                : prev
+            );
+          }
+        } catch {
+          // ignore
+        }
+      };
+    } catch {
+      // ignore SSE error
+    }
+    return () => {
+      es?.close();
+    };
+  }, [enabledModules.smarthome, currentUser.username]);
+
+  // Clear pulse indicator after ~2.5s
+  useEffect(() => {
+    const keys = Object.keys(pulseTiles);
+    if (keys.length === 0) return;
+    const timer = window.setTimeout(() => {
+      const cutoff = Date.now() - 2500;
+      setPulseTiles((prev) => {
+        const next: Record<string, number> = {};
+        Object.entries(prev).forEach(([k, ts]) => {
+          if (ts > cutoff) next[k] = ts;
+        });
+        return next;
+      });
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [pulseTiles]);
 
   // Derived Cookbook Week & Shopping Forecast
   const calendarDays = useMemo(
@@ -527,7 +607,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         .slice(0, 4)
         .forEach((t) => {
           const valKey = `${t.sourceId}::${t.topicOrPath || t.topic || ''}`;
-          const live = smarthomeState.values?.[valKey]?.value ?? t.lastValue ?? '–';
+          const live =
+            smarthomeState.values?.[`tile:${t.id}`]?.value ??
+            smarthomeState.values?.[valKey]?.value ??
+            t.lastValue ??
+            '–';
           results.push({
             id: `sh_${t.id}`,
             module: 'smarthome',
@@ -1481,13 +1565,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <div className="grid grid-cols-2 gap-2">
                   {tiles.slice(0, 4).map((tile) => {
                     const valKey = `${tile.sourceId}::${tile.topicOrPath || tile.topic || ''}`;
-                    const live = smarthomeState?.values?.[valKey]?.value ?? tile.lastValue ?? '–';
+                    const live =
+                      smarthomeState?.values?.[`tile:${tile.id}`]?.value ??
+                      smarthomeState?.values?.[valKey]?.value ??
+                      tile.lastValue ??
+                      '–';
+                    const isPulsing = Boolean(pulseTiles[tile.id] && Date.now() - pulseTiles[tile.id] < 2600);
                     return (
                       <div
                         key={tile.id}
                         className="p-2.5 rounded-2xl bg-[#FBFBFA] dark:bg-[#25272C] border border-[#E5E3DC]/80 dark:border-[#32353B]"
                       >
-                        <span className="text-[10px] text-neutral-400 block truncate">{tile.title}</span>
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[10px] text-neutral-400 block truncate">{tile.title}</span>
+                          {isPulsing && (
+                            <span
+                              className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0"
+                              title="Live aktualisiert"
+                            />
+                          )}
+                        </div>
                         <span className="text-sm font-extrabold text-neutral-900 dark:text-neutral-100 tabular-nums">
                           {live} {tile.unit || ''}
                         </span>

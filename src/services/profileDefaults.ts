@@ -1,4 +1,29 @@
-import { SuiteProfileSettings, EnabledModules, DashboardSettings, DashboardWidgetId, MealSectionConfig } from '../types';
+import {
+  SuiteProfileSettings,
+  EnabledModules,
+  DashboardSettings,
+  DashboardWidgetId,
+  MealSectionConfig,
+  SuiteModuleId,
+  ProjectColumnConfig,
+} from '../types';
+
+export const DEFAULT_MODULE_ORDER: SuiteModuleId[] = [
+  'dashboard',
+  'notes',
+  'wiki',
+  'recipes',
+  'finance',
+  'projects',
+  'smarthome',
+];
+
+export const DEFAULT_PROJECT_COLUMNS: ProjectColumnConfig[] = [
+  { id: 'todo', label: 'Offen', color: '#6B7280' },
+  { id: 'in_progress', label: 'In Arbeit', color: '#B45309' },
+  { id: 'review', label: 'Prüfung', color: '#2563EB' },
+  { id: 'done', label: 'Erledigt', color: '#10B981' },
+];
 
 export const OCHRE_COLOR_PRESETS = [
   { name: 'Klassik Ocker', hex: '#C87D20' },
@@ -63,6 +88,7 @@ export const DEFAULT_PROFILE_SETTINGS: SuiteProfileSettings = {
   enableSecondProfile: true,
   activeProfileId: 'profile1',
   mobileBarPosition: 'top',
+  moduleOrder: DEFAULT_MODULE_ORDER,
   profile1: {
     id: 'profile1',
     name: 'Privat',
