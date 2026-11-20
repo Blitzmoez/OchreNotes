@@ -4,7 +4,6 @@ import {
   CheckSquare,
   Network,
   Share2, 
-  Printer, 
   Server, 
   Sun, 
   Moon, 
@@ -25,11 +24,15 @@ import {
   LayoutDashboard,
   Cpu,
   FolderKanban,
-  HelpCircle
+  HelpCircle,
+  Rss,
+  AlertTriangle,
+  RefreshCw
 } from 'lucide-react';
-import { User, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId, CookbookTab } from '../../types';
+import { User, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId, CookbookTab, OfflineConflictItem } from '../../types';
 import { DEFAULT_MODULE_ORDER } from '../../services/profileDefaults';
 import { useTranslation } from '../../services/i18n.tsx';
+import { api } from '../../services/api';
 
 interface HeaderProps {
   currentUser: User | null;
@@ -38,7 +41,7 @@ interface HeaderProps {
   isDarkMode: boolean;
   onToggleDarkMode: () => void;
   onOpenShareModal: () => void;
-  onPrintA4: () => void;
+  onPrintA4?: () => void;
   onOpenSystemLogs: () => void;
   onOpenSettings: () => void;
   onOpenUserSwitch: () => void;
@@ -93,9 +96,19 @@ export const Header: React.FC<HeaderProps> = ({
     finance: profileSettings.profile1.colors.finance,
     smarthome: profileSettings.profile1.colors.smarthome || '#78716C',
     projects: profileSettings.profile1.colors.projects || '#8E6126',
+    rss: profileSettings.profile1.colors.rss || '#D97706',
   };
   const currentModuleColor = activeColors[activeSuiteModule] || activeColors.notes;
   const { t } = useTranslation();
+  const [offlineConflicts, setOfflineConflicts] = useState<OfflineConflictItem[]>([]);
+  const [resolvingConflictId, setResolvingConflictId] = useState<string | null>(null);
+  const [conflictError, setConflictError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unsub = api.subscribeOfflineConflicts(setOfflineConflicts);
+    return unsub;
+  }, []);
+
   // Ochre Suite modular menu dropdown
   const [isSuiteMenuOpen, setIsSuiteMenuOpen] = useState(false);
   const [isSuiteMenuClosing, setIsSuiteMenuClosing] = useState(false);
@@ -268,6 +281,14 @@ export const Header: React.FC<HeaderProps> = ({
                 <FolderKanban className="w-3.5 h-3.5" />
               </div>
             )}
+            {activeSuiteModule === 'rss' && (
+              <div
+                style={{ backgroundColor: activeColors.rss }}
+                className="w-6.5 h-6.5 rounded-lg text-white flex items-center justify-center shadow-xs shrink-0"
+              >
+                <Rss className="w-3.5 h-3.5" />
+              </div>
+            )}
 
             {/* Active Module Name */}
             <div className="flex items-center gap-1 min-w-0">
@@ -284,6 +305,8 @@ export const Header: React.FC<HeaderProps> = ({
                   ? 'Finanzen'
                   : activeSuiteModule === 'smarthome'
                   ? 'Smarthome'
+                  : activeSuiteModule === 'rss'
+                  ? 'RSS Feed'
                   : 'Projekte'}
               </span>
               <ChevronRight className={`w-3.5 h-3.5 text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 transition-transform duration-200 ${isSuiteMenuOpen && !isSuiteMenuClosing ? 'rotate-180' : ''}`} />
@@ -312,7 +335,9 @@ export const Header: React.FC<HeaderProps> = ({
                       Ochre Suite
                     </h3>
                     <span className="text-[11px] text-neutral-400">
-                      {activeSuiteModule === 'notes' ? `Profil: ${activeProfile.name}` : `@${currentUser?.username || 'michael'}`}
+                      {(activeSuiteModule === 'notes' || activeSuiteModule === 'projects')
+                        ? `Profil: ${activeProfile.name}`
+                        : `@${currentUser?.username || 'michael'}`}
                     </span>
                   </div>
                 </div>
@@ -363,6 +388,11 @@ export const Header: React.FC<HeaderProps> = ({
                       label: 'Smarthome',
                       subtitle: 'Live MQTT, Sensoren & Telemetrie',
                       icon: Cpu,
+                    },
+                    rss: {
+                      label: 'RSS Feed',
+                      subtitle: 'Quellen, Filter & Reader-Modus',
+                      icon: Rss,
                     },
                   };
 
@@ -609,8 +639,12 @@ export const Header: React.FC<HeaderProps> = ({
                 openUserMenu();
               }
             }}
-            className="flex items-center gap-2 px-2.5 py-1.5 rounded-full border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[#C87D20] bg-white dark:bg-[#1E1F23] transition-all cursor-pointer shadow-2xs hover:shadow-xs active:scale-95"
-            title="Benutzer- und Funktionsmenü öffnen"
+            className="relative flex items-center gap-2 px-2.5 py-1.5 rounded-full border border-[#E5E3DC] dark:border-[#2F3136] hover:border-[#C87D20] bg-white dark:bg-[#1E1F23] transition-all cursor-pointer shadow-2xs hover:shadow-xs active:scale-95"
+            title={
+              offlineConflicts.length > 0
+                ? `${offlineConflicts.length} Sync-Konflikt(e) offen – Menü öffnen`
+                : 'Benutzer- und Funktionsmenü öffnen'
+            }
           >
             {currentUser?.avatar ? (
               <img
@@ -628,6 +662,11 @@ export const Header: React.FC<HeaderProps> = ({
               {currentUser?.displayName || 'Profil'}
             </span>
             <ChevronLeft className={`w-3.5 h-3.5 text-neutral-400 transition-transform duration-200 ${isUserMenuOpen && !isUserMenuClosing ? 'rotate-180' : ''}`} />
+            {offlineConflicts.length > 0 && (
+              <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center shadow-xs">
+                {offlineConflicts.length}
+              </span>
+            )}
           </button>
 
           {/* Right-Anchored Full-Height Profile Drawer (Slides in from right, fades out cleanly) */}
@@ -669,14 +708,14 @@ export const Header: React.FC<HeaderProps> = ({
               {/* Scrollable Middle Actions Area */}
               <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
                 {/* Profil 1 / 2 Switch at TOP on Desktop or when Mobile Bar is TOP */}
-                {activeSuiteModule === 'notes' && profileSettings.enableSecondProfile && (
+                {(activeSuiteModule === 'notes' || activeSuiteModule === 'projects') && profileSettings.enableSecondProfile && (
                   <div
                     className={`p-2.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] space-y-1.5 ${
                       isBottomMobile ? 'hidden lg:block' : 'block'
                     }`}
                   >
                     <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 px-1 block">
-                      Notiz-Profil wechseln
+                      {activeSuiteModule === 'projects' ? 'Projekt-Profil wechseln' : 'Notiz-Profil wechseln'}
                     </span>
                     <div
                       role="group"
@@ -686,7 +725,7 @@ export const Header: React.FC<HeaderProps> = ({
                       {(['profile1', 'profile2'] as NoteProfileId[]).map((pid) => {
                         const prof = profileSettings[pid];
                         const isSelected = profileSettings.activeProfileId === pid;
-                        const pColor = prof.colors.notes;
+                        const pColor = activeSuiteModule === 'projects' ? (prof.colors.projects || prof.colors.notes) : prof.colors.notes;
                         return (
                           <button
                             key={pid}
@@ -735,63 +774,138 @@ export const Header: React.FC<HeaderProps> = ({
                   </button>
                 </div>
 
-                {/* Action Items: Context-aware per active Suite Module */}
-                <div className="space-y-1.5">
-                  {(activeSuiteModule === 'notes' || activeSuiteModule === 'wiki' || activeSuiteModule === 'recipes') && (
-                    <button
-                      onClick={() => {
-                        onOpenShareModal();
-                        setIsUserMenuOpen(false);
-                      }}
-                      className="w-full flex items-center justify-between p-3 text-xs rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#202225] hover:border-[var(--ochre-accent)] hover:bg-amber-500/10 text-neutral-800 dark:text-neutral-200 transition-all text-left group cursor-pointer"
-                    >
-                      <div className="flex items-center gap-2.5">
-                        <div
-                          className="w-8 h-8 rounded-xl flex items-center justify-center transition-colors"
-                          style={{ backgroundColor: `${currentModuleColor}1A`, color: currentModuleColor }}
-                        >
-                          <Share2 className="w-4 h-4" />
-                        </div>
-                        <span className="font-semibold">
-                          {activeSuiteModule === 'wiki'
-                            ? 'Wiki-Artikel teilen'
-                            : activeSuiteModule === 'recipes'
-                            ? 'Rezept teilen'
-                            : t.shareNote}
-                        </span>
+                {/* Offline Sync Conflicts (Vorher / Nachher) */}
+                {offlineConflicts.length > 0 && (
+                  <div className="p-3 rounded-2xl border-2 border-amber-500/50 bg-amber-50/70 dark:bg-amber-950/25 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-300 font-bold text-xs">
+                        <AlertTriangle className="w-4 h-4 shrink-0" />
+                        <span>Sync-Konflikte ({offlineConflicts.length})</span>
                       </div>
-                      <ChevronRight className="w-4 h-4 text-neutral-400" />
-                    </button>
-                  )}
+                      <span className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold">
+                        Vorher / Nachher
+                      </span>
+                    </div>
+                    {conflictError && (
+                      <p className="text-[11px] text-red-600 dark:text-red-400 font-medium">
+                        {conflictError}
+                      </p>
+                    )}
+                    <div className="space-y-2 max-h-52 overflow-y-auto pr-0.5">
+                      {offlineConflicts.map((c) => {
+                        const isBusy = resolvingConflictId === c.id;
+                        return (
+                          <div
+                            key={c.id}
+                            className="p-2.5 rounded-xl bg-white dark:bg-[#1E1F23] border border-[#E5E3DC] dark:border-[#2F3136] space-y-2 text-[11px]"
+                          >
+                            <div className="font-bold text-neutral-900 dark:text-neutral-100 truncate">
+                              {c.title}
+                            </div>
+                            <div className="grid grid-cols-1 gap-1">
+                              <div className="p-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-800/40">
+                                <span className="font-bold text-amber-700 dark:text-amber-300 block text-[10px]">
+                                  Lokal (Offline-Änderung)
+                                </span>
+                                <span className="text-neutral-700 dark:text-neutral-300 break-words">
+                                  {c.localSummary}
+                                </span>
+                              </div>
+                              <div className="p-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-800/80 border border-[#E5E3DC] dark:border-[#2F3136]">
+                                <span className="font-bold text-neutral-600 dark:text-neutral-300 block text-[10px]">
+                                  Server (Aktueller Stand)
+                                </span>
+                                <span className="text-neutral-700 dark:text-neutral-300 break-words">
+                                  {c.serverSummary}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5 pt-0.5">
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={async () => {
+                                  setResolvingConflictId(c.id);
+                                  setConflictError(null);
+                                  try {
+                                    await api.resolveOfflineConflict(c.id, 'local');
+                                  } catch (err: any) {
+                                    setConflictError(err?.message || 'Konflikt konnte nicht aufgelöst werden');
+                                  } finally {
+                                    setResolvingConflictId(null);
+                                  }
+                                }}
+                                style={{ backgroundColor: currentModuleColor }}
+                                className="flex-1 py-1.5 px-2 rounded-lg text-white font-bold text-[10px] hover:opacity-90 disabled:opacity-50 cursor-pointer flex items-center justify-center gap-1"
+                              >
+                                {isBusy && <RefreshCw className="w-3 h-3 animate-spin" />}
+                                <span>Lokal behalten</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={async () => {
+                                  setResolvingConflictId(c.id);
+                                  setConflictError(null);
+                                  try {
+                                    await api.resolveOfflineConflict(c.id, 'server');
+                                  } catch (err: any) {
+                                    setConflictError(err?.message || 'Konflikt konnte nicht aufgelöst werden');
+                                  } finally {
+                                    setResolvingConflictId(null);
+                                  }
+                                }}
+                                className="flex-1 py-1.5 px-2 rounded-lg border border-[#E5E3DC] dark:border-neutral-700 bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-700 dark:text-neutral-200 font-bold text-[10px] hover:border-neutral-400 disabled:opacity-50 cursor-pointer"
+                              >
+                                Server übernehmen
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
-                  {(activeSuiteModule === 'notes' ||
-                    activeSuiteModule === 'wiki' ||
-                    activeSuiteModule === 'recipes' ||
-                    activeSuiteModule === 'projects') && (
-                    <button
-                      onClick={() => {
-                        onPrintA4();
-                        setIsUserMenuOpen(false);
-                      }}
-                      className="w-full flex items-center justify-between p-3 text-xs rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#202225] hover:border-[var(--ochre-accent)] hover:bg-amber-500/10 text-neutral-800 dark:text-neutral-200 transition-all text-left group cursor-pointer"
-                    >
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-8 h-8 rounded-xl bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center text-neutral-600 dark:text-neutral-300 transition-colors">
-                          <Printer className="w-4 h-4" />
-                        </div>
-                        <span className="font-semibold">
+                {/* Action Items: Unified Share, Print & Export */}
+                <div className="space-y-1.5">
+                  <button
+                    onClick={() => {
+                      onOpenShareModal();
+                      setIsUserMenuOpen(false);
+                    }}
+                    className="w-full flex items-center justify-between p-3 text-xs rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#202225] hover:border-[var(--ochre-accent)] hover:bg-amber-500/10 text-neutral-800 dark:text-neutral-200 transition-all text-left group cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div
+                        className="w-8 h-8 rounded-xl flex items-center justify-center transition-colors"
+                        style={{ backgroundColor: `${currentModuleColor}1A`, color: currentModuleColor }}
+                      >
+                        <Share2 className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="font-semibold block">Teilen, Drucken &amp; Export</span>
+                        <span className="text-[10px] text-neutral-400">
                           {activeSuiteModule === 'wiki'
-                            ? 'Wiki-Artikel als A4 drucken'
+                            ? 'Wiki-Artikel als PDF, A4-Druck oder Link'
                             : activeSuiteModule === 'recipes'
-                            ? 'Essensplan als A4 drucken'
+                            ? 'Aktives Rezept oder Wochenplan'
                             : activeSuiteModule === 'projects'
-                            ? 'Projekt als A4 drucken'
-                            : t.printA4}
+                            ? 'Projekt oder geöffnete Aufgabe als PDF / A4'
+                            : activeSuiteModule === 'rss'
+                            ? 'Feed oder gelesener Artikel als PDF'
+                            : activeSuiteModule === 'finance'
+                            ? 'Finanz-Übersicht & Export'
+                            : activeSuiteModule === 'smarthome'
+                            ? 'Smarthome-Snapshot & Export'
+                            : activeSuiteModule === 'dashboard'
+                            ? 'Dashboard-Übersicht & Export'
+                            : 'Notiz als PDF, A4-Druck, Markdown oder Link'}
                         </span>
                       </div>
-                      <ChevronRight className="w-4 h-4 text-neutral-400" />
-                    </button>
-                  )}
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-neutral-400" />
+                  </button>
 
                   <button
                     onClick={() => {
@@ -902,10 +1016,10 @@ export const Header: React.FC<HeaderProps> = ({
 
               {/* Bottom Thumb-Zone Footer: Profil 1/2 Switch (when Mobile Bar is Bottom) + Menü schließen Button */}
               <div className="pt-3 border-t border-[#E5E3DC] dark:border-[#2F3136] flex flex-col gap-2 shrink-0 pb-[env(safe-area-inset-bottom)]">
-                {isBottomMobile && activeSuiteModule === 'notes' && profileSettings.enableSecondProfile && (
+                {isBottomMobile && (activeSuiteModule === 'notes' || activeSuiteModule === 'projects') && profileSettings.enableSecondProfile && (
                   <div className="lg:hidden p-2 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] space-y-1">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 px-1 block">
-                      Notiz-Profil wechseln
+                      {activeSuiteModule === 'projects' ? 'Projekt-Profil wechseln' : 'Notiz-Profil wechseln'}
                     </span>
                     <div
                       role="group"
@@ -915,7 +1029,7 @@ export const Header: React.FC<HeaderProps> = ({
                       {(['profile1', 'profile2'] as NoteProfileId[]).map((pid) => {
                         const prof = profileSettings[pid];
                         const isSelected = profileSettings.activeProfileId === pid;
-                        const pColor = prof.colors.notes;
+                        const pColor = activeSuiteModule === 'projects' ? (prof.colors.projects || prof.colors.notes) : prof.colors.notes;
                         return (
                           <button
                             key={pid}

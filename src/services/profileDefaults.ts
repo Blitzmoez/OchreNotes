@@ -16,7 +16,10 @@ export const DEFAULT_MODULE_ORDER: SuiteModuleId[] = [
   'finance',
   'projects',
   'smarthome',
+  'rss',
 ];
+
+export const FINANCE_UNASSIGNED_CATEGORY_ID = 'cat_unassigned';
 
 export const DEFAULT_PROJECT_COLUMNS: ProjectColumnConfig[] = [
   { id: 'todo', label: 'Offen', color: '#6B7280' },
@@ -82,6 +85,7 @@ export const DEFAULT_ENABLED_MODULES: EnabledModules = {
   finance: true,
   smarthome: true,
   projects: true,
+  rss: true,
 };
 
 export const DEFAULT_PROFILE_SETTINGS: SuiteProfileSettings = {
@@ -89,6 +93,7 @@ export const DEFAULT_PROFILE_SETTINGS: SuiteProfileSettings = {
   activeProfileId: 'profile1',
   mobileBarPosition: 'top',
   moduleOrder: DEFAULT_MODULE_ORDER,
+  offlineModules: {},
   profile1: {
     id: 'profile1',
     name: 'Privat',
@@ -100,6 +105,7 @@ export const DEFAULT_PROFILE_SETTINGS: SuiteProfileSettings = {
       finance: '#8E6126',
       smarthome: '#6E7F4F',
       projects: '#B45309',
+      rss: '#D97706',
     },
   },
   profile2: {
@@ -113,6 +119,7 @@ export const DEFAULT_PROFILE_SETTINGS: SuiteProfileSettings = {
       finance: '#6D4C2F',
       smarthome: '#5C6B42',
       projects: '#8E6126',
+      rss: '#B45309',
     },
   },
 };
@@ -121,7 +128,7 @@ export const MAX_DASHBOARD_WIDGETS = 6;
 
 export interface DashboardWidgetDefinition {
   id: DashboardWidgetId;
-  module: 'notes' | 'recipes' | 'wiki' | 'finance' | 'smarthome' | 'projects' | 'system';
+  module: 'notes' | 'recipes' | 'wiki' | 'finance' | 'smarthome' | 'projects' | 'rss' | 'system';
   title: string;
   description: string;
 }
@@ -186,6 +193,12 @@ export const DASHBOARD_WIDGET_CATALOG: DashboardWidgetDefinition[] = [
     module: 'projects',
     title: 'Aktive Projekte & Kanban',
     description: 'Laufende Projekte, offene Kanban-Aufgaben und anstehende Deadlines.',
+  },
+  {
+    id: 'rss_overview',
+    module: 'rss',
+    title: 'RSS Feed-Quellen',
+    description: 'Aktive News-Quellen und schneller Einstieg in deinen ablenkungsfreien Reader.',
   },
   {
     id: 'system_health',

@@ -143,6 +143,17 @@ export const TourOverlay: React.FC<TourOverlayProps> = ({
         selector: '[data-tour="main-workspace"]',
       });
     }
+    if (enabledModules.rss !== false) {
+      all.push({
+        id: 'mod-rss',
+        badge: 'Modul · RSS Feed',
+        module: 'rss',
+        title: 'RSS Feed / News & Reader-Modus',
+        description:
+          'Verwalte eigene RSS- & Atom-Quellen im Vault, filtere bezahlte Artikel heraus und lies Beiträge im ablenkungsfreien Reader-Modus oder teile sie als PDF.',
+        selector: '[data-tour="main-workspace"]',
+      });
+    }
 
     return all;
   }, [enabledModules]);

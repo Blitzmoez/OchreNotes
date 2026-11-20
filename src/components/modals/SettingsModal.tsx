@@ -44,6 +44,9 @@ import {
   ArrowUp,
   ArrowDown,
   Sparkles,
+  ChevronLeft,
+  ChevronRight,
+  Rss,
 } from 'lucide-react';
 import {
   User,
@@ -499,6 +502,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     finance: profileSettings.profile1.colors.finance,
     smarthome: profileSettings.profile1.colors.smarthome || '#78716C',
     projects: profileSettings.profile1.colors.projects || '#8E6126',
+    rss: profileSettings.profile1.colors.rss || '#D97706',
   };
   const editedProfile = profileSettings[editingProfileTab] || profileSettings.profile1;
 
@@ -526,7 +530,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const updateSuiteModuleColor = (
-    mod: 'dashboard' | 'wiki' | 'recipes' | 'finance' | 'smarthome' | 'projects',
+    mod: 'dashboard' | 'wiki' | 'recipes' | 'finance' | 'smarthome' | 'projects' | 'rss',
     hex: string
   ) => {
     onUpdateProfileSettings({
@@ -806,87 +810,107 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
         </div>
 
-        {/* 5 Tabs with Small Icons: Allgemein | Module | Modul-Einstellungen | Benutzer | Backup & Docker */}
-        <div
-          ref={mainTabBarRef}
-          className="flex items-center gap-1 px-4 pt-3 pb-2 border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#1A1C1F] overflow-x-auto no-scrollbar shrink-0 touch-pan-x overscroll-x-contain snap-x"
-        >
+        {/* 6 Tabs with Desktop Scroll Arrows + Mobile Swipe */}
+        <div className="relative flex items-center border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#1A1C1F] shrink-0">
           <button
-            data-active-tab={activeSettingsTab === 'general' ? 'true' : undefined}
-            onClick={() => setActiveSettingsTab('general')}
-            className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-              activeSettingsTab === 'general'
-                ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
-                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
-            }`}
+            type="button"
+            onClick={() => mainTabBarRef.current?.scrollBy({ left: -180, behavior: 'smooth' })}
+            className="hidden md:flex items-center justify-center w-8 h-9 shrink-0 text-neutral-500 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-200/60 dark:hover:bg-neutral-800/70 transition-colors cursor-pointer"
+            title="Tabs nach links scrollen"
+            aria-label="Tabs nach links"
           >
-            <Settings className="w-3.5 h-3.5" />
-            <span>Allgemein</span>
+            <ChevronLeft className="w-4 h-4" />
           </button>
-
-          <button
-            data-active-tab={activeSettingsTab === 'modules' ? 'true' : undefined}
-            onClick={() => setActiveSettingsTab('modules')}
-            className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-              activeSettingsTab === 'modules'
-                ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
-                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
-            }`}
+          <div
+            ref={mainTabBarRef}
+            className="flex-1 flex items-center gap-1 px-3 md:px-1 pt-2.5 pb-2 overflow-x-auto no-scrollbar touch-pan-x overscroll-x-contain snap-x"
           >
-            <Layers className="w-3.5 h-3.5" />
-            <span>Module</span>
-          </button>
+            <button
+              data-active-tab={activeSettingsTab === 'general' ? 'true' : undefined}
+              onClick={() => setActiveSettingsTab('general')}
+              className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeSettingsTab === 'general'
+                  ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
+                  : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
+              }`}
+            >
+              <Settings className="w-3.5 h-3.5" />
+              <span>Allgemein</span>
+            </button>
 
-          <button
-            data-active-tab={activeSettingsTab === 'moduleSettings' ? 'true' : undefined}
-            onClick={() => setActiveSettingsTab('moduleSettings')}
-            className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-              activeSettingsTab === 'moduleSettings'
-                ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
-                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
-            }`}
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-            <span>Modul-Einstellungen</span>
-          </button>
+            <button
+              data-active-tab={activeSettingsTab === 'modules' ? 'true' : undefined}
+              onClick={() => setActiveSettingsTab('modules')}
+              className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeSettingsTab === 'modules'
+                  ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
+                  : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>Module</span>
+            </button>
 
-          <button
-            data-active-tab={activeSettingsTab === 'users' ? 'true' : undefined}
-            onClick={() => setActiveSettingsTab('users')}
-            className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-              activeSettingsTab === 'users'
-                ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
-                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
-            }`}
-          >
-            <Users className="w-3.5 h-3.5" />
-            <span>Benutzer</span>
-          </button>
+            <button
+              data-active-tab={activeSettingsTab === 'moduleSettings' ? 'true' : undefined}
+              onClick={() => setActiveSettingsTab('moduleSettings')}
+              className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeSettingsTab === 'moduleSettings'
+                  ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
+                  : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
+              }`}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              <span>Modul-Einstellungen</span>
+            </button>
 
-          <button
-            data-active-tab={activeSettingsTab === 'backup' ? 'true' : undefined}
-            onClick={() => setActiveSettingsTab('backup')}
-            className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-              activeSettingsTab === 'backup'
-                ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
-                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
-            }`}
-          >
-            <Database className="w-3.5 h-3.5" />
-            <span>Backup &amp; Docker</span>
-          </button>
+            <button
+              data-active-tab={activeSettingsTab === 'users' ? 'true' : undefined}
+              onClick={() => setActiveSettingsTab('users')}
+              className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeSettingsTab === 'users'
+                  ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
+                  : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
+              }`}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>Benutzer</span>
+            </button>
 
+            <button
+              data-active-tab={activeSettingsTab === 'backup' ? 'true' : undefined}
+              onClick={() => setActiveSettingsTab('backup')}
+              className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeSettingsTab === 'backup'
+                  ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
+                  : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
+              }`}
+            >
+              <Database className="w-3.5 h-3.5" />
+              <span>Backup &amp; Docker</span>
+            </button>
+
+            <button
+              data-active-tab={activeSettingsTab === 'about' ? 'true' : undefined}
+              onClick={() => setActiveSettingsTab('about')}
+              className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                activeSettingsTab === 'about'
+                  ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
+                  : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Über / Updates</span>
+            </button>
+          </div>
           <button
-            data-active-tab={activeSettingsTab === 'about' ? 'true' : undefined}
-            onClick={() => setActiveSettingsTab('about')}
-            className={`snap-center flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-              activeSettingsTab === 'about'
-                ? 'bg-[var(--ochre-accent)] text-white shadow-xs'
-                : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
-            }`}
+            type="button"
+            onClick={() => mainTabBarRef.current?.scrollBy({ left: 180, behavior: 'smooth' })}
+            className="hidden md:flex items-center justify-center w-8 h-9 shrink-0 text-neutral-500 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-200/60 dark:hover:bg-neutral-800/70 transition-colors cursor-pointer"
+            title="Tabs nach rechts scrollen"
+            aria-label="Tabs nach rechts"
           >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Über / Updates</span>
+            <ChevronRight className="w-4 h-4" />
           </button>
         </div>
 
@@ -1134,6 +1158,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 color: activeColors.smarthome,
                 icon: Cpu,
               },
+              {
+                id: 'rss',
+                title: 'RSS Feed / News Reader',
+                desc: 'Eigene RSS- & Atom-Quellen, Paywall-Filter & werbefreier Reader-Modus',
+                color: activeColors.rss,
+                icon: Rss,
+              },
             ];
 
             const cardMap = new Map(rawModuleCards.map((c) => [c.id, c]));
@@ -1170,10 +1201,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div>
                     <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100">
-                      Module an- &amp; abschalten sowie sortieren
+                      Module an- &amp; abschalten sowie Sortierung
                     </h3>
                     <p className="text-[11px] text-neutral-500">
-                      Reihenfolge gilt direkt im Modul-Menü (mindestens 1 Modul bleibt aktiv).
+                      Reihenfolge gilt im Modul-Menü und im Dashboard.
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -1207,7 +1238,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     return (
                       <div
                         key={mod.id}
-                        className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] flex items-center justify-between gap-3"
+                        className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
                       >
                         <div className="flex items-center gap-3 min-w-0">
                           <div
@@ -1225,7 +1256,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </span>
                           </div>
                         </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
+                        <div className="flex items-center justify-end gap-1.5 shrink-0 flex-wrap">
+
                           <div className="flex items-center gap-0.5 bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-[#2F3136] rounded-lg p-0.5">
                             <button
                               type="button"
@@ -1297,42 +1329,63 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {/* ============================================================== */}
           {activeSettingsTab === 'moduleSettings' && (
             <div className="space-y-4">
-              {/* Sub-navigation per module (skalierbar horizontal swipebar) */}
-              <div
-                ref={modTabBarRef}
-                className="flex items-center gap-1.5 p-1 rounded-xl bg-[#F4F3EF] dark:bg-[#18191B] border border-[#E5E3DC] dark:border-[#2F3136] overflow-x-auto no-scrollbar touch-pan-x overscroll-x-contain snap-x"
-              >
-                {(
-                  [
-                    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, color: activeColors.dashboard },
-                    { id: 'notes', label: 'Notes', icon: BookOpen, color: activeColors.notes },
-                    { id: 'wiki', label: 'Wiki', icon: BookMarked, color: activeColors.wiki },
-                    { id: 'recipes', label: 'Essensplan', icon: Utensils, color: activeColors.recipes },
-                    { id: 'finance', label: 'Finanzen', icon: DollarSign, color: activeColors.finance },
-                    { id: 'projects', label: 'Projekte', icon: FolderKanban, color: activeColors.projects },
-                    { id: 'smarthome', label: 'Smarthome', icon: Cpu, color: activeColors.smarthome },
-                  ] as const
-                ).map((item) => {
-                  const Icon = item.icon;
-                  const isSelected = selectedModuleSettingsTab === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      data-active-subtab={isSelected ? 'true' : undefined}
-                      type="button"
-                      onClick={() => setSelectedModuleSettingsTab(item.id)}
-                      style={isSelected ? { backgroundColor: item.color } : undefined}
-                      className={`snap-center shrink-0 min-w-[88px] flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
-                        isSelected
-                          ? 'text-white shadow-xs'
-                          : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
-                      }`}
-                    >
-                      <Icon className="w-3.5 h-3.5" />
-                      <span>{item.label}</span>
-                    </button>
-                  );
-                })}
+              {/* Sub-navigation per module (Desktop Pfeile + Mobile Swipe) */}
+              <div className="relative flex items-center rounded-xl bg-[#F4F3EF] dark:bg-[#18191B] border border-[#E5E3DC] dark:border-[#2F3136]">
+                <button
+                  type="button"
+                  onClick={() => modTabBarRef.current?.scrollBy({ left: -160, behavior: 'smooth' })}
+                  className="hidden md:flex items-center justify-center w-7 h-8 shrink-0 text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
+                  title="Module nach links scrollen"
+                  aria-label="Module nach links"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <div
+                  ref={modTabBarRef}
+                  className="flex-1 flex items-center gap-1.5 p-1 overflow-x-auto no-scrollbar touch-pan-x overscroll-x-contain snap-x"
+                >
+                  {(
+                    [
+                      { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, color: activeColors.dashboard },
+                      { id: 'notes', label: 'Notes', icon: BookOpen, color: activeColors.notes },
+                      { id: 'wiki', label: 'Wiki', icon: BookMarked, color: activeColors.wiki },
+                      { id: 'recipes', label: 'Essensplan', icon: Utensils, color: activeColors.recipes },
+                      { id: 'finance', label: 'Finanzen', icon: DollarSign, color: activeColors.finance },
+                      { id: 'projects', label: 'Projekte', icon: FolderKanban, color: activeColors.projects },
+                      { id: 'smarthome', label: 'Smarthome', icon: Cpu, color: activeColors.smarthome },
+                      { id: 'rss', label: 'RSS Feed', icon: Rss, color: activeColors.rss },
+                    ] as const
+                  ).map((item) => {
+                    const Icon = item.icon;
+                    const isSelected = selectedModuleSettingsTab === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        data-active-subtab={isSelected ? 'true' : undefined}
+                        type="button"
+                        onClick={() => setSelectedModuleSettingsTab(item.id)}
+                        style={isSelected ? { backgroundColor: item.color } : undefined}
+                        className={`snap-center shrink-0 min-w-[88px] flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                          isSelected
+                            ? 'text-white shadow-xs'
+                            : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
+                        }`}
+                      >
+                        <Icon className="w-3.5 h-3.5" />
+                        <span>{item.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => modTabBarRef.current?.scrollBy({ left: 160, behavior: 'smooth' })}
+                  className="hidden md:flex items-center justify-center w-7 h-8 shrink-0 text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
+                  title="Module nach rechts scrollen"
+                  aria-label="Module nach rechts"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
               </div>
 
               {/* --- MODULE: DASHBOARD --- */}
@@ -2817,6 +2870,49 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </p>
                   </div>
 
+                  {/* Profile 1 / Profile 2 Display Names for Projects & Notes */}
+                  <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#18191B] space-y-2.5">
+                    <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
+                      Profil-Namen für Projekte &amp; Filter ({profileSettings.profile1.name} / {profileSettings.profile2.name})
+                    </span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="text-[11px] font-semibold text-neutral-500 block mb-1">
+                          Profil 1 Name
+                        </label>
+                        <input
+                          type="text"
+                          value={profileSettings.profile1.name}
+                          onChange={(e) =>
+                            onUpdateProfileSettings({
+                              ...profileSettings,
+                              profile1: { ...profileSettings.profile1, name: e.target.value },
+                            })
+                          }
+                          placeholder="Privat"
+                          className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-semibold text-neutral-500 block mb-1">
+                          Profil 2 Name
+                        </label>
+                        <input
+                          type="text"
+                          value={profileSettings.profile2.name}
+                          onChange={(e) =>
+                            onUpdateProfileSettings({
+                              ...profileSettings,
+                              profile2: { ...profileSettings.profile2, name: e.target.value },
+                            })
+                          }
+                          placeholder="Business"
+                          className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#202225] border border-[#E5E3DC] dark:border-neutral-700 outline-hidden"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
                   {renderColorPickerBlock(
                     activeColors.projects,
                     (hex) => updateSuiteModuleColor('projects', hex),
@@ -2844,6 +2940,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     (hex) => updateSuiteModuleColor('smarthome', hex),
                     () => resetModuleColorsToOchre('smarthome'),
                     'Smarthome Akzentfarbe (Ocker-Palette)'
+                  )}
+                </div>
+              )}
+
+              {/* --- MODULE: RSS FEED --- */}
+              {selectedModuleSettingsTab === 'rss' && (
+                <div className="space-y-4">
+                  <div className="p-3.5 rounded-2xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#18191B] space-y-1">
+                    <div className="flex items-center gap-2 font-bold text-neutral-900 dark:text-neutral-100">
+                      <Rss className="w-4 h-4" style={{ color: activeColors.rss }} />
+                      <span>RSS Feed / News &amp; Reader-Modus</span>
+                    </div>
+                    <p className="text-[11px] text-neutral-500 leading-relaxed">
+                      Feed-Quellen werden benutzerbezogen gespeichert, Artikel hingegen immer live abgerufen und nie dauerhaft auf der Festplatte abgelegt. Bezahl-Artikel (Paywall) lassen sich pro Quelle oder global ausblenden.
+                    </p>
+                  </div>
+
+                  {renderColorPickerBlock(
+                    activeColors.rss,
+                    (hex) => updateSuiteModuleColor('rss', hex),
+                    () => resetModuleColorsToOchre('rss'),
+                    'RSS Feed Akzentfarbe (Ocker-Palette)'
                   )}
                 </div>
               )}

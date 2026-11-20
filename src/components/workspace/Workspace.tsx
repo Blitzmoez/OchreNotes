@@ -234,9 +234,16 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   const [liteVaultNewFolderName, setLiteVaultNewFolderName] = useState('');
   const [isCreatingLiteVaultFolder, setIsCreatingLiteVaultFolder] = useState(false);
 
-  // 1:1 finger-tracked swipe-to-dismiss state for Lite Vault drawer/card
+  // 1:1 finger-tracked swipe-to-dismiss state for Lite Vault drawer/card with velocity fling & haptics
   const [liteVaultDragY, setLiteVaultDragY] = useState<number | null>(null);
-  const liteVaultTouchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const liteVaultTouchStartRef = useRef<{
+    x: number;
+    y: number;
+    lastY: number;
+    lastTs: number;
+    vy: number;
+    hapticFired: boolean;
+  } | null>(null);
   const liteVaultListScrollRef = useRef<HTMLDivElement>(null);
 
   const handleCreateFolderFromLiteVault = async () => {
@@ -478,25 +485,53 @@ export const Workspace: React.FC<WorkspaceProps> = ({
               liteVaultTouchStartRef.current = null;
               return;
             }
-            liteVaultTouchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            const touch = e.touches[0];
+            liteVaultTouchStartRef.current = {
+              x: touch.clientX,
+              y: touch.clientY,
+              lastY: touch.clientY,
+              lastTs: performance.now(),
+              vy: 0,
+              hapticFired: false,
+            };
           }}
           onTouchMove={(e) => {
-            if (!liteVaultTouchStartRef.current) return;
-            const dy = e.touches[0].clientY - liteVaultTouchStartRef.current.y;
-            const dx = e.touches[0].clientX - liteVaultTouchStartRef.current.x;
+            const ref = liteVaultTouchStartRef.current;
+            if (!ref) return;
+            const touch = e.touches[0];
+            const now = performance.now();
+            const dt = Math.max(1, now - ref.lastTs);
+            const dyStep = touch.clientY - ref.lastY;
+            ref.vy = ref.vy * 0.45 + (dyStep / dt) * 0.55;
+            ref.lastY = touch.clientY;
+            ref.lastTs = now;
+
+            const dy = touch.clientY - ref.y;
+            const dx = touch.clientX - ref.x;
             if (Math.abs(dy) < 6 && liteVaultDragY === null) return;
             const listEl = liteVaultListScrollRef.current;
             if (dy > 0 && listEl && listEl.scrollTop > 4 && liteVaultDragY === null) {
               liteVaultTouchStartRef.current = null;
               return;
             }
-            if (Math.abs(dy) > Math.abs(dx) * 0.9 || liteVaultDragY !== null) {
-              const clamped = Math.max(-260, Math.min(240, dy));
+            if (Math.abs(dy) > Math.abs(dx) * 0.85 || liteVaultDragY !== null) {
+              const clamped = Math.max(-260, Math.min(260, dy));
+              if (!ref.hapticFired && Math.abs(clamped) >= 72) {
+                ref.hapticFired = true;
+                try { navigator.vibrate?.(10); } catch {}
+              }
               setLiteVaultDragY(clamped);
             }
           }}
           onTouchEnd={() => {
-            if (liteVaultDragY !== null && Math.abs(liteVaultDragY) > 75) {
+            const ref = liteVaultTouchStartRef.current;
+            const currentDrag = liteVaultDragY ?? 0;
+            const idleMs = ref ? performance.now() - ref.lastTs : 999;
+            const vy = ref ? ref.vy : 0;
+            const isFlingDismiss = Math.abs(vy) >= 0.3 && Math.abs(currentDrag) > 20;
+            const isPastThreshold = Math.abs(currentDrag) > 78 && !(idleMs > 140 && Math.abs(vy) < 0.05 && Math.abs(currentDrag) < 150);
+            if (liteVaultDragY !== null && (isFlingDismiss || isPastThreshold)) {
+              try { navigator.vibrate?.(12); } catch {}
               setLiteVaultDragY(null);
               setIsLiteVaultOpen(false);
             } else {
@@ -773,11 +808,11 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     const currentTabLastSaved = activeTab ? (tabContents[activeTab.path]?.lastSaved ?? lastSaved) : lastSaved;
 
     return (
-      <main className="flex-1 h-full overflow-hidden flex flex-col relative">
-        {/* Mobile Slideable Tabs Bar (data-no-swipe ensures Vault gesture doesn't hijack tab scrolling) */}
+      <main className="flex-1 min-h-0 h-full overflow-hidden flex flex-col relative">
+        {/* Mobile Sticky Slideable Tabs Bar (data-no-swipe ensures Vault gesture doesn't hijack tab scrolling) */}
         <div 
           data-no-swipe="true"
-          className="h-11 px-2.5 bg-[#F4F3EF] dark:bg-[#1F2125] border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-1.5 shrink-0 select-none"
+          className="sticky top-0 z-30 h-11 px-2.5 bg-[#F4F3EF]/95 dark:bg-[#1F2125]/95 backdrop-blur-md border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-1.5 shrink-0 select-none"
         >
           {/* Scrollable / Slideable Tabs Container with mouse wheel support */}
           <div 
@@ -867,7 +902,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         </div>
 
         {/* Mobile Editor Surface */}
-        <div className="flex-1 overflow-hidden select-text">
+        <div className="flex-1 min-h-0 overflow-hidden select-text flex flex-col">
           <LiveEditorPane
             content={currentTabContent}
             onChange={(newContent) => {
@@ -929,12 +964,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         e.preventDefault();
         handleDropOnSplit(e);
       }}
-      className={`flex-1 h-full overflow-hidden flex relative ${isDragging ? 'cursor-col-resize select-none' : ''}`}
+      className={`flex-1 min-h-0 h-full overflow-hidden flex relative ${isDragging ? 'cursor-col-resize select-none' : ''}`}
     >
       {/* Primary Note Pane */}
       <div
         style={{ width: secondaryNotePath ? `${splitRatio}%` : '100%' }}
-        className={`h-full flex flex-col overflow-hidden min-w-[280px] transition-all duration-150 ${
+        className={`h-full min-h-0 flex flex-col overflow-hidden min-w-[280px] transition-all duration-150 ${
           secondaryNotePath ? 'border-r border-[#E5E3DC] dark:border-[#2F3136]' : ''
         }`}
       >
@@ -985,7 +1020,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         </div>
 
         {/* Primary Editor Surface */}
-        <div className="flex-1 overflow-hidden select-text">
+        <div className="flex-1 min-h-0 overflow-hidden select-text flex flex-col">
           <LiveEditorPane
             content={content}
             onChange={onContentChange}
@@ -1055,7 +1090,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             }
           }}
           onDrop={handleDropOnSplit}
-          className="h-full flex flex-col overflow-hidden min-w-[280px] relative"
+          className="h-full min-h-0 flex flex-col overflow-hidden min-w-[280px] relative"
         >
           {/* Secondary Header with Note Selector and Close [X] */}
           <div className="h-8 px-3 bg-[#F4F3EF] dark:bg-[#1F2125] border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between text-xs font-medium text-neutral-700 dark:text-neutral-300 shrink-0">
@@ -1094,7 +1129,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           )}
 
           {/* Secondary Surface: Editor or Clean Lite Vault Card Menu */}
-          <div className="flex-1 overflow-hidden select-text">
+          <div className="flex-1 min-h-0 overflow-hidden select-text flex flex-col">
             {secondaryNotePath === '__empty__' ? (
               <div
                 onDragOver={(e) => {

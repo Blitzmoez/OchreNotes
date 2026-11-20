@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   User,
   NoteMetadata,
@@ -9,18 +9,19 @@ import {
   ProjectVisibility,
   ProjectStatus,
   ProjectColumnConfig,
+  ProjectMilestone,
+  ProjectProtocolEntry,
   NoteProfileId,
 } from '../../types';
 import { api } from '../../services/api';
 import { DEFAULT_PROJECT_COLUMNS } from '../../services/profileDefaults';
-import { printProjectA4 } from '../../services/printService';
+import { useSwipeDrawer } from '../../hooks/useSwipeDrawer';
 import {
   FolderKanban,
   Plus,
   Columns3,
   GanttChartSquare,
   List,
-  Printer,
   Settings,
   Trash2,
   Edit3,
@@ -39,6 +40,14 @@ import {
   ArrowUp,
   ArrowDown,
   SlidersHorizontal,
+  Milestone,
+  ArrowRightLeft,
+  Search,
+  AlertTriangle,
+  UserPlus,
+  Archive,
+  ArchiveRestore,
+  ClipboardList,
 } from 'lucide-react';
 
 interface ProjectsViewProps {
@@ -55,6 +64,7 @@ interface ProjectsViewProps {
   activeProfileId?: NoteProfileId;
   profileNames?: Record<NoteProfileId, string>;
   onSwitchProfile?: (id: NoteProfileId) => void;
+  onActiveContextChange?: (ctx: { project: ProjectItem | null; task: ProjectTask | null }) => void;
   onNavigateToNote: (path: string) => void;
   onNavigateToWiki: (slug: string) => void;
 }
@@ -78,6 +88,12 @@ const addDaysIso = (iso: string, days: number) => {
   const d = new Date(`${iso}T00:00:00`);
   d.setDate(d.getDate() + days);
   return d.toISOString().slice(0, 10);
+};
+
+const daysUntilIso = (targetIso: string): number => {
+  const today = new Date(`${todayIso()}T00:00:00`).getTime();
+  const target = new Date(`${targetIso}T00:00:00`).getTime();
+  return Math.round((target - today) / 86400000);
 };
 
 const getTaskAssignees = (task: ProjectTask): string[] => {
@@ -104,25 +120,47 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   activeProfileId = 'profile1',
   profileNames,
   onSwitchProfile,
+  onActiveContextChange,
   onNavigateToNote,
   onNavigateToWiki,
 }) => {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
-    initialProjectId || projects[0]?.id || null
+    initialProjectId || projects.find((p) => !p.archived)?.id || projects[0]?.id || null
   );
   const [viewMode, setViewMode] = useState<'kanban' | 'list' | 'timeline'>('kanban');
   const [scopeFilter, setScopeFilter] = useState<'all' | 'private' | 'shared'>('all');
 
-  // Mobile Left-Edge Pixel-Launcher 1:1 Swipe Project Drawer
-  const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState(false);
-  const [drawerDragX, setDrawerDragX] = useState<number | null>(null);
-  const drawerSwipeRef = useRef<{
-    startX: number;
-    startY: number;
-    wasOpen: boolean;
-    locked: 'none' | 'x' | 'y';
-    currentDragX: number | null;
-  } | null>(null);
+  // Unified Pixel-Launcher 1:1 Swipe Project Drawer
+  const projectDrawer = useSwipeDrawer({
+    direction: 'left',
+    width: 288,
+    edgeThreshold: 96,
+    globalWindow: true,
+    enabled: true,
+  });
+
+  // Mobile auto-minimizing header state
+  const [isMobileHeaderCollapsed, setIsMobileHeaderCollapsed] = useState(false);
+  const contentScrollRef = useRef<HTMLDivElement>(null);
+  const lastScrollTopRef = useRef(0);
+  const headerManualExpandTsRef = useRef(0);
+
+  // Timeline interactive milestone bubble popover
+  const [activeTimelineMilestoneId, setActiveTimelineMilestoneId] = useState<string | null>(null);
+
+  // Protocol overlay (Project-level or Task-level)
+  const [protocolTarget, setProtocolTarget] = useState<
+    | { scope: 'project' }
+    | { scope: 'task'; taskId: string }
+    | null
+  >(null);
+  const [protocolDraftText, setProtocolDraftText] = useState('');
+  const protocolInputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Archive inside Vault
+  const [isArchiveExpanded, setIsArchiveExpanded] = useState(false);
+  const [archiveSearch, setArchiveSearch] = useState('');
+  const [archiveSort, setArchiveSort] = useState<'recent' | 'title'>('recent');
 
   // Mobile thumb nav
   const [isMobileNavExpanded, setIsMobileNavExpanded] = useState(false);
@@ -139,8 +177,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const [projVisibility, setProjVisibility] = useState<ProjectVisibility>('private');
   const [projSharedWith, setProjSharedWith] = useState<string[]>([]);
   const [projColor, setProjColor] = useState(accentColor);
-  const [projStartDate, setProjStartDate] = useState(todayIso());
-  const [projDueDate, setProjDueDate] = useState(addDaysIso(todayIso(), 14));
+  const [projStartDate, setProjStartDate] = useState('');
+  const [projDueDate, setProjDueDate] = useState('');
+  const [projProfile, setProjProfile] = useState<NoteProfileId>(activeProfileId || 'profile1');
+  const [projExternalMembers, setProjExternalMembers] = useState<string[]>([]);
+  const [newProjExtInput, setNewProjExtInput] = useState('');
 
   // Task Create/Edit Modal
   const [taskModalOpen, setTaskModalOpen] = useState(false);
@@ -151,8 +192,27 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const [taskPriority, setTaskPriority] = useState<ProjectTask['priority']>('medium');
   const [taskAssignees, setTaskAssignees] = useState<string[]>([currentUser.displayName]);
   const [customAssigneeInput, setCustomAssigneeInput] = useState('');
-  const [taskStartDate, setTaskStartDate] = useState(todayIso());
-  const [taskDueDate, setTaskDueDate] = useState(addDaysIso(todayIso(), 5));
+  const [taskStartDate, setTaskStartDate] = useState('');
+  const [taskDueDate, setTaskDueDate] = useState('');
+  const [taskMilestoneId, setTaskMilestoneId] = useState('');
+
+  // Milestones Modal
+  const [milestonesModalOpen, setMilestonesModalOpen] = useState(false);
+  const [msTitle, setMsTitle] = useState('');
+  const [msTargetDate, setMsTargetDate] = useState('');
+  const [msDesc, setMsDesc] = useState('');
+  const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
+
+  // List View Multi-Filter & Sorting
+  const [listSearch, setListSearch] = useState('');
+  const [listFilterStatus, setListFilterStatus] = useState<string>('all');
+  const [listFilterPriority, setListFilterPriority] = useState<string>('all');
+  const [listFilterAssignee, setListFilterAssignee] = useState<string>('all');
+  const [listFilterMilestone, setListFilterMilestone] = useState<string>('all');
+  const [listSortKey, setListSortKey] = useState<
+    'title' | 'status' | 'priority' | 'startDate' | 'dueDate' | 'milestone' | 'assignees'
+  >('dueDate');
+  const [listSortDir, setListSortDir] = useState<'asc' | 'desc'>('asc');
 
   // Column Configuration Modal
   const [columnsModalOpen, setColumnsModalOpen] = useState(false);
@@ -168,22 +228,48 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     return projects.filter((p) => (p.profile || 'profile1') === activeProfileId);
   }, [projects, enableSecondProfile, activeProfileId]);
 
+  const activeProjectsList = useMemo(
+    () => profileFilteredProjects.filter((p) => !p.archived),
+    [profileFilteredProjects]
+  );
+
+  const archivedProjectsList = useMemo(() => {
+    const q = archiveSearch.trim().toLowerCase();
+    return profileFilteredProjects
+      .filter((p) => !!p.archived)
+      .filter((p) => {
+        if (!q) return true;
+        return (
+          p.title.toLowerCase().includes(q) ||
+          (p.description || '').toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => {
+        if (archiveSort === 'title') return a.title.localeCompare(b.title, 'de');
+        return (b.archivedAt || b.updatedAt || 0) - (a.archivedAt || a.updatedAt || 0);
+      });
+  }, [profileFilteredProjects, archiveSearch, archiveSort]);
+
   useEffect(() => {
     if (initialProjectId && profileFilteredProjects.some((p) => p.id === initialProjectId)) {
       setSelectedProjectId(initialProjectId);
     } else if (!selectedProjectId || !profileFilteredProjects.some((p) => p.id === selectedProjectId)) {
-      setSelectedProjectId(profileFilteredProjects[0]?.id || null);
+      setSelectedProjectId(activeProjectsList[0]?.id || profileFilteredProjects[0]?.id || null);
     }
-  }, [initialProjectId, profileFilteredProjects, selectedProjectId]);
+  }, [initialProjectId, profileFilteredProjects, activeProjectsList, selectedProjectId]);
 
   const filteredProjects = useMemo(() => {
-    if (scopeFilter === 'all') return profileFilteredProjects;
-    return profileFilteredProjects.filter((p) => p.visibility === scopeFilter);
-  }, [profileFilteredProjects, scopeFilter]);
+    if (scopeFilter === 'all') return activeProjectsList;
+    return activeProjectsList.filter((p) => p.visibility === scopeFilter);
+  }, [activeProjectsList, scopeFilter]);
 
   const activeProject = useMemo(
-    () => profileFilteredProjects.find((p) => p.id === selectedProjectId) || filteredProjects[0] || null,
-    [profileFilteredProjects, filteredProjects, selectedProjectId]
+    () =>
+      profileFilteredProjects.find((p) => p.id === selectedProjectId) ||
+      filteredProjects[0] ||
+      activeProjectsList[0] ||
+      null,
+    [profileFilteredProjects, filteredProjects, activeProjectsList, selectedProjectId]
   );
 
   const projectColumns: ProjectColumnConfig[] = useMemo(
@@ -191,84 +277,21 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     [activeProject]
   );
 
-  // Pixel-launcher 1:1 edge swipe listener (< 1024px)
+  // Report current project / open task context to App/Header ShareModal
   useEffect(() => {
-    const DRAWER_WIDTH = 288;
-    const onTouchStart = (e: TouchEvent) => {
-      if (window.innerWidth >= 1024) return;
-      const target = e.target as HTMLElement | null;
-      if (
-        target?.closest('[data-no-swipe]') ||
-        target?.closest('button') ||
-        target?.closest('input') ||
-        target?.closest('select') ||
-        target?.closest('textarea')
-      ) {
-        return;
+    if (!onActiveContextChange) return;
+    let activeTask: ProjectTask | null = null;
+    if (activeProject) {
+      if (taskModalOpen && editingTask) {
+        activeTask =
+          activeProject.tasks.find((t) => t.id === editingTask.id) || editingTask;
+      } else if (protocolTarget?.scope === 'task') {
+        activeTask =
+          activeProject.tasks.find((t) => t.id === protocolTarget.taskId) || null;
       }
-      const x = e.touches[0].clientX;
-      const y = e.touches[0].clientY;
-      if (!isMobileDrawerOpen && x > Math.min(72, window.innerWidth * 0.25)) return;
-      drawerSwipeRef.current = {
-        startX: x,
-        startY: y,
-        wasOpen: isMobileDrawerOpen,
-        locked: 'none',
-        currentDragX: null,
-      };
-    };
-
-    const onTouchMove = (e: TouchEvent) => {
-      const ref = drawerSwipeRef.current;
-      if (!ref) return;
-      const dx = e.touches[0].clientX - ref.startX;
-      const dy = e.touches[0].clientY - ref.startY;
-      if (ref.locked === 'none') {
-        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
-        if (Math.abs(dx) > Math.abs(dy) * 0.85) {
-          if ((!ref.wasOpen && dx > 0) || (ref.wasOpen && dx < 0)) {
-            ref.locked = 'x';
-          } else {
-            drawerSwipeRef.current = null;
-            return;
-          }
-        } else {
-          drawerSwipeRef.current = null;
-          return;
-        }
-      }
-      if (ref.locked === 'x') {
-        const base = ref.wasOpen ? 0 : -DRAWER_WIDTH;
-        const clamped = Math.max(-DRAWER_WIDTH, Math.min(0, base + dx));
-        ref.currentDragX = clamped;
-        setDrawerDragX(clamped);
-      }
-    };
-
-    const onTouchEnd = () => {
-      const ref = drawerSwipeRef.current;
-      if (ref?.locked === 'x' && ref.currentDragX !== null) {
-        if (!ref.wasOpen) {
-          setIsMobileDrawerOpen(ref.currentDragX > -DRAWER_WIDTH + 85);
-        } else {
-          setIsMobileDrawerOpen(ref.currentDragX >= -85);
-        }
-      }
-      drawerSwipeRef.current = null;
-      setDrawerDragX(null);
-    };
-
-    window.addEventListener('touchstart', onTouchStart, { passive: true });
-    window.addEventListener('touchmove', onTouchMove, { passive: true });
-    window.addEventListener('touchend', onTouchEnd, { passive: true });
-    window.addEventListener('touchcancel', onTouchEnd, { passive: true });
-    return () => {
-      window.removeEventListener('touchstart', onTouchStart);
-      window.removeEventListener('touchmove', onTouchMove);
-      window.removeEventListener('touchend', onTouchEnd);
-      window.removeEventListener('touchcancel', onTouchEnd);
-    };
-  }, [isMobileDrawerOpen]);
+    }
+    onActiveContextChange({ project: activeProject, task: activeTask });
+  }, [onActiveContextChange, activeProject, taskModalOpen, editingTask, protocolTarget]);
 
   const persistProject = async (updated: ProjectItem) => {
     const saved = await api.saveProject(currentUser.username, updated);
@@ -280,6 +303,108 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     setSelectedProjectId(saved.id);
   };
 
+  const handleToggleArchiveProject = async (proj: ProjectItem) => {
+    const nextArchived = !proj.archived;
+    const saved = await api.saveProject(currentUser.username, {
+      ...proj,
+      archived: nextArchived,
+      archivedAt: nextArchived ? Date.now() : undefined,
+      updatedAt: Date.now(),
+    });
+    const next = projects.map((p) => (p.id === saved.id ? saved : p));
+    onProjectsChange(next);
+    if (nextArchived && selectedProjectId === proj.id) {
+      const nextActive = next.find(
+        (p) => !p.archived && (!enableSecondProfile || (p.profile || 'profile1') === activeProfileId)
+      );
+      setSelectedProjectId(nextActive?.id || null);
+    } else if (!nextArchived) {
+      setSelectedProjectId(saved.id);
+      setIsArchiveExpanded(false);
+    }
+  };
+
+  const handleAddProtocolEntry = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeProject || !protocolTarget || !protocolDraftText.trim()) return;
+    const newEntry: ProjectProtocolEntry = {
+      id: `proto_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      text: protocolDraftText.trim(),
+      author: currentUser.displayName,
+      createdAt: Date.now(),
+    };
+    if (protocolTarget.scope === 'project') {
+      await persistProject({
+        ...activeProject,
+        protocols: [newEntry, ...(activeProject.protocols || [])],
+        updatedAt: Date.now(),
+      });
+    } else {
+      const nextTasks = activeProject.tasks.map((t) =>
+        t.id === protocolTarget.taskId
+          ? { ...t, protocols: [newEntry, ...(t.protocols || [])] }
+          : t
+      );
+      await persistProject({
+        ...activeProject,
+        tasks: nextTasks,
+        updatedAt: Date.now(),
+      });
+    }
+    setProtocolDraftText('');
+  };
+
+  const handleDeleteProtocolEntry = async (entryId: string) => {
+    if (!activeProject || !protocolTarget) return;
+    if (protocolTarget.scope === 'project') {
+      await persistProject({
+        ...activeProject,
+        protocols: (activeProject.protocols || []).filter((p) => p.id !== entryId),
+        updatedAt: Date.now(),
+      });
+    } else {
+      const nextTasks = activeProject.tasks.map((t) =>
+        t.id === protocolTarget.taskId
+          ? { ...t, protocols: (t.protocols || []).filter((p) => p.id !== entryId) }
+          : t
+      );
+      await persistProject({
+        ...activeProject,
+        tasks: nextTasks,
+        updatedAt: Date.now(),
+      });
+    }
+  };
+
+  const handleMobileCollapseOnTaskFocus = useCallback(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      if (Date.now() - headerManualExpandTsRef.current > 350) {
+        setIsMobileHeaderCollapsed(true);
+      }
+    }
+  }, []);
+
+  const handleMainContentScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    if (activeTimelineMilestoneId) {
+      setActiveTimelineMilestoneId(null);
+    }
+    if (typeof window !== 'undefined' && window.innerWidth >= 1024) return;
+    const st = e.currentTarget.scrollTop;
+    const delta = st - lastScrollTopRef.current;
+    lastScrollTopRef.current = st;
+    if (st > 36 && delta > 3 && Date.now() - headerManualExpandTsRef.current > 450) {
+      setIsMobileHeaderCollapsed(true);
+    } else if (st <= 6) {
+      setIsMobileHeaderCollapsed(false);
+    }
+  }, [activeTimelineMilestoneId]);
+
+  useEffect(() => {
+    if (protocolTarget) {
+      window.setTimeout(() => protocolInputRef.current?.focus(), 60);
+    }
+  }, [protocolTarget]);
+
   const openCreateProjectModal = () => {
     setEditingProject(null);
     setProjTitle('');
@@ -288,8 +413,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     setProjVisibility('private');
     setProjSharedWith([]);
     setProjColor(accentColor);
-    setProjStartDate(todayIso());
-    setProjDueDate(addDaysIso(todayIso(), 14));
+    setProjStartDate('');
+    setProjDueDate('');
+    setProjProfile(activeProfileId || 'profile1');
+    setProjExternalMembers([]);
+    setNewProjExtInput('');
     setProjectModalOpen(true);
   };
 
@@ -301,8 +429,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     setProjVisibility(proj.visibility);
     setProjSharedWith(proj.sharedWithUsers || []);
     setProjColor(proj.color || accentColor);
-    setProjStartDate(proj.startDate || todayIso());
-    setProjDueDate(proj.dueDate || addDaysIso(todayIso(), 14));
+    setProjStartDate(proj.startDate || '');
+    setProjDueDate(proj.dueDate || '');
+    setProjProfile(proj.profile || 'profile1');
+    setProjExternalMembers(proj.externalMembers || []);
+    setNewProjExtInput('');
     setProjectModalOpen(true);
   };
 
@@ -310,17 +441,22 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     e.preventDefault();
     if (!projTitle.trim()) return;
     const now = Date.now();
+    const cleanExt = Array.from(
+      new Set(projExternalMembers.map((s) => s.trim()).filter(Boolean))
+    );
     const payload: ProjectItem = editingProject
       ? {
           ...editingProject,
           title: projTitle.trim(),
           description: projDesc.trim(),
           status: projStatus,
+          profile: projProfile,
           visibility: projVisibility,
           sharedWithUsers: projVisibility === 'shared' ? projSharedWith : [],
+          externalMembers: cleanExt,
           color: projColor,
-          startDate: projStartDate,
-          dueDate: projDueDate,
+          startDate: projStartDate.trim() || undefined,
+          dueDate: projDueDate.trim() || undefined,
           updatedAt: now,
         }
       : {
@@ -329,13 +465,15 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
           description: projDesc.trim(),
           ownerUsername: currentUser.username,
           ownerDisplayName: currentUser.displayName,
-          profile: activeProfileId || 'profile1',
+          profile: projProfile || activeProfileId || 'profile1',
           visibility: projVisibility,
           sharedWithUsers: projVisibility === 'shared' ? projSharedWith : [],
+          externalMembers: cleanExt,
+          milestones: [],
           status: projStatus,
           color: projColor,
-          startDate: projStartDate,
-          dueDate: projDueDate,
+          startDate: projStartDate.trim() || undefined,
+          dueDate: projDueDate.trim() || undefined,
           columns: DEFAULT_PROJECT_COLUMNS.map((c) => ({ ...c })),
           linkedNotePaths: [],
           linkedWikiSlugs: [],
@@ -345,7 +483,18 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
         };
     await persistProject(payload);
     setProjectModalOpen(false);
-    setIsMobileDrawerOpen(false);
+    projectDrawer.close();
+  };
+
+  const handleMoveProjectToProfile = async (proj: ProjectItem, targetProfile: NoteProfileId) => {
+    await persistProject({
+      ...proj,
+      profile: targetProfile,
+      updatedAt: Date.now(),
+    });
+    if (onSwitchProfile && enableSecondProfile) {
+      onSwitchProfile(targetProfile);
+    }
   };
 
   const handleDeleteProject = async (proj: ProjectItem) => {
@@ -393,8 +542,9 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     setTaskPriority('medium');
     setTaskAssignees([currentUser.displayName]);
     setCustomAssigneeInput('');
-    setTaskStartDate(todayIso());
-    setTaskDueDate(addDaysIso(todayIso(), 5));
+    setTaskStartDate('');
+    setTaskDueDate('');
+    setTaskMilestoneId('');
     setTaskModalOpen(true);
   };
 
@@ -406,15 +556,18 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     setTaskPriority(task.priority);
     setTaskAssignees(getTaskAssignees(task));
     setCustomAssigneeInput('');
-    setTaskStartDate(task.startDate || todayIso());
-    setTaskDueDate(task.dueDate || addDaysIso(todayIso(), 5));
+    setTaskStartDate(task.startDate || '');
+    setTaskDueDate(task.dueDate || '');
+    setTaskMilestoneId(task.milestoneId || '');
     setTaskModalOpen(true);
   };
 
   const handleSaveTaskForm = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeProject || !taskTitle.trim()) return;
-    const cleanDue = taskDueDate < taskStartDate ? taskStartDate : taskDueDate;
+    const sDate = taskStartDate.trim() || undefined;
+    let dDate = taskDueDate.trim() || undefined;
+    if (sDate && dDate && dDate < sDate) dDate = sDate;
     const combinedAssignees = Array.from(
       new Set(
         [...taskAssignees, customAssigneeInput]
@@ -422,6 +575,13 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
           .filter((s) => s.length > 0 && s !== 'Nicht zugewiesen')
       )
     );
+    // Automatically remember new external assignees in project.externalMembers
+    const suiteNames = new Set(allUsers.map((u) => u.displayName.toLowerCase()));
+    const newExternal = combinedAssignees.filter((a) => !suiteNames.has(a.toLowerCase()));
+    const mergedExternalMembers = Array.from(
+      new Set([...(activeProject.externalMembers || []), ...newExternal])
+    );
+
     const taskPayload: ProjectTask = {
       id: editingTask?.id || `task_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       title: taskTitle.trim(),
@@ -430,8 +590,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
       priority: taskPriority,
       assignee: combinedAssignees[0] || 'Nicht zugewiesen',
       assignees: combinedAssignees,
-      startDate: taskStartDate,
-      dueDate: cleanDue,
+      startDate: sDate,
+      dueDate: dDate,
+      milestoneId: taskMilestoneId || undefined,
+      protocols: editingTask?.protocols,
       createdAt: editingTask?.createdAt || Date.now(),
     };
 
@@ -441,10 +603,74 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
     await persistProject({
       ...activeProject,
+      externalMembers: mergedExternalMembers,
       tasks: nextTasks,
       updatedAt: Date.now(),
     });
     setTaskModalOpen(false);
+  };
+
+  // Milestone CRUD handlers
+  const handleSaveMilestone = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeProject || !msTitle.trim() || !msTargetDate.trim()) return;
+    const existing = activeProject.milestones || [];
+    const nextMilestones: ProjectMilestone[] = editingMilestoneId
+      ? existing.map((m) =>
+          m.id === editingMilestoneId
+            ? {
+                ...m,
+                title: msTitle.trim(),
+                targetDate: msTargetDate.trim(),
+                description: msDesc.trim() || undefined,
+              }
+            : m
+        )
+      : [
+          ...existing,
+          {
+            id: `ms_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+            title: msTitle.trim(),
+            targetDate: msTargetDate.trim(),
+            description: msDesc.trim() || undefined,
+            completed: false,
+          },
+        ];
+    await persistProject({
+      ...activeProject,
+      milestones: nextMilestones,
+      updatedAt: Date.now(),
+    });
+    setMsTitle('');
+    setMsTargetDate('');
+    setMsDesc('');
+    setEditingMilestoneId(null);
+  };
+
+  const handleToggleMilestoneDone = async (msId: string) => {
+    if (!activeProject) return;
+    const nextMilestones = (activeProject.milestones || []).map((m) =>
+      m.id === msId ? { ...m, completed: !m.completed } : m
+    );
+    await persistProject({
+      ...activeProject,
+      milestones: nextMilestones,
+      updatedAt: Date.now(),
+    });
+  };
+
+  const handleDeleteMilestone = async (msId: string) => {
+    if (!activeProject) return;
+    const nextMilestones = (activeProject.milestones || []).filter((m) => m.id !== msId);
+    const nextTasks = activeProject.tasks.map((t) =>
+      t.milestoneId === msId ? { ...t, milestoneId: undefined } : t
+    );
+    await persistProject({
+      ...activeProject,
+      milestones: nextMilestones,
+      tasks: nextTasks,
+      updatedAt: Date.now(),
+    });
   };
 
   const handleMoveTaskStatus = async (taskId: string, nextStatus: ProjectTaskStatus) => {
@@ -536,128 +762,232 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
   const projectListPanel = (
     <div className="flex flex-col h-full bg-[#FAF9F5] dark:bg-[#1B1D21]">
-      <div className="p-3.5 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <div
-            style={{ backgroundColor: accentColor }}
-            className="w-7 h-7 rounded-lg text-white flex items-center justify-center shrink-0"
-          >
-            <FolderKanban className="w-4 h-4" />
+      {isArchiveExpanded ? (
+        /* Maximized Archive inside Vault */
+        <>
+          <div className="p-3 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsArchiveExpanded(false)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#22242A] border border-[#E5E3DC] dark:border-[#343740] text-xs font-bold text-neutral-700 dark:text-neutral-200 cursor-pointer hover:bg-neutral-100"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+              <span>Zurück</span>
+            </button>
+            <div className="flex items-center gap-1.5 min-w-0">
+              <Archive className="w-3.5 h-3.5 shrink-0" style={{ color: accentColor }} />
+              <span className="text-xs font-extrabold text-neutral-900 dark:text-neutral-100 truncate">
+                Archiv ({archivedProjectsList.length})
+              </span>
+            </div>
           </div>
-          <span className="text-xs font-extrabold text-neutral-900 dark:text-neutral-100 truncate">
-            Projekte ({profileFilteredProjects.length})
-          </span>
-        </div>
-        <button
-          type="button"
-          onClick={openCreateProjectModal}
-          style={{ backgroundColor: accentColor }}
-          className="px-2.5 py-1.5 rounded-lg text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer active:scale-95"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span>Neu</span>
-        </button>
-      </div>
 
-      {enableSecondProfile && profileNames && onSwitchProfile && (
-        <div className="px-2 pt-2 grid grid-cols-2 gap-1">
-          {(['profile1', 'profile2'] as NoteProfileId[]).map((pid) => {
-            const active = activeProfileId === pid;
-            return (
+          <div className="p-2.5 space-y-2 border-b border-[#E5E3DC] dark:border-[#2F3136] shrink-0">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={archiveSearch}
+                onChange={(e) => setArchiveSearch(e.target.value)}
+                placeholder="Archiv durchsuchen..."
+                className="w-full text-xs pl-8 pr-2.5 py-1.5 rounded-xl bg-white dark:bg-[#22242A] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+              />
+            </div>
+            <div className="flex items-center justify-between gap-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">
+                Sortierung:
+              </span>
+              <select
+                value={archiveSort}
+                onChange={(e) => setArchiveSort(e.target.value as 'recent' | 'title')}
+                className="text-[11px] font-semibold px-2 py-1 rounded-lg bg-white dark:bg-[#22242A] border border-[#E5E3DC] dark:border-[#343740] outline-hidden cursor-pointer"
+              >
+                <option value="recent">Zuletzt archiviert</option>
+                <option value="title">Name A–Z</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-2 space-y-2">
+            {archivedProjectsList.length === 0 ? (
+              <div className="p-6 text-center text-xs text-neutral-400">
+                {archiveSearch.trim()
+                  ? 'Keine archivierten Projekte gefunden.'
+                  : 'Das Projekt-Archiv ist leer.'}
+              </div>
+            ) : (
+              archivedProjectsList.map((proj) => {
+                const isSelected = activeProject?.id === proj.id;
+                const doneCount = (proj.tasks || []).filter((t) => t.status === 'done').length;
+                const totalCount = (proj.tasks || []).length;
+                return (
+                  <div
+                    key={proj.id}
+                    className={`p-2.5 rounded-xl border space-y-2 transition-all ${
+                      isSelected
+                        ? 'border-2 bg-white dark:bg-[#24262D]'
+                        : 'border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#22242A]'
+                    }`}
+                    style={isSelected ? { borderColor: proj.color || accentColor } : undefined}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedProjectId(proj.id);
+                        projectDrawer.close();
+                      }}
+                      className="w-full text-left cursor-pointer space-y-0.5"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 truncate">
+                          {proj.title}
+                        </span>
+                        <span className="text-[10px] text-neutral-400 tabular-nums shrink-0">
+                          {doneCount}/{totalCount}
+                        </span>
+                      </div>
+                      {proj.archivedAt && (
+                        <div className="text-[10px] text-neutral-400 tabular-nums">
+                          Archiviert am {new Date(proj.archivedAt).toLocaleDateString('de-DE')}
+                        </div>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleArchiveProject(proj)}
+                      style={{ color: accentColor, borderColor: `${accentColor}40` }}
+                      className="w-full py-1.5 rounded-lg border text-[11px] font-bold flex items-center justify-center gap-1.5 hover:bg-amber-500/10 cursor-pointer"
+                    >
+                      <ArchiveRestore className="w-3.5 h-3.5" />
+                      <span>Wiederherstellen</span>
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </>
+      ) : (
+        /* Normal Active Projects Vault */
+        <>
+          <div className="p-3.5 border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 shrink-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <div
+                style={{ backgroundColor: accentColor }}
+                className="w-7 h-7 rounded-lg text-white flex items-center justify-center shrink-0"
+              >
+                <FolderKanban className="w-4 h-4" />
+              </div>
+              <span className="text-xs font-extrabold text-neutral-900 dark:text-neutral-100 truncate">
+                Projekte ({activeProjectsList.length})
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={openCreateProjectModal}
+              style={{ backgroundColor: accentColor }}
+              className="px-2.5 py-1.5 rounded-lg text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer active:scale-95"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Neu</span>
+            </button>
+          </div>
+
+          <div className="p-2 grid grid-cols-3 gap-1 border-b border-[#E5E3DC] dark:border-[#2F3136] shrink-0">
+            {(
+              [
+                { id: 'all', label: 'Alle' },
+                { id: 'private', label: 'Privat' },
+                { id: 'shared', label: 'Geteilt' },
+              ] as const
+            ).map((f) => (
               <button
-                key={pid}
+                key={f.id}
                 type="button"
-                onClick={() => onSwitchProfile(pid)}
-                style={active ? { backgroundColor: accentColor, color: '#fff' } : undefined}
-                className={`py-1 px-2 rounded-lg text-[11px] font-bold truncate cursor-pointer transition-colors ${
-                  active
-                    ? 'shadow-2xs'
-                    : 'bg-white dark:bg-[#22242A] border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-600 dark:text-neutral-300'
+                onClick={() => setScopeFilter(f.id)}
+                className={`py-1 rounded-lg text-[11px] font-semibold cursor-pointer ${
+                  scopeFilter === f.id
+                    ? 'bg-white dark:bg-[#2A2D34] text-neutral-900 dark:text-white shadow-2xs font-bold'
+                    : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
                 }`}
               >
-                {profileNames[pid] || (pid === 'profile1' ? 'Profil 1' : 'Profil 2')}
+                {f.label}
               </button>
-            );
-          })}
-        </div>
+            ))}
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+            {filteredProjects.length === 0 ? (
+              <div className="p-4 text-center text-xs text-neutral-400">
+                Keine aktiven Projekte in dieser Ansicht.
+              </div>
+            ) : (
+              filteredProjects.map((proj) => {
+                const isSelected = activeProject?.id === proj.id;
+                const doneCount = (proj.tasks || []).filter((t) => t.status === 'done').length;
+                const totalCount = (proj.tasks || []).length;
+                return (
+                  <button
+                    key={proj.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedProjectId(proj.id);
+                      projectDrawer.close();
+                    }}
+                    style={
+                      isSelected
+                        ? {
+                            borderColor: proj.color || accentColor,
+                            backgroundColor: `${proj.color || accentColor}14`,
+                          }
+                        : undefined
+                    }
+                    className={`w-full text-left p-2.5 rounded-xl border transition-all cursor-pointer space-y-1 ${
+                      isSelected
+                        ? 'border-2 shadow-2xs'
+                        : 'border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#22242A] hover:border-neutral-400'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 truncate">
+                        {proj.title}
+                      </span>
+                      {proj.visibility === 'shared' ? (
+                        <Users className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                      ) : (
+                        <Lock className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-neutral-500">
+                      <span>{PROJECT_STATUS_LABELS[proj.status]}</span>
+                      <span className="tabular-nums">
+                        {doneCount}/{totalCount} Aufgaben
+                      </span>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+
+          {/* Bottom Archive Maximizer Trigger */}
+          <div className="p-2.5 border-t border-[#E5E3DC] dark:border-[#2F3136] shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsArchiveExpanded(true)}
+              className="w-full py-2 px-3 rounded-xl bg-white dark:bg-[#22242A] border border-[#E5E3DC] dark:border-[#343740] hover:border-neutral-400 text-xs font-bold text-neutral-700 dark:text-neutral-200 flex items-center justify-between cursor-pointer transition-colors"
+            >
+              <span className="flex items-center gap-2">
+                <Archive className="w-3.5 h-3.5 text-neutral-500" />
+                <span>Archiv</span>
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#1A1B1E] text-[10px] font-extrabold tabular-nums text-neutral-600 dark:text-neutral-300">
+                {profileFilteredProjects.filter((p) => !!p.archived).length}
+              </span>
+            </button>
+          </div>
+        </>
       )}
-
-      <div className="p-2 grid grid-cols-3 gap-1 border-b border-[#E5E3DC] dark:border-[#2F3136]">
-        {(
-          [
-            { id: 'all', label: 'Alle' },
-            { id: 'private', label: 'Privat' },
-            { id: 'shared', label: 'Geteilt' },
-          ] as const
-        ).map((f) => (
-          <button
-            key={f.id}
-            type="button"
-            onClick={() => setScopeFilter(f.id)}
-            className={`py-1 rounded-lg text-[11px] font-semibold cursor-pointer ${
-              scopeFilter === f.id
-                ? 'bg-white dark:bg-[#2A2D34] text-neutral-900 dark:text-white shadow-2xs font-bold'
-                : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-        {filteredProjects.length === 0 ? (
-          <div className="p-4 text-center text-xs text-neutral-400">
-            Keine Projekte in dieser Ansicht.
-          </div>
-        ) : (
-          filteredProjects.map((proj) => {
-            const isSelected = activeProject?.id === proj.id;
-            const doneCount = (proj.tasks || []).filter((t) => t.status === 'done').length;
-            const totalCount = (proj.tasks || []).length;
-            return (
-              <button
-                key={proj.id}
-                type="button"
-                onClick={() => {
-                  setSelectedProjectId(proj.id);
-                  setIsMobileDrawerOpen(false);
-                }}
-                style={
-                  isSelected
-                    ? {
-                        borderColor: proj.color || accentColor,
-                        backgroundColor: `${proj.color || accentColor}14`,
-                      }
-                    : undefined
-                }
-                className={`w-full text-left p-2.5 rounded-xl border transition-all cursor-pointer space-y-1 ${
-                  isSelected
-                    ? 'border-2 shadow-2xs'
-                    : 'border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#22242A] hover:border-neutral-400'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100 truncate">
-                    {proj.title}
-                  </span>
-                  {proj.visibility === 'shared' ? (
-                    <Users className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-                  ) : (
-                    <Lock className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-                  )}
-                </div>
-                <div className="flex items-center justify-between text-[10px] text-neutral-500">
-                  <span>{PROJECT_STATUS_LABELS[proj.status]}</span>
-                  <span className="tabular-nums">
-                    {doneCount}/{totalCount} Aufgaben
-                  </span>
-                </div>
-              </button>
-            );
-          })
-        )}
-      </div>
     </div>
   );
 
@@ -674,43 +1004,43 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
       {/* Mobile Left-Edge Pull Tab */}
       <button
         type="button"
-        onClick={() => setIsMobileDrawerOpen((v) => !v)}
+        onClick={projectDrawer.toggle}
         style={{
           backgroundColor: projectAccent,
-          ...(drawerDragX !== null
-            ? { left: `${Math.max(0, 288 + drawerDragX)}px`, transition: 'none' }
+          ...(projectDrawer.dragOffset !== null
+            ? { left: `${Math.max(0, 288 + projectDrawer.dragOffset)}px`, transition: 'none' }
             : {}),
         }}
         className={`lg:hidden fixed top-1/2 -translate-y-1/2 z-40 h-14 flex items-center justify-center text-white shadow-lg cursor-pointer ${
-          drawerDragX !== null ? 'transition-none' : 'transition-all duration-200'
+          projectDrawer.isDragging ? 'transition-none' : 'transition-all duration-200'
         } ${
-          drawerDragX !== null
+          projectDrawer.dragOffset !== null
             ? 'w-6 rounded-r-xl'
-            : isMobileDrawerOpen
+            : projectDrawer.isOpen
             ? 'left-72 w-7 rounded-r-xl'
             : 'left-0 w-5 rounded-r-xl opacity-90'
         }`}
         aria-label="Projekt-Vault umschalten"
       >
-        {isMobileDrawerOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-3.5 h-3.5" />}
+        {projectDrawer.isOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-3.5 h-3.5" />}
       </button>
 
       {/* Mobile Swipeable Project Vault Drawer */}
-      {(isMobileDrawerOpen || drawerDragX !== null) && (
+      {(projectDrawer.isOpen || projectDrawer.dragOffset !== null) && (
         <div
-          onClick={() => setIsMobileDrawerOpen(false)}
+          onClick={projectDrawer.close}
           className="lg:hidden fixed inset-0 z-50 bg-black/35 backdrop-blur-2xs"
         >
           <div
             onClick={(e) => e.stopPropagation()}
             style={{
               transform:
-                drawerDragX !== null
-                  ? `translateX(${drawerDragX}px)`
-                  : isMobileDrawerOpen
+                projectDrawer.dragOffset !== null
+                  ? `translateX(${projectDrawer.dragOffset}px)`
+                  : projectDrawer.isOpen
                   ? 'translateX(0)'
                   : 'translateX(-100%)',
-              transition: drawerDragX !== null ? 'none' : 'transform 220ms ease-out',
+              transition: projectDrawer.isDragging ? 'none' : 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)',
             }}
             className="w-72 h-full border-r border-[#E5E3DC] dark:border-[#2F3136] shadow-2xl"
           >
@@ -720,7 +1050,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
       )}
 
       {/* Right Main Area */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
         {!activeProject ? (
           <div className="flex-1 flex items-center justify-center p-6">
             <div className="max-w-md w-full p-7 rounded-3xl bg-[#FFFDF9] dark:bg-[#1E2025] border border-dashed border-[#D6D3C9] dark:border-[#32353D] text-center space-y-3">
@@ -748,11 +1078,78 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
           </div>
         ) : (
           <>
-            {/* Active Project Header */}
-            <div className="px-4 sm:px-6 py-3 bg-[#FFFDF9] dark:bg-[#1B1D21] border-b border-[#E5E3DC] dark:border-[#2F3136] space-y-2.5 shrink-0">
+            {/* Active Project Header — Auto-minimizes on mobile scroll / task focus with left expand arrow */}
+            {isMobileHeaderCollapsed ? (
+              <div className="lg:hidden px-3 py-2 bg-[#FFFDF9] dark:bg-[#1B1D21] border-b border-[#E5E3DC] dark:border-[#2F3136] flex items-center justify-between gap-2 shrink-0 transition-all">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      headerManualExpandTsRef.current = Date.now();
+                      setIsMobileHeaderCollapsed(false);
+                    }}
+                    style={{ backgroundColor: `${projectAccent}18`, color: projectAccent }}
+                    className="h-8 w-8 rounded-lg flex items-center justify-center shrink-0 cursor-pointer active:scale-95"
+                    title="Projekt-Header einblenden"
+                    aria-label="Projekt-Header einblenden"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                  <span
+                    style={{ backgroundColor: projectAccent }}
+                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                  />
+                  <h2 className="text-xs font-extrabold text-neutral-900 dark:text-neutral-100 truncate">
+                    {activeProject.title}
+                  </h2>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProtocolDraftText('');
+                      setProtocolTarget({ scope: 'project' });
+                    }}
+                    className="h-8 px-2.5 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#23252A] text-[11px] font-semibold text-neutral-700 dark:text-neutral-200 flex items-center gap-1 cursor-pointer"
+                  >
+                    <ClipboardList className="w-3.5 h-3.5" style={{ color: projectAccent }} />
+                    <span>Protokoll</span>
+                    {(activeProject.protocols || []).length > 0 && (
+                      <span className="text-[10px] font-bold opacity-75 tabular-nums">
+                        ({(activeProject.protocols || []).length})
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openCreateTaskModal()}
+                    style={{ backgroundColor: projectAccent }}
+                    className="h-8 px-2.5 rounded-lg text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Neu</span>
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            <div
+              className={`${
+                isMobileHeaderCollapsed ? 'hidden lg:block' : 'block'
+              } px-4 sm:px-6 py-3 bg-[#FFFDF9] dark:bg-[#1B1D21] border-b border-[#E5E3DC] dark:border-[#2F3136] space-y-2.5 shrink-0`}
+            >
               <div className="flex flex-wrap items-center justify-between gap-2.5">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => projectDrawer.open()}
+                      className="lg:hidden p-1.5 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#23252A] text-neutral-700 dark:text-neutral-200 cursor-pointer"
+                      title="Projekt-Vault öffnen"
+                      aria-label="Projekt-Vault öffnen"
+                    >
+                      <FolderKanban className="w-3.5 h-3.5" style={{ color: projectAccent }} />
+                    </button>
                     <span
                       style={{ backgroundColor: projectAccent }}
                       className="w-3 h-3 rounded-full shrink-0"
@@ -763,6 +1160,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                     <span className="text-[10px] px-2 py-0.5 rounded-full bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 font-bold">
                       {PROJECT_STATUS_LABELS[activeProject.status]}
                     </span>
+                    {activeProject.archived && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 font-bold">
+                        Archiviert
+                      </span>
+                    )}
                     <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#25272D] text-neutral-600 dark:text-neutral-300 font-semibold">
                       {activeProject.visibility === 'shared' ? (
                         <>
@@ -774,6 +1176,33 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                         </>
                       )}
                     </span>
+                    {(activeProject.startDate || activeProject.dueDate) && (
+                      <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#25272D] text-neutral-500 tabular-nums">
+                        <Calendar className="w-3 h-3" />
+                        {activeProject.startDate || '…'} – {activeProject.dueDate || '…'}
+                      </span>
+                    )}
+                    {enableSecondProfile && profileNames && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleMoveProjectToProfile(
+                            activeProject,
+                            (activeProject.profile || 'profile1') === 'profile1' ? 'profile2' : 'profile1'
+                          )
+                        }
+                        className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#25272D] text-neutral-600 dark:text-neutral-300 hover:border-neutral-400 border border-[#E5E3DC] dark:border-[#32353D] font-semibold cursor-pointer"
+                        title="Projekt in das andere Profil verschieben"
+                      >
+                        <ArrowRightLeft className="w-2.5 h-2.5" />
+                        <span>
+                          →{' '}
+                          {(activeProject.profile || 'profile1') === 'profile1'
+                            ? profileNames.profile2 || 'Profil 2'
+                            : profileNames.profile1 || 'Profil 1'}
+                        </span>
+                      </button>
+                    )}
                   </div>
                   {activeProject.description && (
                     <p className="text-xs text-neutral-500 truncate mt-0.5">
@@ -828,6 +1257,45 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
                   <button
                     type="button"
+                    onClick={() => {
+                      setProtocolDraftText('');
+                      setProtocolTarget({ scope: 'project' });
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#23252A] text-xs font-semibold text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 cursor-pointer"
+                    title="Projekt-Protokoll öffnen"
+                  >
+                    <ClipboardList className="w-3.5 h-3.5" style={{ color: projectAccent }} />
+                    <span>Protokoll</span>
+                    {(activeProject.protocols || []).length > 0 && (
+                      <span className="text-[10px] font-extrabold opacity-75 tabular-nums">
+                        ({(activeProject.protocols || []).length})
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMsTitle('');
+                      setMsTargetDate('');
+                      setMsDesc('');
+                      setEditingMilestoneId(null);
+                      setMilestonesModalOpen(true);
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#23252A] text-xs font-semibold text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 cursor-pointer"
+                    title="Meilensteine & ETAs verwalten"
+                  >
+                    <Milestone className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Meilensteine</span>
+                    {(activeProject.milestones || []).length > 0 && (
+                      <span className="text-[10px] font-extrabold opacity-75 tabular-nums">
+                        ({(activeProject.milestones || []).length})
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={openColumnsModal}
                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#23252A] text-xs font-semibold text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 cursor-pointer"
                     title="Kanban-Spalten / Status anpassen"
@@ -838,12 +1306,15 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => printProjectA4(activeProject, projectAccent)}
-                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#23252A] text-xs font-semibold text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 cursor-pointer"
-                    title="Als A4 PDF drucken"
+                    onClick={() => handleToggleArchiveProject(activeProject)}
+                    className="p-2 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#23252A] text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 cursor-pointer"
+                    title={activeProject.archived ? 'Aus Archiv wiederherstellen' : 'Projekt archivieren'}
                   >
-                    <Printer className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">Als A4 PDF</span>
+                    {activeProject.archived ? (
+                      <ArchiveRestore className="w-3.5 h-3.5" />
+                    ) : (
+                      <Archive className="w-3.5 h-3.5" />
+                    )}
                   </button>
 
                   <button
@@ -917,10 +1388,67 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                   );
                 })}
               </div>
+
+              {/* Milestones Strip with ETA Countdown & Warnings */}
+              {(activeProject.milestones || []).length > 0 && (
+                <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                  {(activeProject.milestones || [])
+                    .slice()
+                    .sort((a, b) => a.targetDate.localeCompare(b.targetDate))
+                    .map((ms) => {
+                      const diff = daysUntilIso(ms.targetDate);
+                      const isOverdue = !ms.completed && diff < 0;
+                      const isWarning = !ms.completed && diff >= 0 && diff <= 3;
+                      return (
+                        <button
+                          key={ms.id}
+                          type="button"
+                          onClick={() => setMilestonesModalOpen(true)}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[11px] font-semibold border cursor-pointer transition-colors ${
+                            ms.completed
+                              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300 line-through opacity-75'
+                              : isOverdue
+                              ? 'bg-red-500/12 border-red-500/40 text-red-700 dark:text-red-300'
+                              : isWarning
+                              ? 'bg-amber-500/15 border-amber-500/40 text-amber-800 dark:text-amber-200'
+                              : 'bg-[#F4F3EF] dark:bg-[#25272D] border-[#E5E3DC] dark:border-[#343740] text-neutral-700 dark:text-neutral-200'
+                          }`}
+                          title={ms.description || `Meilenstein bis ${ms.targetDate}`}
+                        >
+                          {isOverdue || isWarning ? (
+                            <AlertTriangle className="w-3 h-3 shrink-0" />
+                          ) : (
+                            <Milestone className="w-3 h-3 shrink-0" />
+                          )}
+                          <span className="max-w-[140px] truncate">{ms.title}</span>
+                          <span className="text-[10px] opacity-80 tabular-nums">
+                            {ms.completed
+                              ? '✓'
+                              : diff < 0
+                              ? `${Math.abs(diff)}T überfällig`
+                              : diff === 0
+                              ? 'Heute'
+                              : `in ${diff}T`}
+                          </span>
+                        </button>
+                      );
+                    })}
+                </div>
+              )}
             </div>
 
             {/* Content Area: Kanban, List or Gantt Timeline */}
-            <div className="flex-1 overflow-y-auto p-4 sm:p-5 pb-24 lg:pb-8">
+            <div
+              ref={contentScrollRef}
+              onScroll={handleMainContentScroll}
+              onPointerDown={(e) => {
+                const target = e.target as HTMLElement | null;
+                if (target?.closest('[data-task-area="true"]')) {
+                  handleMobileCollapseOnTaskFocus();
+                }
+              }}
+              className="flex-1 overflow-y-auto p-4 sm:p-5 pb-24 lg:pb-8"
+            >
               {viewMode === 'kanban' ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-3.5 items-start">
                   {projectColumns.map((col, colIdx) => {
@@ -940,7 +1468,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                             setDraggedTaskId(null);
                           }
                         }}
-                        className="rounded-2xl bg-[#F4F3EF]/85 dark:bg-[#1E2025] border border-[#E5E3DC] dark:border-[#2F3136] p-3 space-y-2.5"
+                        style={{
+                          backgroundColor: `${colColor}12`,
+                          borderColor: `${colColor}35`,
+                        }}
+                        className="rounded-2xl border p-3 space-y-2.5"
                       >
                         <div className="flex items-center justify-between gap-2 px-1">
                           <div className="flex items-center gap-2 min-w-0">
@@ -973,9 +1505,13 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                             colTasks.map((task) => {
                               const prio = PRIORITY_META[task.priority] || PRIORITY_META.medium;
                               const assignees = getTaskAssignees(task);
+                              const linkedMs = task.milestoneId
+                                ? (activeProject.milestones || []).find((m) => m.id === task.milestoneId)
+                                : undefined;
                               return (
                                 <div
                                   key={task.id}
+                                  data-task-area="true"
                                   draggable
                                   onDragStart={() => setDraggedTaskId(task.id)}
                                   onDragEnd={() => setDraggedTaskId(null)}
@@ -986,6 +1522,25 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                       {task.title}
                                     </h4>
                                     <div className="flex items-center gap-0.5 shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setProtocolDraftText('');
+                                          setProtocolTarget({ scope: 'task', taskId: task.id });
+                                        }}
+                                        className="p-1 rounded-md text-neutral-400 hover:text-neutral-800 dark:hover:text-white cursor-pointer relative"
+                                        title="Aufgaben-Protokoll öffnen"
+                                      >
+                                        <ClipboardList className="w-3.5 h-3.5" />
+                                        {(task.protocols || []).length > 0 && (
+                                          <span
+                                            style={{ backgroundColor: projectAccent }}
+                                            className="absolute -top-1 -right-1 min-w-[13px] h-[13px] px-0.5 rounded-full text-white text-[8px] font-bold flex items-center justify-center tabular-nums"
+                                          >
+                                            {(task.protocols || []).length}
+                                          </span>
+                                        )}
+                                      </button>
                                       <button
                                         type="button"
                                         onClick={() => openEditTaskModal(task)}
@@ -1016,6 +1571,12 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                                       <Flag className="w-2.5 h-2.5" />
                                       {prio.label}
                                     </span>
+                                    {linkedMs && (
+                                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-800 dark:text-amber-300">
+                                        <Milestone className="w-2.5 h-2.5" />
+                                        <span className="max-w-[100px] truncate">{linkedMs.title}</span>
+                                      </span>
+                                    )}
                                     {assignees.length === 0 ? (
                                       <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#1B1D21] text-neutral-500">
                                         <UserCheck className="w-2.5 h-2.5" />
@@ -1036,8 +1597,14 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
 
                                   <div className="flex items-center justify-between pt-1.5 border-t border-[#F1F0EA] dark:border-[#2F3139] text-[10px] text-neutral-400">
                                     <span className="inline-flex items-center gap-1 tabular-nums">
-                                      <Calendar className="w-3 h-3" />
-                                      {task.startDate.slice(5)} – {task.dueDate.slice(5)}
+                                      {(task.startDate || task.dueDate) ? (
+                                        <>
+                                          <Calendar className="w-3 h-3" />
+                                          {task.startDate ? task.startDate.slice(5) : '…'} – {task.dueDate ? task.dueDate.slice(5) : '…'}
+                                        </>
+                                      ) : (
+                                        <span>Ohne Termin</span>
+                                      )}
                                     </span>
                                     <div className="flex items-center gap-1">
                                       {colIdx > 0 && (
@@ -1076,124 +1643,428 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                   })}
                 </div>
               ) : viewMode === 'list' ? (
-                /* LIST VIEW */
-                <div className="rounded-2xl bg-[#FFFDF9] dark:bg-[#1E2025] border border-[#E5E3DC] dark:border-[#2F3136] overflow-hidden">
-                  {(activeProject.tasks || []).length === 0 ? (
-                    <div className="py-12 text-center text-xs text-neutral-400">
-                      Noch keine Aufgaben in diesem Projekt.
+                /* SORTABLE & FILTERABLE LIST VIEW */
+                <div data-task-area="true" className="space-y-3">
+                  {/* Multi-Filter Toolbar */}
+                  <div className="p-3 rounded-2xl bg-[#FFFDF9] dark:bg-[#1E2025] border border-[#E5E3DC] dark:border-[#2F3136] flex flex-wrap items-center gap-2">
+                    <div className="relative flex-1 min-w-[180px]">
+                      <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={listSearch}
+                        onChange={(e) => setListSearch(e.target.value)}
+                        placeholder="Aufgabe, Notiz, Person suchen..."
+                        className="w-full text-xs pl-8 pr-2.5 py-1.5 rounded-xl bg-[#F4F3EF] dark:bg-[#25272D] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                      />
                     </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse text-xs">
-                        <thead>
-                          <tr className="border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF]/70 dark:bg-[#23252A] text-[11px] font-bold text-neutral-500">
-                            <th className="py-2.5 px-3.5">Aufgabe</th>
-                            <th className="py-2.5 px-3">Status</th>
-                            <th className="py-2.5 px-3">Zuständig</th>
-                            <th className="py-2.5 px-3">Priorität</th>
-                            <th className="py-2.5 px-3">Zeitraum</th>
-                            <th className="py-2.5 px-3.5 text-right">Aktionen</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-[#E5E3DC]/70 dark:divide-[#2F3136]">
-                          {[...(activeProject.tasks || [])]
-                            .sort((a, b) => a.startDate.localeCompare(b.startDate))
-                            .map((task) => {
-                              const prio = PRIORITY_META[task.priority] || PRIORITY_META.medium;
-                              const assignees = getTaskAssignees(task);
-                              const colObj = projectColumns.find((c) => c.id === task.status);
-                              const statusColor = colObj?.color || projectAccent;
-                              return (
-                                <tr
-                                  key={task.id}
-                                  className="hover:bg-[#FAF9F5] dark:hover:bg-[#24262C] transition-colors"
-                                >
-                                  <td className="py-2.5 px-3.5 min-w-[200px]">
-                                    <div className="font-bold text-neutral-900 dark:text-neutral-100">
-                                      {task.title}
-                                    </div>
-                                    {task.description && (
-                                      <div className="text-[11px] text-neutral-500 line-clamp-1">
-                                        {task.description}
+                    <select
+                      value={listFilterStatus}
+                      onChange={(e) => setListFilterStatus(e.target.value)}
+                      className="text-xs px-2.5 py-1.5 rounded-xl bg-[#F4F3EF] dark:bg-[#25272D] border border-[#E5E3DC] dark:border-[#343740] outline-hidden cursor-pointer"
+                    >
+                      <option value="all">Alle Status</option>
+                      {projectColumns.map((c) => (
+                        <option key={c.id} value={c.id}>{c.label}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={listFilterPriority}
+                      onChange={(e) => setListFilterPriority(e.target.value)}
+                      className="text-xs px-2.5 py-1.5 rounded-xl bg-[#F4F3EF] dark:bg-[#25272D] border border-[#E5E3DC] dark:border-[#343740] outline-hidden cursor-pointer"
+                    >
+                      <option value="all">Alle Prioritäten</option>
+                      <option value="high">Hoch</option>
+                      <option value="medium">Mittel</option>
+                      <option value="low">Niedrig</option>
+                    </select>
+                    <select
+                      value={listFilterAssignee}
+                      onChange={(e) => setListFilterAssignee(e.target.value)}
+                      className="text-xs px-2.5 py-1.5 rounded-xl bg-[#F4F3EF] dark:bg-[#25272D] border border-[#E5E3DC] dark:border-[#343740] outline-hidden cursor-pointer"
+                    >
+                      <option value="all">Alle Personen</option>
+                      {Array.from(
+                        new Set([
+                          ...allUsers.map((u) => u.displayName),
+                          ...(activeProject.externalMembers || []),
+                          ...(activeProject.tasks || []).flatMap((t) => getTaskAssignees(t)),
+                        ])
+                      ).map((name) => (
+                        <option key={name} value={name}>{name}</option>
+                      ))}
+                    </select>
+                    {(activeProject.milestones || []).length > 0 && (
+                      <select
+                        value={listFilterMilestone}
+                        onChange={(e) => setListFilterMilestone(e.target.value)}
+                        className="text-xs px-2.5 py-1.5 rounded-xl bg-[#F4F3EF] dark:bg-[#25272D] border border-[#E5E3DC] dark:border-[#343740] outline-hidden cursor-pointer"
+                      >
+                        <option value="all">Alle Meilensteine</option>
+                        {(activeProject.milestones || []).map((m) => (
+                          <option key={m.id} value={m.id}>{m.title}</option>
+                        ))}
+                      </select>
+                    )}
+                    {(listSearch ||
+                      listFilterStatus !== 'all' ||
+                      listFilterPriority !== 'all' ||
+                      listFilterAssignee !== 'all' ||
+                      listFilterMilestone !== 'all') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setListSearch('');
+                          setListFilterStatus('all');
+                          setListFilterPriority('all');
+                          setListFilterAssignee('all');
+                          setListFilterMilestone('all');
+                        }}
+                        className="text-[11px] px-2.5 py-1.5 rounded-xl bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 font-semibold cursor-pointer"
+                      >
+                        Zurücksetzen
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="rounded-2xl bg-[#FFFDF9] dark:bg-[#1E2025] border border-[#E5E3DC] dark:border-[#2F3136] overflow-hidden">
+                    {(() => {
+                      const q = listSearch.trim().toLowerCase();
+                      const prioRank: Record<string, number> = { high: 3, medium: 2, low: 1 };
+                      const toggleSort = (key: typeof listSortKey) => {
+                        if (listSortKey === key) setListSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+                        else {
+                          setListSortKey(key);
+                          setListSortDir('asc');
+                        }
+                      };
+                      const rows = (activeProject.tasks || [])
+                        .filter((t) => {
+                          if (listFilterStatus !== 'all' && t.status !== listFilterStatus) return false;
+                          if (listFilterPriority !== 'all' && t.priority !== listFilterPriority) return false;
+                          if (listFilterMilestone !== 'all' && t.milestoneId !== listFilterMilestone) return false;
+                          const assignees = getTaskAssignees(t);
+                          if (listFilterAssignee !== 'all' && !assignees.includes(listFilterAssignee)) return false;
+                          if (q) {
+                            const hay = `${t.title} ${t.description || ''} ${assignees.join(' ')}`.toLowerCase();
+                            if (!hay.includes(q)) return false;
+                          }
+                          return true;
+                        })
+                        .sort((a, b) => {
+                          let cmp = 0;
+                          if (listSortKey === 'title') cmp = a.title.localeCompare(b.title, 'de');
+                          else if (listSortKey === 'status') cmp = a.status.localeCompare(b.status, 'de');
+                          else if (listSortKey === 'priority')
+                            cmp = (prioRank[a.priority] || 0) - (prioRank[b.priority] || 0);
+                          else if (listSortKey === 'startDate')
+                            cmp = (a.startDate || '9999-99-99').localeCompare(b.startDate || '9999-99-99');
+                          else if (listSortKey === 'dueDate')
+                            cmp = (a.dueDate || '9999-99-99').localeCompare(b.dueDate || '9999-99-99');
+                          else if (listSortKey === 'milestone') {
+                            const ma = (activeProject.milestones || []).find((m) => m.id === a.milestoneId)?.title || 'zzz';
+                            const mb = (activeProject.milestones || []).find((m) => m.id === b.milestoneId)?.title || 'zzz';
+                            cmp = ma.localeCompare(mb, 'de');
+                          } else if (listSortKey === 'assignees') {
+                            cmp = getTaskAssignees(a).join(',').localeCompare(getTaskAssignees(b).join(','), 'de');
+                          }
+                          return listSortDir === 'asc' ? cmp : -cmp;
+                        });
+
+                      if (rows.length === 0) {
+                        return (
+                          <div className="py-12 text-center text-xs text-neutral-400">
+                            Keine passenden Aufgaben in dieser Auswahl.
+                          </div>
+                        );
+                      }
+
+                      const SortBtn: React.FC<{ k: typeof listSortKey; label: string }> = ({ k, label }) => (
+                        <button
+                          type="button"
+                          onClick={() => toggleSort(k)}
+                          className="inline-flex items-center gap-1 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
+                        >
+                          <span>{label}</span>
+                          {listSortKey === k && (listSortDir === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
+                        </button>
+                      );
+
+                      return (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse text-xs">
+                            <thead>
+                              <tr className="border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF]/70 dark:bg-[#23252A] text-[11px] font-bold text-neutral-500">
+                                <th className="py-2.5 px-3.5"><SortBtn k="title" label="Titel" /></th>
+                                <th className="py-2.5 px-3"><SortBtn k="status" label="Status" /></th>
+                                <th className="py-2.5 px-3"><SortBtn k="priority" label="Priorität" /></th>
+                                <th className="py-2.5 px-3"><SortBtn k="startDate" label="Start" /></th>
+                                <th className="py-2.5 px-3"><SortBtn k="dueDate" label="Fällig" /></th>
+                                <th className="py-2.5 px-3"><SortBtn k="milestone" label="Meilenstein" /></th>
+                                <th className="py-2.5 px-3"><SortBtn k="assignees" label="Personen" /></th>
+                                <th className="py-2.5 px-3.5 text-right">Aktionen</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-[#E5E3DC]/70 dark:divide-[#2F3136]">
+                              {rows.map((task) => {
+                                const prio = PRIORITY_META[task.priority] || PRIORITY_META.medium;
+                                const assignees = getTaskAssignees(task);
+                                const colObj = projectColumns.find((c) => c.id === task.status);
+                                const statusColor = colObj?.color || projectAccent;
+                                const msObj = (activeProject.milestones || []).find((m) => m.id === task.milestoneId);
+                                return (
+                                  <tr
+                                    key={task.id}
+                                    className="hover:bg-[#FAF9F5] dark:hover:bg-[#24262C] transition-colors"
+                                  >
+                                    <td className="py-2.5 px-3.5 min-w-[190px]">
+                                      <div className="font-bold text-neutral-900 dark:text-neutral-100">
+                                        {task.title}
                                       </div>
-                                    )}
-                                  </td>
-                                  <td className="py-2.5 px-3 whitespace-nowrap">
-                                    <select
-                                      value={task.status}
-                                      onChange={(e) => handleMoveTaskStatus(task.id, e.target.value)}
-                                      style={{
-                                        borderColor: `${statusColor}55`,
-                                        color: statusColor,
-                                        backgroundColor: `${statusColor}12`,
-                                      }}
-                                      className="text-[11px] font-bold px-2.5 py-1 rounded-full border outline-hidden cursor-pointer"
-                                    >
-                                      {projectColumns.map((col) => (
-                                        <option key={col.id} value={col.id}>
-                                          {col.label}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </td>
-                                  <td className="py-2.5 px-3">
-                                    <div className="flex flex-wrap gap-1 max-w-[220px]">
-                                      {assignees.length === 0 ? (
-                                        <span className="text-[11px] text-neutral-400">Nicht zugewiesen</span>
-                                      ) : (
-                                        assignees.map((name) => (
-                                          <span
-                                            key={name}
-                                            className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#1B1D21] text-neutral-700 dark:text-neutral-300"
-                                          >
-                                            {name}
-                                          </span>
-                                        ))
+                                      {task.description && (
+                                        <div className="text-[11px] text-neutral-500 line-clamp-1">
+                                          {task.description}
+                                        </div>
                                       )}
-                                    </div>
-                                  </td>
-                                  <td className="py-2.5 px-3 whitespace-nowrap">
-                                    <span className={`inline-flex items-center gap-0.5 text-[10px] font-bold px-2 py-0.5 rounded-full ${prio.cls}`}>
-                                      <Flag className="w-2.5 h-2.5" />
-                                      {prio.label}
-                                    </span>
-                                  </td>
-                                  <td className="py-2.5 px-3 whitespace-nowrap tabular-nums text-[11px] text-neutral-500">
-                                    {task.startDate} – {task.dueDate}
-                                  </td>
-                                  <td className="py-2.5 px-3.5 text-right whitespace-nowrap">
-                                    <div className="inline-flex items-center gap-1">
-                                      <button
-                                        type="button"
-                                        onClick={() => openEditTaskModal(task)}
-                                        className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
-                                        title="Bearbeiten"
+                                    </td>
+                                    <td className="py-2.5 px-3 whitespace-nowrap">
+                                      <select
+                                        value={task.status}
+                                        onChange={(e) => handleMoveTaskStatus(task.id, e.target.value)}
+                                        style={{
+                                          borderColor: `${statusColor}55`,
+                                          color: statusColor,
+                                          backgroundColor: `${statusColor}12`,
+                                        }}
+                                        className="text-[11px] font-bold px-2.5 py-1 rounded-full border outline-hidden cursor-pointer"
                                       >
-                                        <Edit3 className="w-3.5 h-3.5" />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleDeleteTask(task.id)}
-                                        className="p-1.5 rounded-lg text-neutral-400 hover:text-red-500 cursor-pointer"
-                                        title="Löschen"
-                                      >
-                                        <Trash2 className="w-3.5 h-3.5" />
-                                      </button>
-                                    </div>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
+                                        {projectColumns.map((col) => (
+                                          <option key={col.id} value={col.id}>
+                                            {col.label}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </td>
+                                    <td className="py-2.5 px-3 whitespace-nowrap">
+                                      <span className={`inline-flex items-center gap-0.5 text-[10px] font-bold px-2 py-0.5 rounded-full ${prio.cls}`}>
+                                        <Flag className="w-2.5 h-2.5" />
+                                        {prio.label}
+                                      </span>
+                                    </td>
+                                    <td className="py-2.5 px-3 whitespace-nowrap tabular-nums text-[11px] text-neutral-500">
+                                      {task.startDate || '–'}
+                                    </td>
+                                    <td className="py-2.5 px-3 whitespace-nowrap tabular-nums text-[11px] text-neutral-500">
+                                      {task.dueDate || '–'}
+                                    </td>
+                                    <td className="py-2.5 px-3 whitespace-nowrap text-[11px]">
+                                      {msObj ? (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-800 dark:text-amber-300 font-semibold">
+                                          <Milestone className="w-3 h-3" />
+                                          {msObj.title}
+                                        </span>
+                                      ) : (
+                                        <span className="text-neutral-400">–</span>
+                                      )}
+                                    </td>
+                                    <td className="py-2.5 px-3">
+                                      <div className="flex flex-wrap gap-1 max-w-[200px]">
+                                        {assignees.length === 0 ? (
+                                          <span className="text-[11px] text-neutral-400">Nicht zugewiesen</span>
+                                        ) : (
+                                          assignees.map((name) => (
+                                            <span
+                                              key={name}
+                                              className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#F4F3EF] dark:bg-[#1B1D21] text-neutral-700 dark:text-neutral-300"
+                                            >
+                                              {name}
+                                            </span>
+                                          ))
+                                        )}
+                                      </div>
+                                    </td>
+                                    <td className="py-2.5 px-3.5 text-right whitespace-nowrap">
+                                      <div className="inline-flex items-center gap-1">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setProtocolDraftText('');
+                                            setProtocolTarget({ scope: 'task', taskId: task.id });
+                                          }}
+                                          className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer relative"
+                                          title="Aufgaben-Protokoll öffnen"
+                                        >
+                                          <ClipboardList className="w-3.5 h-3.5" />
+                                          {(task.protocols || []).length > 0 && (
+                                            <span
+                                              style={{ backgroundColor: projectAccent }}
+                                              className="absolute -top-0.5 -right-0.5 min-w-[13px] h-[13px] px-0.5 rounded-full text-white text-[8px] font-bold flex items-center justify-center tabular-nums"
+                                            >
+                                              {(task.protocols || []).length}
+                                            </span>
+                                          )}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => openEditTaskModal(task)}
+                                          className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
+                                          title="Bearbeiten"
+                                        >
+                                          <Edit3 className="w-3.5 h-3.5" />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleDeleteTask(task.id)}
+                                          className="p-1.5 rounded-lg text-neutral-400 hover:text-red-500 cursor-pointer"
+                                          title="Löschen"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    })()}
+                  </div>
                 </div>
               ) : (
-                /* TIMELINE (GANTT) VIEW */
-                <div className="rounded-2xl bg-[#FFFDF9] dark:bg-[#1E2025] border border-[#E5E3DC] dark:border-[#2F3136] overflow-x-auto">
+                /* TIMELINE (GANTT) VIEW WITH INTERACTIVE MILESTONE BUBBLES */
+                <div
+                  data-task-area="true"
+                  onScroll={() => {
+                    if (activeTimelineMilestoneId) setActiveTimelineMilestoneId(null);
+                  }}
+                  className="rounded-2xl bg-[#FFFDF9] dark:bg-[#1E2025] border border-[#E5E3DC] dark:border-[#2F3136] overflow-x-auto"
+                >
                   {timelineData && (
                     <div className="min-w-[760px] p-4 space-y-2 relative">
+                      {/* Interactive Milestone Bubbles Strip aligned to Timeline Columns */}
+                      {(activeProject.milestones || []).length > 0 && (
+                        <div className="flex items-center pt-1 pb-2 relative">
+                          <div className="w-52 shrink-0 text-[11px] font-bold text-neutral-500 pr-3 flex items-center gap-1">
+                            <Milestone className="w-3.5 h-3.5" style={{ color: projectAccent }} />
+                            <span>Meilensteine</span>
+                          </div>
+                          <div className="flex-1 h-9 relative">
+                            {(activeProject.milestones || []).map((ms) => {
+                              const diffDays = Math.round(
+                                (new Date(`${ms.targetDate}T00:00:00`).getTime() -
+                                  new Date(`${timelineData.minDate}T00:00:00`).getTime()) /
+                                  86400000
+                              );
+                              const clampedIdx = Math.max(0, Math.min(timelineData.totalDays - 1, diffDays));
+                              const leftPct = ((clampedIdx + 0.5) / timelineData.totalDays) * 100;
+                              const diff = daysUntilIso(ms.targetDate);
+                              const isOverdue = !ms.completed && diff < 0;
+                              const isSelected = activeTimelineMilestoneId === ms.id;
+                              const bubbleColor = ms.completed
+                                ? '#10B981'
+                                : isOverdue
+                                ? '#EF4444'
+                                : projectAccent;
+                              return (
+                                <div
+                                  key={`bubble_${ms.id}`}
+                                  style={{ left: `${leftPct}%` }}
+                                  className="absolute top-0.5 -translate-x-1/2 z-20"
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setActiveTimelineMilestoneId((prev) => (prev === ms.id ? null : ms.id));
+                                    }}
+                                    style={{
+                                      backgroundColor: bubbleColor,
+                                      borderColor: isSelected ? '#171717' : '#ffffff',
+                                    }}
+                                    className={`h-7 px-2.5 rounded-full text-white text-[10px] font-extrabold shadow-md border-2 flex items-center gap-1 whitespace-nowrap cursor-pointer transition-transform ${
+                                      isSelected ? 'scale-110 ring-2 ring-amber-400/60' : 'hover:scale-105'
+                                    }`}
+                                    title={`${ms.title} (${ms.targetDate})`}
+                                  >
+                                    <Milestone className="w-3 h-3 shrink-0" />
+                                    <span className="max-w-[92px] truncate">{ms.title}</span>
+                                  </button>
+
+                                  {isSelected && (
+                                    <div
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="mt-1.5 w-64 p-3 rounded-2xl bg-white dark:bg-[#23252C] border border-[#E5E3DC] dark:border-[#343740] shadow-2xl space-y-2 text-left relative z-30"
+                                    >
+                                      <div className="flex items-start justify-between gap-2">
+                                        <div className="min-w-0">
+                                          <div className="text-xs font-extrabold text-neutral-900 dark:text-neutral-100 truncate">
+                                            {ms.title}
+                                          </div>
+                                          <div className="text-[10px] text-neutral-500 tabular-nums">
+                                            Ziel: {ms.targetDate} ·{' '}
+                                            {ms.completed
+                                              ? 'Erreicht ✓'
+                                              : diff < 0
+                                              ? `${Math.abs(diff)}T überfällig`
+                                              : diff === 0
+                                              ? 'Heute fällig'
+                                              : `in ${diff} Tagen`}
+                                          </div>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={() => setActiveTimelineMilestoneId(null)}
+                                          className="p-1 rounded-full text-neutral-400 hover:text-neutral-700 cursor-pointer"
+                                        >
+                                          <X className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                      {ms.description && (
+                                        <p className="text-[11px] text-neutral-600 dark:text-neutral-300 leading-snug">
+                                          {ms.description}
+                                        </p>
+                                      )}
+                                      {(() => {
+                                        const linkedTasks = (activeProject.tasks || []).filter(
+                                          (t) => t.milestoneId === ms.id
+                                        );
+                                        return (
+                                          <div className="pt-1 border-t border-[#E5E3DC] dark:border-[#343740] space-y-1">
+                                            <div className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">
+                                              Verknüpfte Aufgaben ({linkedTasks.length})
+                                            </div>
+                                            {linkedTasks.length === 0 ? (
+                                              <div className="text-[11px] text-neutral-400">
+                                                Keine Aufgaben zugewiesen.
+                                              </div>
+                                            ) : (
+                                              linkedTasks.slice(0, 4).map((lt) => (
+                                                <button
+                                                  key={lt.id}
+                                                  type="button"
+                                                  onClick={() => {
+                                                    setActiveTimelineMilestoneId(null);
+                                                    openEditTaskModal(lt);
+                                                  }}
+                                                  className="w-full text-left text-[11px] font-semibold px-2 py-1 rounded-lg bg-[#F4F3EF] dark:bg-[#1B1D21] hover:bg-neutral-200 dark:hover:bg-neutral-700 truncate cursor-pointer"
+                                                >
+                                                  • {lt.title}
+                                                </button>
+                                              ))
+                                            )}
+                                          </div>
+                                        );
+                                      })()}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
                       {/* Header Day Columns */}
                       <div className="flex items-center border-b border-[#E5E3DC] dark:border-[#2F3136] pb-2">
                         <div className="w-52 shrink-0 text-xs font-extrabold text-neutral-700 dark:text-neutral-300 pr-3">
@@ -1220,18 +2091,21 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                       </div>
 
                       {/* Task Rows */}
-                      {(activeProject.tasks || []).length === 0 ? (
+                      {(activeProject.tasks || []).filter((t) => t.startDate || t.dueDate).length === 0 ? (
                         <div className="py-10 text-center text-xs text-neutral-400">
-                          Füge Aufgaben mit Start- und Enddatum hinzu, um die Timeline anzuzeigen.
+                          Füge Aufgaben mit Start- oder Fälligkeitsdatum hinzu, um die Timeline anzuzeigen.
                         </div>
                       ) : (
-                        [...(activeProject.tasks || [])]
-                          .sort((a, b) => a.startDate.localeCompare(b.startDate))
+                        (activeProject.tasks || [])
+                          .filter((t) => t.startDate || t.dueDate)
+                          .sort((a, b) => (a.startDate || a.dueDate || '').localeCompare(b.startDate || b.dueDate || ''))
                           .map((task) => {
+                            const effStart = task.startDate || task.dueDate || todayIso();
+                            const effEnd = task.dueDate || task.startDate || effStart;
                             const startDiff = Math.max(
                               0,
                               Math.round(
-                                (new Date(`${task.startDate}T00:00:00`).getTime() -
+                                (new Date(`${effStart}T00:00:00`).getTime() -
                                   new Date(`${timelineData.minDate}T00:00:00`).getTime()) /
                                   86400000
                               )
@@ -1239,8 +2113,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                             const spanDays = Math.max(
                               1,
                               Math.round(
-                                (new Date(`${task.dueDate}T00:00:00`).getTime() -
-                                  new Date(`${task.startDate}T00:00:00`).getTime()) /
+                                (new Date(`${effEnd}T00:00:00`).getTime() -
+                                  new Date(`${effStart}T00:00:00`).getTime()) /
                                   86400000
                               ) + 1
                             );
@@ -1517,28 +2391,133 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
               </div>
             )}
 
+            {enableSecondProfile && profileNames && (
+              <div>
+                <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                  Profil zuweisen
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(['profile1', 'profile2'] as NoteProfileId[]).map((pid) => (
+                    <button
+                      key={pid}
+                      type="button"
+                      onClick={() => setProjProfile(pid)}
+                      style={projProfile === pid ? { backgroundColor: projColor, color: '#fff' } : undefined}
+                      className={`py-2 px-3 rounded-xl text-xs font-bold cursor-pointer ${
+                        projProfile === pid
+                          ? 'shadow-xs'
+                          : 'bg-[#F4F3EF] dark:bg-[#282A30] text-neutral-700 dark:text-neutral-300 border border-[#E5E3DC] dark:border-[#343740]'
+                      }`}
+                    >
+                      {profileNames[pid] || (pid === 'profile1' ? 'Profil 1' : 'Profil 2')}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* External Members Management per Project */}
+            <div className="p-3 rounded-xl bg-[#F4F3EF] dark:bg-[#25272D] space-y-2">
+              <span className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 flex items-center gap-1.5">
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Externe Personen / Firmen (wiederverwendbar als Zuweisung)</span>
+              </span>
+              {projExternalMembers.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {projExternalMembers.map((ext) => (
+                    <span
+                      key={ext}
+                      className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-white dark:bg-[#1B1D21] border border-[#E5E3DC] dark:border-[#343740]"
+                    >
+                      <span>{ext}</span>
+                      <button
+                        type="button"
+                        onClick={() => setProjExternalMembers((prev) => prev.filter((x) => x !== ext))}
+                        className="text-neutral-400 hover:text-red-500 cursor-pointer"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  value={newProjExtInput}
+                  onChange={(e) => setNewProjExtInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && newProjExtInput.trim()) {
+                      e.preventDefault();
+                      const v = newProjExtInput.trim();
+                      setProjExternalMembers((prev) => (prev.includes(v) ? prev : [...prev, v]));
+                      setNewProjExtInput('');
+                    }
+                  }}
+                  placeholder="Name (z.B. Architekt, Handwerker...)"
+                  className="flex-1 text-xs px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#1B1D21] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const v = newProjExtInput.trim();
+                    if (!v) return;
+                    setProjExternalMembers((prev) => (prev.includes(v) ? prev : [...prev, v]));
+                    setNewProjExtInput('');
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#1B1D21] border border-[#E5E3DC] dark:border-[#343740] text-xs font-bold cursor-pointer"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
-                  Startdatum
+                  Startdatum (optional)
                 </label>
-                <input
-                  type="date"
-                  value={projStartDate}
-                  onChange={(e) => setProjStartDate(e.target.value)}
-                  className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
-                />
+                <div className="flex items-center gap-1">
+                  <input
+                    type="date"
+                    value={projStartDate}
+                    onChange={(e) => setProjStartDate(e.target.value)}
+                    className="flex-1 min-w-0 text-xs px-2.5 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                  />
+                  {projStartDate && (
+                    <button
+                      type="button"
+                      onClick={() => setProjStartDate('')}
+                      className="p-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] text-neutral-500 hover:text-red-500 cursor-pointer"
+                      title="Datum leeren"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
               </div>
               <div>
                 <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
-                  Zieldatum
+                  Zieldatum (optional)
                 </label>
-                <input
-                  type="date"
-                  value={projDueDate}
-                  onChange={(e) => setProjDueDate(e.target.value)}
-                  className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
-                />
+                <div className="flex items-center gap-1">
+                  <input
+                    type="date"
+                    value={projDueDate}
+                    onChange={(e) => setProjDueDate(e.target.value)}
+                    className="flex-1 min-w-0 text-xs px-2.5 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                  />
+                  {projDueDate && (
+                    <button
+                      type="button"
+                      onClick={() => setProjDueDate('')}
+                      className="p-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] text-neutral-500 hover:text-red-500 cursor-pointer"
+                      title="Datum leeren"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -1559,27 +2538,53 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
               ))}
             </div>
 
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setProjectModalOpen(false)}
-                className="px-3.5 py-2 rounded-xl text-xs font-semibold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 cursor-pointer"
-              >
-                Abbrechen
-              </button>
-              <button
-                type="submit"
-                style={{ backgroundColor: projColor }}
-                className="px-4 py-2 rounded-xl text-xs font-bold text-white shadow-xs cursor-pointer"
-              >
-                Projekt speichern
-              </button>
+            <div className="flex items-center justify-between pt-2 gap-2">
+              {editingProject ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleToggleArchiveProject(editingProject);
+                    setProjectModalOpen(false);
+                  }}
+                  className="px-3 py-2 rounded-xl text-xs font-semibold border border-[#E5E3DC] dark:border-[#343740] text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-[#282A30] flex items-center gap-1.5 cursor-pointer"
+                >
+                  {editingProject.archived ? (
+                    <>
+                      <ArchiveRestore className="w-3.5 h-3.5" />
+                      <span>Wiederherstellen</span>
+                    </>
+                  ) : (
+                    <>
+                      <Archive className="w-3.5 h-3.5" />
+                      <span>Archivieren</span>
+                    </>
+                  )}
+                </button>
+              ) : (
+                <span />
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setProjectModalOpen(false)}
+                  className="px-3.5 py-2 rounded-xl text-xs font-semibold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 cursor-pointer"
+                >
+                  Abbrechen
+                </button>
+                <button
+                  type="submit"
+                  style={{ backgroundColor: projColor }}
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-white shadow-xs cursor-pointer"
+                >
+                  Projekt speichern
+                </button>
+              </div>
             </div>
           </form>
         </div>
       )}
 
-      {/* Task Create/Edit Modal (with Suite Users + Custom External Assignee) */}
+      {/* Task Create/Edit Modal (with Suite Users + Custom External Assignee + Protokoll Button) */}
       {taskModalOpen && (
         <div
           onClick={() => setTaskModalOpen(false)}
@@ -1590,17 +2595,37 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
             onSubmit={handleSaveTaskForm}
             className="w-full max-w-md bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] p-5 space-y-3.5"
           >
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-extrabold text-neutral-900 dark:text-neutral-100">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-extrabold text-neutral-900 dark:text-neutral-100 truncate">
                 {editingTask ? 'Aufgabe bearbeiten' : 'Neue Projektaufgabe'}
               </h3>
-              <button
-                type="button"
-                onClick={() => setTaskModalOpen(false)}
-                className="p-1.5 rounded-full text-neutral-400 hover:text-neutral-700 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {editingTask && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProtocolDraftText('');
+                      setProtocolTarget({ scope: 'task', taskId: editingTask.id });
+                    }}
+                    className="px-2.5 py-1 rounded-xl border border-[#E5E3DC] dark:border-[#343740] bg-[#F4F3EF] dark:bg-[#25272D] text-[11px] font-bold text-neutral-700 dark:text-neutral-200 flex items-center gap-1 cursor-pointer hover:bg-neutral-200 dark:hover:bg-neutral-700"
+                  >
+                    <ClipboardList className="w-3.5 h-3.5" style={{ color: projectAccent }} />
+                    <span>Protokoll</span>
+                    {(editingTask.protocols || []).length > 0 && (
+                      <span className="text-[10px] opacity-75 tabular-nums">
+                        ({(editingTask.protocols || []).length})
+                      </span>
+                    )}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setTaskModalOpen(false)}
+                  className="p-1.5 rounded-full text-neutral-400 hover:text-neutral-700 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             <div>
@@ -1662,10 +2687,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
               </div>
             </div>
 
-            {/* Multi-Assignees: Suite User Chips + Custom External Names */}
+            {/* Multi-Assignees: Suite User Chips + Project External Members + Custom Names */}
             <div className="space-y-1.5">
               <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block">
-                Zuständig (Mehrfachauswahl · Suite-Nutzer oder externe Namen)
+                Zuständig (Mehrfachauswahl · Suite-Nutzer &amp; externe Personen)
               </label>
               <div className="flex flex-wrap gap-1">
                 {allUsers.map((u) => {
@@ -1690,12 +2715,42 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                     </button>
                   );
                 })}
+                {(activeProject?.externalMembers || []).map((ext) => {
+                  const isSelected = taskAssignees.includes(ext);
+                  return (
+                    <button
+                      key={`ext_${ext}`}
+                      type="button"
+                      onClick={() =>
+                        setTaskAssignees((prev) =>
+                          isSelected ? prev.filter((x) => x !== ext) : [...prev, ext]
+                        )
+                      }
+                      style={isSelected ? { backgroundColor: projectAccent } : undefined}
+                      className={`px-2.5 py-1 rounded-full text-[11px] font-semibold cursor-pointer border border-dashed ${
+                        isSelected
+                          ? 'text-white border-transparent shadow-2xs'
+                          : 'bg-[#FAF9F5] dark:bg-[#25272D] border-neutral-300 dark:border-neutral-600 text-neutral-700 dark:text-neutral-300'
+                      }`}
+                    >
+                      {ext} {isSelected ? '✓' : '+'}
+                    </button>
+                  );
+                })}
               </div>
 
-              {taskAssignees.filter((a) => !allUsers.some((u) => u.displayName === a)).length > 0 && (
+              {taskAssignees.filter(
+                (a) =>
+                  !allUsers.some((u) => u.displayName === a) &&
+                  !(activeProject?.externalMembers || []).includes(a)
+              ).length > 0 && (
                 <div className="flex flex-wrap gap-1 pt-0.5">
                   {taskAssignees
-                    .filter((a) => !allUsers.some((u) => u.displayName === a))
+                    .filter(
+                      (a) =>
+                        !allUsers.some((u) => u.displayName === a) &&
+                        !(activeProject?.externalMembers || []).includes(a)
+                    )
                     .map((ext) => (
                       <span
                         key={ext}
@@ -1746,28 +2801,72 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
               </div>
             </div>
 
+            {(activeProject?.milestones || []).length > 0 && (
+              <div>
+                <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
+                  Meilenstein (optional)
+                </label>
+                <select
+                  value={taskMilestoneId}
+                  onChange={(e) => setTaskMilestoneId(e.target.value)}
+                  className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden cursor-pointer"
+                >
+                  <option value="">Kein Meilenstein</option>
+                  {(activeProject?.milestones || []).map((ms) => (
+                    <option key={ms.id} value={ms.id}>
+                      {ms.title} (bis {ms.targetDate})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
-                  Startdatum
+                  Startdatum (optional)
                 </label>
-                <input
-                  type="date"
-                  value={taskStartDate}
-                  onChange={(e) => setTaskStartDate(e.target.value)}
-                  className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
-                />
+                <div className="flex items-center gap-1">
+                  <input
+                    type="date"
+                    value={taskStartDate}
+                    onChange={(e) => setTaskStartDate(e.target.value)}
+                    className="flex-1 min-w-0 text-xs px-2.5 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                  />
+                  {taskStartDate && (
+                    <button
+                      type="button"
+                      onClick={() => setTaskStartDate('')}
+                      className="p-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] text-neutral-500 hover:text-red-500 cursor-pointer"
+                      title="Datum leeren"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
               </div>
               <div>
                 <label className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 block mb-1">
-                  Fälligkeitsdatum
+                  Fälligkeitsdatum (optional)
                 </label>
-                <input
-                  type="date"
-                  value={taskDueDate}
-                  onChange={(e) => setTaskDueDate(e.target.value)}
-                  className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
-                />
+                <div className="flex items-center gap-1">
+                  <input
+                    type="date"
+                    value={taskDueDate}
+                    onChange={(e) => setTaskDueDate(e.target.value)}
+                    className="flex-1 min-w-0 text-xs px-2.5 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                  />
+                  {taskDueDate && (
+                    <button
+                      type="button"
+                      onClick={() => setTaskDueDate('')}
+                      className="p-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] text-neutral-500 hover:text-red-500 cursor-pointer"
+                      title="Datum leeren"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -2030,6 +3129,267 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
           </form>
         </div>
       )}
+
+      {/* Milestones CRUD Modal */}
+      {milestonesModalOpen && activeProject && (
+        <div
+          onClick={() => setMilestonesModalOpen(false)}
+          className="fixed inset-0 z-[120] bg-black/50 backdrop-blur-xs flex items-start lg:items-center justify-center px-3 pt-10 lg:pt-4 pb-4 overflow-y-auto"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] p-5 space-y-4 max-h-[84dvh] flex flex-col"
+          >
+            <div className="flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2">
+                <Milestone className="w-4 h-4" style={{ color: projectAccent }} />
+                <h3 className="text-sm font-extrabold text-neutral-900 dark:text-neutral-100">
+                  Meilensteine für „{activeProject.title}“
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMilestonesModalOpen(false)}
+                className="p-1.5 rounded-full text-neutral-400 hover:text-neutral-700 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveMilestone} className="p-3 rounded-xl bg-[#F4F3EF] dark:bg-[#25272D] space-y-2 shrink-0">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  required
+                  placeholder="Meilenstein-Titel (z.B. Richtfest)"
+                  value={msTitle}
+                  onChange={(e) => setMsTitle(e.target.value)}
+                  className="text-xs px-3 py-2 rounded-xl bg-white dark:bg-[#1B1D21] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                />
+                <input
+                  type="date"
+                  required
+                  value={msTargetDate}
+                  onChange={(e) => setMsTargetDate(e.target.value)}
+                  className="text-xs px-3 py-2 rounded-xl bg-white dark:bg-[#1B1D21] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  placeholder="Beschreibung (optional)"
+                  value={msDesc}
+                  onChange={(e) => setMsDesc(e.target.value)}
+                  className="flex-1 text-xs px-3 py-2 rounded-xl bg-white dark:bg-[#1B1D21] border border-[#E5E3DC] dark:border-[#343740] outline-hidden"
+                />
+                <button
+                  type="submit"
+                  style={{ backgroundColor: projectAccent }}
+                  className="px-3.5 py-2 rounded-xl text-white text-xs font-bold cursor-pointer shrink-0"
+                >
+                  {editingMilestoneId ? 'Aktualisieren' : '+ Hinzufügen'}
+                </button>
+              </div>
+            </form>
+
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+              {(activeProject.milestones || []).length === 0 ? (
+                <p className="text-xs text-neutral-400 text-center py-6">
+                  Noch keine Meilensteine definiert.
+                </p>
+              ) : (
+                (activeProject.milestones || [])
+                  .slice()
+                  .sort((a, b) => a.targetDate.localeCompare(b.targetDate))
+                  .map((ms) => {
+                    const diff = daysUntilIso(ms.targetDate);
+                    const isOverdue = !ms.completed && diff < 0;
+                    const isWarning = !ms.completed && diff >= 0 && diff <= 3;
+                    return (
+                      <div
+                        key={ms.id}
+                        className="p-3 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#FAF9F5] dark:bg-[#23252A] flex items-center justify-between gap-2"
+                      >
+                        <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleMilestoneDone(ms.id)}
+                            style={ms.completed ? { backgroundColor: '#10B981', borderColor: '#10B981' } : undefined}
+                            className={`mt-0.5 w-5 h-5 rounded-md border flex items-center justify-center shrink-0 cursor-pointer ${
+                              ms.completed ? 'text-white' : 'border-neutral-300 dark:border-neutral-600 bg-white dark:bg-[#1B1D21]'
+                            }`}
+                          >
+                            {ms.completed && <Check className="w-3 h-3" />}
+                          </button>
+                          <div className="min-w-0">
+                            <div className={`text-xs font-bold truncate ${ms.completed ? 'line-through text-neutral-400' : 'text-neutral-900 dark:text-neutral-100'}`}>
+                              {ms.title}
+                            </div>
+                            <div className="text-[11px] text-neutral-500 flex items-center gap-2 flex-wrap">
+                              <span className="tabular-nums">Ziel: {ms.targetDate}</span>
+                              <span
+                                className={`text-[10px] font-bold px-1.5 py-0.2 rounded-full ${
+                                  ms.completed
+                                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                                    : isOverdue
+                                    ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+                                    : isWarning
+                                    ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                                    : 'bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300'
+                                }`}
+                              >
+                                {ms.completed
+                                  ? 'Erreicht'
+                                  : diff < 0
+                                  ? `${Math.abs(diff)} Tage überfällig`
+                                  : diff === 0
+                                  ? 'Heute fällig'
+                                  : `noch ${diff} Tage`}
+                              </span>
+                            </div>
+                            {ms.description && (
+                              <p className="text-[11px] text-neutral-400 truncate mt-0.5">{ms.description}</p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingMilestoneId(ms.id);
+                              setMsTitle(ms.title);
+                              setMsTargetDate(ms.targetDate);
+                              setMsDesc(ms.description || '');
+                            }}
+                            className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-800 dark:hover:text-white cursor-pointer"
+                            title="Bearbeiten"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteMilestone(ms.id)}
+                            className="p-1.5 rounded-lg text-neutral-400 hover:text-red-500 cursor-pointer"
+                            title="Löschen"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Top-Anchored Protokoll Overlay (Projekt- oder Aufgaben-Protokoll) */}
+      {protocolTarget && activeProject && (() => {
+        const targetTask =
+          protocolTarget.scope === 'task'
+            ? activeProject.tasks.find((t) => t.id === protocolTarget.taskId) || null
+            : null;
+        const entries =
+          protocolTarget.scope === 'project'
+            ? activeProject.protocols || []
+            : targetTask?.protocols || [];
+        return (
+          <div
+            onClick={() => setProtocolTarget(null)}
+            className="fixed inset-0 z-[135] bg-black/55 backdrop-blur-xs flex items-start justify-center px-3 pt-10 pb-4 overflow-y-auto"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-white dark:bg-[#1E1F23] rounded-2xl shadow-2xl border border-[#E5E3DC] dark:border-[#2F3136] p-4 space-y-3 max-h-[68dvh] flex flex-col"
+            >
+              <div className="flex items-center justify-between gap-2 shrink-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <ClipboardList className="w-4 h-4 shrink-0" style={{ color: projectAccent }} />
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-extrabold text-neutral-900 dark:text-neutral-100 truncate">
+                      {protocolTarget.scope === 'project'
+                        ? `Projekt-Protokoll · ${activeProject.title}`
+                        : `Aufgaben-Protokoll · ${targetTask?.title || 'Aufgabe'}`}
+                    </h3>
+                    <span className="text-[10px] text-neutral-400 tabular-nums">
+                      {entries.length} {entries.length === 1 ? 'Eintrag' : 'Einträge'}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setProtocolTarget(null)}
+                  className="p-1.5 rounded-full text-neutral-400 hover:text-neutral-700 cursor-pointer shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleAddProtocolEntry} className="space-y-2 shrink-0">
+                <textarea
+                  ref={protocolInputRef}
+                  rows={2}
+                  value={protocolDraftText}
+                  onChange={(e) => setProtocolDraftText(e.target.value)}
+                  placeholder="Protokoll-Notiz, Entscheidung oder Statusupdate eingeben..."
+                  className="w-full text-xs px-3 py-2 rounded-xl bg-[#F4F3EF] dark:bg-[#282A30] border border-[#E5E3DC] dark:border-[#343740] outline-hidden resize-none"
+                />
+                <div className="flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={!protocolDraftText.trim()}
+                    style={{ backgroundColor: projectAccent }}
+                    className="px-3.5 py-2 rounded-xl text-white text-xs font-bold shadow-xs disabled:opacity-45 cursor-pointer"
+                  >
+                    Eintrag speichern
+                  </button>
+                </div>
+              </form>
+
+              <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
+                {entries.length === 0 ? (
+                  <p className="text-xs text-neutral-400 text-center py-5">
+                    Noch keine Protokolleinträge vorhanden.
+                  </p>
+                ) : (
+                  entries.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="p-2.5 rounded-xl bg-[#FAF9F5] dark:bg-[#23252A] border border-[#E5E3DC] dark:border-[#32353D] space-y-1"
+                    >
+                      <div className="flex items-center justify-between gap-2 text-[10px] text-neutral-400">
+                        <span className="font-bold text-neutral-600 dark:text-neutral-300">
+                          {entry.author} ·{' '}
+                          <span className="tabular-nums font-normal">
+                            {new Date(entry.createdAt).toLocaleString('de-DE', {
+                              day: '2-digit',
+                              month: '2-digit',
+                              year: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteProtocolEntry(entry.id)}
+                          className="p-1 text-neutral-400 hover:text-red-500 cursor-pointer"
+                          title="Eintrag löschen"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                      <p className="text-xs text-neutral-800 dark:text-neutral-100 whitespace-pre-wrap leading-relaxed">
+                        {entry.text}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

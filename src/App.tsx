@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { User, NoteMetadata, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId, WikiArticle, Recipe, CookbookTab, DashboardSettings, ProjectItem } from './types';
+import { User, NoteMetadata, PaneType, SuiteModuleId, EnabledModules, SuiteProfileSettings, NoteProfileId, WikiArticle, Recipe, CookbookTab, DashboardSettings, ProjectItem, ProjectTask, RssArticle, RssReaderResponse } from './types';
 import { api } from './services/api';
 import { DEFAULT_ENABLED_MODULES, DEFAULT_PROFILE_SETTINGS, DEFAULT_DASHBOARD_SETTINGS, MAX_DASHBOARD_WIDGETS, DASHBOARD_WIDGET_CATALOG, DEFAULT_MODULE_ORDER } from './services/profileDefaults';
 import { Header } from './components/layout/Header';
@@ -11,14 +11,16 @@ import { CookbookView, CookbookSnapshot } from './components/recipes/CookbookVie
 import { FinanceView } from './components/finance/FinanceView';
 import { SmarthomeView } from './components/smarthome/SmarthomeView';
 import { ProjectsView } from './components/projects/ProjectsView';
+import { RssView } from './components/rss/RssView';
 import { ShareModal } from './components/modals/ShareModal';
 import { SystemLogsModal } from './components/modals/SystemLogsModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { TourOverlay } from './components/modals/TourOverlay';
 import { LoginScreen } from './components/auth/LoginScreen';
 import { BookOpen, CheckSquare, Network, ChevronRight, ChevronLeft, X, Inbox, Plus, Folder, FolderPlus, FilePlus, Layers } from 'lucide-react';
-import { printNoteA4, printWikiArticleA4, printMealPlanA4, printProjectA4 } from './services/printService';
+import { printNoteA4, printWikiArticleA4, printMealPlanA4, printRecipeA4, printProjectA4, printProjectTaskA4, PdfExportDocument } from './services/printService';
 import { checkAndNotifyDueTasks, querySyncedNotificationPermission } from './services/notificationService';
+import { useSwipeDrawer } from './hooks/useSwipeDrawer';
 
 const mergeProfileSettings = (raw?: Partial<SuiteProfileSettings> | null): SuiteProfileSettings => {
   if (!raw) return DEFAULT_PROFILE_SETTINGS;
@@ -34,6 +36,7 @@ const mergeProfileSettings = (raw?: Partial<SuiteProfileSettings> | null): Suite
     activeProfileId: raw.activeProfileId === 'profile2' ? 'profile2' : 'profile1',
     mobileBarPosition: raw.mobileBarPosition === 'bottom' ? 'bottom' : 'top',
     moduleOrder: mergedOrder,
+    offlineModules: raw.offlineModules || {},
     profile1: {
       id: 'profile1',
       name: raw.profile1?.name ?? DEFAULT_PROFILE_SETTINGS.profile1.name,
@@ -159,8 +162,22 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedWikiSlug, setSelectedWikiSlug] = useState<string | null>(null);
   const [shareModalRecipe, setShareModalRecipe] = useState<Recipe | null>(null);
+  const [shareModalModeOverride, setShareModalModeOverride] = useState<'project_task' | 'recipes' | null>(null);
+  const [customSharePayload, setCustomSharePayload] = useState<{
+    title: string;
+    content: string;
+    pdfDocument?: PdfExportDocument;
+  } | null>(null);
   const [cookbookRefreshKey, setCookbookRefreshKey] = useState<number>(0);
   const cookbookSnapshotRef = useRef<CookbookSnapshot | null>(null);
+  const projectContextRef = useRef<{ project: ProjectItem | null; task: ProjectTask | null }>({
+    project: null,
+    task: null,
+  });
+  const rssContextRef = useRef<{ article: RssArticle | null; readerData: RssReaderResponse | null }>({
+    article: null,
+    readerData: null,
+  });
 
   // Online / Sync State
   const [isOnline, setIsOnline] = useState<boolean>(api.getOnlineStatus());
@@ -169,16 +186,25 @@ export default function App() {
   // PWA Install Prompt State
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<any>(null);
 
-  // Mobile swipe gestures state (Pixel-launcher 1:1 finger tracking) + live refs
-  const [sidebarDragOffsetPx, setSidebarDragOffsetPx] = useState<number | null>(null);
-  const sidebarOpenRef = useRef<boolean>(false);
-  useEffect(() => {
-    sidebarOpenRef.current = isMobileSidebarOpen;
-  }, [isMobileSidebarOpen]);
-  const touchStartXRef = useRef<number | null>(null);
-  const touchStartYRef = useRef<number | null>(null);
-  const touchAxisLockedRef = useRef<'none' | 'x' | 'y'>('none');
-  const touchDragOffsetRef = useRef<number | null>(null);
+  // Unified Pixel-launcher 1:1 edge-swipe drawer for Notes mobile Vault
+  const notesDrawer = useSwipeDrawer({
+    isOpen: isMobileSidebarOpen,
+    onOpen: () => setIsMobileSidebarOpen(true),
+    onClose: () => setIsMobileSidebarOpen(false),
+    width: 288,
+    edgeZonePx: 140,
+    globalWindow: true,
+    disabled: activeSuiteModule !== 'notes',
+    canStart: (e) => {
+      if (typeof window !== 'undefined' && window.innerWidth >= 1024) return false;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('header')) return false;
+      if (!isMobileSidebarOpen && target?.closest('button, input, select, textarea, [draggable="true"]')) {
+        return false;
+      }
+      return true;
+    },
+  });
   const restoredForUserRef = useRef<string | null>(null);
   const pendingRestoreNoteRef = useRef<{ path: string; isShared?: boolean; sharedFrom?: string } | null>(null);
   const activeNoteContentRef = useRef<string>('');
@@ -228,6 +254,11 @@ export default function App() {
       localStorage.setItem('ochrenotes_theme', 'light');
     }
   }, [isDarkMode]);
+
+  // Sync per-module offline preference map into ApiService
+  useEffect(() => {
+    api.setOfflineModulesMap(profileSettings.offlineModules || {});
+  }, [profileSettings.offlineModules]);
 
   // Online status & live offline queue subscription
   useEffect(() => {
@@ -329,6 +360,8 @@ export default function App() {
   const activeAccentColor =
     activeSuiteModule === 'notes'
       ? activeProfile.colors.notes
+      : activeSuiteModule === 'projects' && profileSettings.enableSecondProfile
+      ? activeProfile.colors.projects || profileSettings.profile1.colors.projects
       : profileSettings.profile1.colors[activeSuiteModule] || activeProfile.colors.notes;
 
   const handleUpdateProfileSettings = (next: SuiteProfileSettings) => {
@@ -400,7 +433,7 @@ export default function App() {
         if (raw) {
           const parsed = JSON.parse(raw);
           const restoredMod = parsed.module as SuiteModuleId | undefined;
-          if (restoredMod && enabledModules[restoredMod]) {
+          if (restoredMod && (DEFAULT_MODULE_ORDER as string[]).includes(restoredMod) && enabledModules[restoredMod] !== false) {
             setActiveSuiteModule(restoredMod);
           }
           if (parsed.viewMode === 'editor' || parsed.viewMode === 'tasks' || parsed.viewMode === 'graph') {
@@ -902,7 +935,7 @@ export default function App() {
     setActiveNotePath(null);
   };
 
-  // A4 Print Handler (Module-aware: Notes, Wiki Article, Cookbook Weekly Plan, Projects)
+  // A4 Print Handler (Module & Context-aware: Notes, Wiki Article, Recipe or Meal Plan, Project or Single Task)
   const handlePrintA4 = () => {
     flushPendingSave();
     if (activeSuiteModule === 'wiki') {
@@ -912,26 +945,40 @@ export default function App() {
       return;
     }
     if (activeSuiteModule === 'recipes') {
-      if (cookbookSnapshotRef.current) {
+      const snap = cookbookSnapshotRef.current;
+      if (snap?.selectedRecipe) {
+        printRecipeA4(
+          snap.selectedRecipe,
+          snap.selectedRecipe.portions,
+          snap.ownerName,
+          profileSettings.profile1.colors.recipes
+        );
+      } else if (snap) {
         printMealPlanA4({
-          cycle: cookbookSnapshotRef.current.cycle,
-          recipes: cookbookSnapshotRef.current.recipes,
-          overrides: cookbookSnapshotRef.current.overrides,
-          weekOffset: cookbookSnapshotRef.current.weekOffset,
-          ownerName: cookbookSnapshotRef.current.ownerName,
+          cycle: snap.cycle,
+          recipes: snap.recipes,
+          overrides: snap.overrides,
+          weekOffset: snap.weekOffset,
+          ownerName: snap.ownerName,
           accentColor: profileSettings.profile1.colors.recipes,
         });
       }
       return;
     }
     if (activeSuiteModule === 'projects') {
-      const targetProj = projects.find((p) => p.id === selectedProjectId) || projects[0];
-      if (targetProj) {
-        printProjectA4(targetProj, targetProj.color || profileSettings.profile1.colors.projects);
+      const ctxProj =
+        projectContextRef.current.project ||
+        projects.find((p) => p.id === selectedProjectId) ||
+        projects[0];
+      const ctxTask = projectContextRef.current.task;
+      if (ctxProj && ctxTask) {
+        printProjectTaskA4(ctxProj, ctxTask, ctxProj.color || activeAccentColor);
+      } else if (ctxProj) {
+        printProjectA4(ctxProj, ctxProj.color || activeAccentColor);
       }
       return;
     }
-    if (activeSuiteModule === 'finance' || activeSuiteModule === 'smarthome' || activeSuiteModule === 'dashboard') {
+    if (activeSuiteModule === 'finance' || activeSuiteModule === 'smarthome' || activeSuiteModule === 'dashboard' || activeSuiteModule === 'rss') {
       return;
     }
     printNoteA4(activeNoteTitle, activeNoteContentRef.current || activeNoteContent, activeProfile.colors.notes);
@@ -946,90 +993,56 @@ export default function App() {
     return { lines: lines.length, words, chars };
   }, [activeNoteContent]);
 
-  // Pixel-launcher 1:1 finger-tracked swipe gesture listeners for Notes mobile Vault drawer
-  useEffect(() => {
-    const DRAWER_WIDTH = 288;
-    const onTouchStart = (e: TouchEvent) => {
-      if (window.innerWidth >= 1024 || activeSuiteModule !== 'notes') {
-        touchStartXRef.current = null;
-        touchStartYRef.current = null;
-        return;
-      }
-      const target = e.target as HTMLElement | null;
-      if (
-        target?.closest('[data-no-swipe]') ||
-        target?.closest('header') ||
-        target?.closest('button') ||
-        target?.closest('input') ||
-        target?.closest('select') ||
-        target?.closest('textarea') ||
-        target?.closest('[draggable="true"]')
-      ) {
-        touchStartXRef.current = null;
-        touchStartYRef.current = null;
-        return;
-      }
-      touchStartXRef.current = e.touches[0].clientX;
-      touchStartYRef.current = e.touches[0].clientY;
-      touchAxisLockedRef.current = 'none';
-      touchDragOffsetRef.current = null;
+  const buildMealPlanSharePayload = () => {
+    const snap = cookbookSnapshotRef.current;
+    if (!snap) {
+      return {
+        title: 'Essensplan',
+        content: '# Essensplan\n\nNoch keine Wochenplanung geladen.',
+      };
+    }
+    const base = new Date();
+    base.setDate(base.getDate() + snap.weekOffset * 7);
+    const day = base.getDay();
+    const diff = base.getDate() - day + (day === 0 ? -6 : 1);
+    const monday = new Date(base.setDate(diff));
+    const recipeMap = new Map(snap.recipes.map((r) => [r.id, r]));
+    const dayLines: string[] = [];
+    let firstLabel = '';
+    let lastLabel = '';
+
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      const iso = d.toISOString().split('T')[0];
+      const dStr = d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
+      if (i === 0) firstLabel = d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      if (i === 6) lastLabel = d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      const start = new Date(snap.cycle.startDate);
+      const diffTime = Math.floor((d.getTime() - start.getTime()) / 86400000);
+      const cycleIndex = ((diffTime % snap.cycle.cycleLengthDays) + snap.cycle.cycleLengthDays) % snap.cycle.cycleLengthDays;
+      const cycleDay = snap.cycle.days.find((cd) => cd.dayIndex === cycleIndex);
+      const isOverridden = !!snap.overrides[iso];
+      const rIds = isOverridden ? snap.overrides[iso].recipeIds : cycleDay?.recipeIds || [];
+      const titles = rIds
+        .map((id) => recipeMap.get(id)?.title)
+        .filter(Boolean)
+        .join(', ');
+      dayLines.push(`- **${dStr}**: ${titles || 'Kein Gericht eingetragen'}`);
+    }
+
+    const title = `Wochen-Essensplan (${firstLabel} – ${lastLabel})`;
+    return {
+      title,
+      content: `# ${title}\n\nZyklus: ${snap.cycle.name}${snap.ownerName ? ` · ${snap.ownerName}` : ''}\n\n${dayLines.join('\n')}`,
+      pdfDocument: {
+        title,
+        subtitle: `Zyklus: ${snap.cycle.name} (${snap.cycle.cycleLengthDays} Tage)`,
+        accentColor: profileSettings.profile1.colors.recipes,
+        sections: [{ heading: 'Wochenübersicht', lines: dayLines.map((l) => l.replace(/\*\*/g, '')) }],
+      },
     };
-
-    const onTouchMove = (e: TouchEvent) => {
-      if (touchStartXRef.current === null || touchStartYRef.current === null) return;
-      const dx = e.touches[0].clientX - touchStartXRef.current;
-      const dy = e.touches[0].clientY - touchStartYRef.current;
-
-      if (touchAxisLockedRef.current === 'none') {
-        if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
-        if (Math.abs(dx) > Math.abs(dy) * 1.25) {
-          if ((!sidebarOpenRef.current && dx > 0) || (sidebarOpenRef.current && dx < 0)) {
-            touchAxisLockedRef.current = 'x';
-          } else {
-            touchAxisLockedRef.current = 'y';
-            return;
-          }
-        } else {
-          touchAxisLockedRef.current = 'y';
-          return;
-        }
-      }
-
-      if (touchAxisLockedRef.current === 'x') {
-        const baseOffset = sidebarOpenRef.current ? 0 : -DRAWER_WIDTH;
-        const clamped = Math.max(-DRAWER_WIDTH, Math.min(0, baseOffset + dx));
-        touchDragOffsetRef.current = clamped;
-        setSidebarDragOffsetPx(clamped);
-      }
-    };
-
-    const finishTouch = () => {
-      if (touchAxisLockedRef.current === 'x' && touchDragOffsetRef.current !== null) {
-        const offset = touchDragOffsetRef.current;
-        if (!sidebarOpenRef.current) {
-          setIsMobileSidebarOpen(offset > -DRAWER_WIDTH + 90);
-        } else {
-          setIsMobileSidebarOpen(offset >= -90);
-        }
-      }
-      touchStartXRef.current = null;
-      touchStartYRef.current = null;
-      touchAxisLockedRef.current = 'none';
-      touchDragOffsetRef.current = null;
-      setSidebarDragOffsetPx(null);
-    };
-
-    window.addEventListener('touchstart', onTouchStart, { passive: true });
-    window.addEventListener('touchmove', onTouchMove, { passive: true });
-    window.addEventListener('touchend', finishTouch, { passive: true });
-    window.addEventListener('touchcancel', finishTouch, { passive: true });
-    return () => {
-      window.removeEventListener('touchstart', onTouchStart);
-      window.removeEventListener('touchmove', onTouchMove);
-      window.removeEventListener('touchend', finishTouch);
-      window.removeEventListener('touchcancel', finishTouch);
-    };
-  }, [activeSuiteModule]);
+  };
 
   const floatingNavBottomClass =
     (profileSettings.mobileBarPosition || 'top') === 'bottom'
@@ -1050,12 +1063,183 @@ export default function App() {
         onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
         onOpenShareModal={() => {
           flushPendingSave();
+          setShareModalModeOverride(null);
           if (activeSuiteModule === 'recipes') {
-            setShareModalRecipe(
-              cookbookSnapshotRef.current?.selectedRecipe ||
-                cookbookSnapshotRef.current?.recipes?.[0] ||
-                null
-            );
+            const openRecipe = cookbookSnapshotRef.current?.selectedRecipe || null;
+            if (openRecipe) {
+              setShareModalRecipe(openRecipe);
+              setCustomSharePayload(null);
+            } else {
+              setShareModalRecipe(null);
+              setShareModalModeOverride('recipes');
+              setCustomSharePayload(buildMealPlanSharePayload());
+            }
+          } else if (activeSuiteModule === 'projects') {
+            const ctxProj =
+              projectContextRef.current.project ||
+              projects.find((p) => p.id === selectedProjectId) ||
+              projects[0];
+            const ctxTask = projectContextRef.current.task;
+            if (ctxProj && ctxTask) {
+              const cols = new Map((ctxProj.columns || []).map((c) => [c.id, c.label]));
+              const prioMap: Record<string, string> = { high: 'Hoch', medium: 'Mittel', low: 'Niedrig' };
+              const assignees =
+                ctxTask.assignees && ctxTask.assignees.length > 0
+                  ? ctxTask.assignees.join(', ')
+                  : ctxTask.assignee || 'Offen';
+              const protocolLines = (ctxTask.protocols || []).map(
+                (p) => `- ${new Date(p.createdAt).toLocaleString('de-DE')} (${p.author}): ${p.text}`
+              );
+              const metaLines = [
+                `Projekt: ${ctxProj.title}`,
+                `Status: ${cols.get(ctxTask.status) || ctxTask.status}`,
+                `Priorität: ${prioMap[ctxTask.priority] || ctxTask.priority}`,
+                `Zuständig: ${assignees}`,
+                ...(ctxTask.startDate || ctxTask.dueDate
+                  ? [`Zeitraum: ${ctxTask.startDate || '–'} bis ${ctxTask.dueDate || '–'}`]
+                  : []),
+              ];
+              const md = `# ${ctxTask.title}\n\n${metaLines.join(' · ')}\n\n${
+                ctxTask.description ? `## Beschreibung\n${ctxTask.description}\n\n` : ''
+              }## Protokoll (${protocolLines.length})\n${protocolLines.join('\n') || 'Keine Einträge'}`;
+              setShareModalModeOverride('project_task');
+              setCustomSharePayload({
+                title: ctxTask.title,
+                content: md,
+                pdfDocument: {
+                  title: ctxTask.title,
+                  subtitle: `Aufgabe in „${ctxProj.title}“ · ${cols.get(ctxTask.status) || ctxTask.status}`,
+                  accentColor: ctxProj.color || activeAccentColor,
+                  sections: [
+                    { heading: 'Details', lines: metaLines },
+                    ...(ctxTask.description ? [{ heading: 'Beschreibung', lines: [ctxTask.description] }] : []),
+                    {
+                      heading: `Aufgaben-Protokoll (${protocolLines.length})`,
+                      lines: protocolLines.length > 0 ? protocolLines : ['Keine Protokolleinträge vorhanden.'],
+                    },
+                  ],
+                },
+              });
+            } else if (ctxProj) {
+              const cols = new Map((ctxProj.columns || []).map((c) => [c.id, c.label]));
+              const taskLines = (ctxProj.tasks || []).map(
+                (t) => `- [${cols.get(t.status) || t.status}] ${t.title} (${t.assignees?.join(', ') || t.assignee || 'Offen'})`
+              );
+              const protocolLines = (ctxProj.protocols || []).map(
+                (p) => `- ${new Date(p.createdAt).toLocaleString('de-DE')} (${p.author}): ${p.text}`
+              );
+              const md = `# ${ctxProj.title}\n\n${ctxProj.description ? `${ctxProj.description}\n\n` : ''}Status: ${ctxProj.status}\n\n## Aufgaben (${ctxProj.tasks.length})\n${taskLines.join('\n') || 'Keine Aufgaben'}${
+                protocolLines.length > 0 ? `\n\n## Projekt-Protokoll (${protocolLines.length})\n${protocolLines.join('\n')}` : ''
+              }`;
+              setCustomSharePayload({
+                title: ctxProj.title,
+                content: md,
+                pdfDocument: {
+                  title: ctxProj.title,
+                  subtitle: `Projekt-Übersicht · Status: ${ctxProj.status}`,
+                  accentColor: ctxProj.color || activeAccentColor,
+                  sections: [
+                    ...(ctxProj.description ? [{ heading: 'Beschreibung', lines: [ctxProj.description] }] : []),
+                    {
+                      heading: `Aufgaben (${ctxProj.tasks.length})`,
+                      lines: taskLines.length > 0 ? taskLines : ['Keine Aufgaben vorhanden.'],
+                    },
+                    ...(protocolLines.length > 0
+                      ? [{ heading: `Projekt-Protokoll (${protocolLines.length})`, lines: protocolLines }]
+                      : []),
+                  ],
+                },
+              });
+            } else {
+              setCustomSharePayload({ title: 'Projekte', content: 'Noch keine Projekte angelegt.' });
+            }
+          } else if (activeSuiteModule === 'finance') {
+            try {
+              const rawTx = localStorage.getItem('ochre_finance_transactions_v1');
+              const txs: Array<{ date: string; creditor: string; amount: number; description: string }> = rawTx
+                ? JSON.parse(rawTx)
+                : [];
+              const income = txs.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+              const expense = txs.filter((t) => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
+              const balance = income - expense;
+              const topLines = txs
+                .slice(0, 20)
+                .map((t) => `${t.date} · ${t.creditor}: ${t.amount.toFixed(2)} EUR${t.description ? ` (${t.description})` : ''}`);
+              const summary = `Einnahmen: +${income.toFixed(2)} EUR\nAusgaben: -${expense.toFixed(2)} EUR\nSaldo: ${balance.toFixed(2)} EUR`;
+              setCustomSharePayload({
+                title: 'Finanzen Übersicht',
+                content: `# Finanzen Übersicht\n\n${summary}\n\n## Letzte Buchungen\n${topLines.join('\n')}`,
+                pdfDocument: {
+                  title: 'Finanzen Übersicht',
+                  subtitle: `Gesamt-Saldo: ${balance.toFixed(2)} EUR`,
+                  accentColor: activeAccentColor,
+                  sections: [
+                    { heading: 'Bilanz', lines: summary.split('\n') },
+                    { heading: 'Buchungen', lines: topLines.length > 0 ? topLines : ['Keine Buchungen vorhanden.'] },
+                  ],
+                },
+              });
+            } catch {
+              setCustomSharePayload({ title: 'Finanzen Übersicht', content: 'Lokale Finanzdaten' });
+            }
+          } else if (activeSuiteModule === 'dashboard') {
+            const activeMods = (Object.keys(enabledModules) as SuiteModuleId[])
+              .filter((k) => enabledModules[k])
+              .join(', ');
+            const lines = [
+              `Benutzer: ${currentUser?.displayName || 'Gast'} (@${currentUser?.username || 'michael'})`,
+              `Notiz-Profil: ${activeProfile.name}`,
+              `Notizen: ${notes.length}`,
+              `Projekte: ${projects.length}`,
+              `Aktive Module: ${activeMods}`,
+            ];
+            setCustomSharePayload({
+              title: `${appTitle} Dashboard`,
+              content: `# ${appTitle} Dashboard\n\n${lines.map((l) => `- ${l}`).join('\n')}`,
+              pdfDocument: {
+                title: `${appTitle} Dashboard`,
+                subtitle: `Export für ${currentUser?.displayName || 'Benutzer'}`,
+                accentColor: activeAccentColor,
+                sections: [{ heading: 'Status-Übersicht', lines }],
+              },
+            });
+          } else if (activeSuiteModule === 'smarthome') {
+            setCustomSharePayload({
+              title: 'Smarthome Übersicht',
+              content: `# Smarthome Übersicht\n\nExport aus der Ochre Suite für @${currentUser?.username || 'michael'}.`,
+            });
+          } else if (activeSuiteModule === 'rss') {
+            const { article, readerData } = rssContextRef.current;
+            if (article) {
+              const lines = readerData?.paragraphs?.length
+                ? readerData.paragraphs
+                : article.contentText
+                ? article.contentText.split(/\n{2,}/)
+                : [article.summary || article.link];
+              const articleTitle = readerData?.title || article.title;
+              const md = `# ${articleTitle}\n\nQuelle: ${article.sourceTitle}${article.link ? `\nLink: ${article.link}` : ''}\n\n${lines.join('\n\n')}`;
+              setCustomSharePayload({
+                title: articleTitle,
+                content: md,
+                pdfDocument: {
+                  title: articleTitle,
+                  subtitle: `${article.sourceTitle}${article.pubDate ? ` · ${new Date(article.timestamp || Date.now()).toLocaleDateString('de-DE')}` : ''}`,
+                  accentColor: activeAccentColor,
+                  heroImage: readerData?.leadImage,
+                  sections: [
+                    ...(article.link ? [{ heading: 'Quelle', lines: [`${article.sourceTitle} (${article.link})`] }] : []),
+                    { heading: 'Artikel', lines },
+                  ],
+                },
+              });
+            } else {
+              setCustomSharePayload({
+                title: 'RSS Feed Übersicht',
+                content: `# RSS Feed\n\nÖffne zuerst einen Artikel im Reader, um den Volltext als PDF zu exportieren oder zu teilen.`,
+              });
+            }
+          } else {
+            setCustomSharePayload(null);
           }
           setIsShareModalOpen(true);
         }}
@@ -1258,7 +1442,11 @@ export default function App() {
             projects={projects}
             onProjectsChange={setProjects}
             initialProjectId={selectedProjectId}
-            accentColor={profileSettings.profile1.colors.projects}
+            accentColor={
+              profileSettings.enableSecondProfile
+                ? activeProfile.colors.projects || profileSettings.profile1.colors.projects
+                : profileSettings.profile1.colors.projects
+            }
             mobileBarPosition={profileSettings.mobileBarPosition || 'top'}
             enableSecondProfile={profileSettings.enableSecondProfile}
             activeProfileId={activeProfileId}
@@ -1267,6 +1455,9 @@ export default function App() {
               profile2: profileSettings.profile2.name,
             }}
             onSwitchProfile={handleSwitchProfile}
+            onActiveContextChange={(ctx) => {
+              projectContextRef.current = ctx;
+            }}
             onNavigateToNote={(notePath) => {
               setActiveSuiteModule('notes');
               openNote(notePath, false);
@@ -1279,6 +1470,19 @@ export default function App() {
         </div>
       )}
 
+      {activeSuiteModule === 'rss' && enabledModules.rss !== false && (
+        <div className="flex-1 flex overflow-hidden">
+          <RssView
+            username={currentUser?.username || 'michael'}
+            accentColor={profileSettings.profile1.colors.rss || '#D97706'}
+            mobileNavPosition={profileSettings.mobileBarPosition || 'top'}
+            onActiveArticleChange={(article, readerData) => {
+              rssContextRef.current = { article, readerData: readerData || null };
+            }}
+          />
+        </div>
+      )}
+
       {activeSuiteModule === 'notes' && enabledModules.notes && (
         <div className="flex-1 flex overflow-hidden relative">
           {/* Mobile Left Screen Edge Swipe Indicator & Vault Toggle Button */}
@@ -1286,14 +1490,14 @@ export default function App() {
             onClick={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
             style={{
               backgroundColor: activeProfile.colors.notes,
-              ...(sidebarDragOffsetPx !== null
-                ? { left: `${Math.max(0, 280 + sidebarDragOffsetPx)}px`, transition: 'none' }
+              ...(notesDrawer.dragOffset !== null
+                ? { left: `${Math.max(0, 280 + notesDrawer.dragOffset)}px`, transition: 'none' }
                 : {}),
             }}
             className={`lg:hidden fixed top-1/2 -translate-y-1/2 z-40 h-14 flex items-center justify-center ${
-              sidebarDragOffsetPx !== null ? 'transition-none' : 'transition-all duration-200'
+              notesDrawer.dragOffset !== null ? 'transition-none' : 'transition-all duration-200'
             } active:scale-95 cursor-pointer shadow-lg text-white ${
-              sidebarDragOffsetPx !== null
+              notesDrawer.dragOffset !== null
                 ? 'w-6 rounded-r-xl'
                 : isMobileSidebarOpen
                 ? 'left-[280px] w-7 rounded-r-xl'
@@ -1332,7 +1536,7 @@ export default function App() {
             onDeleteFolder={handleDeleteFolder}
             onMoveNote={handleMoveNote}
             isOpen={isMobileSidebarOpen}
-            dragOffsetPx={sidebarDragOffsetPx}
+            dragOffsetPx={notesDrawer.dragOffset}
             onCloseMobile={() => setIsMobileSidebarOpen(false)}
             activeProfileName={profileSettings.enableSecondProfile ? activeProfile.name : undefined}
           />
@@ -1769,13 +1973,21 @@ export default function App() {
       {currentUser && (
         <ShareModal
           isOpen={isShareModalOpen}
-          onClose={() => setIsShareModalOpen(false)}
+          onClose={() => {
+            setIsShareModalOpen(false);
+            setCustomSharePayload(null);
+            setShareModalModeOverride(null);
+          }}
           mode={
-            activeSuiteModule === 'wiki'
+            shareModalModeOverride
+              ? shareModalModeOverride
+              : activeSuiteModule === 'wiki'
               ? 'wiki'
               : activeSuiteModule === 'recipes'
-                ? 'recipe'
-                : 'note'
+              ? 'recipe'
+              : activeSuiteModule === 'notes'
+              ? 'note'
+              : activeSuiteModule
           }
           accentColor={activeAccentColor}
           noteTitle={activeNoteTitle}
@@ -1784,6 +1996,32 @@ export default function App() {
           wikiArticle={activeWikiArticle}
           activeRecipe={shareModalRecipe || cookbookSnapshotRef.current?.selectedRecipe || null}
           recipesList={cookbookSnapshotRef.current?.recipes || []}
+          customTitle={customSharePayload?.title}
+          customContent={customSharePayload?.content}
+          pdfDocument={customSharePayload?.pdfDocument}
+          onPrintA4={
+            activeSuiteModule === 'notes' ||
+            activeSuiteModule === 'wiki' ||
+            activeSuiteModule === 'recipes' ||
+            activeSuiteModule === 'projects'
+              ? handlePrintA4
+              : undefined
+          }
+          printButtonLabel={
+            activeSuiteModule === 'notes'
+              ? 'Notiz als DIN A4 drucken'
+              : activeSuiteModule === 'wiki'
+              ? 'Artikel als DIN A4 drucken'
+              : activeSuiteModule === 'recipes'
+              ? cookbookSnapshotRef.current?.selectedRecipe
+                ? 'Rezept als DIN A4 drucken'
+                : 'Essensplan als DIN A4 drucken'
+              : activeSuiteModule === 'projects'
+              ? projectContextRef.current.task
+                ? 'Aufgabe als DIN A4 drucken'
+                : 'Projektplan als DIN A4 drucken'
+              : undefined
+          }
           currentUser={currentUser}
           allUsers={allUsers}
         />

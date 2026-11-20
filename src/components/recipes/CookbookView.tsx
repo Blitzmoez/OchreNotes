@@ -15,7 +15,6 @@ import {
   X,
   GripVertical,
   Search,
-  Share2,
   FolderPlus,
   Camera,
   Upload,
@@ -37,7 +36,9 @@ import {
   Lock,
   Globe,
   Mail,
-  Printer,
+  Flame,
+  Gift,
+  PackageOpen,
 } from 'lucide-react';
 import {
   User,
@@ -53,6 +54,7 @@ import {
   MealSectionConfig,
 } from '../../types';
 import { api } from '../../services/api';
+import { useSwipeDrawer } from '../../hooks/useSwipeDrawer';
 import {
   DEFAULT_MEAL_SECTIONS,
   DEFAULT_MEAL_UNITS,
@@ -61,7 +63,6 @@ import {
 } from '../../services/profileDefaults';
 import { getScaledIngredientDisplay } from '../../services/portionScaling';
 import { generateWeeklyShoppingList } from '../../services/shoppingListService';
-import { printRecipeA4 } from '../../services/printService';
 import {
   collectIngredientsFromRecipes,
   findIngredientDuplicates,
@@ -309,7 +310,16 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
   const [newIngredientName, setNewIngredientName] = useState<string>('');
   const [newIngredientUnit, setNewIngredientUnit] = useState<string>('Gramm');
   const [newIngredientExcludeShopping, setNewIngredientExcludeShopping] = useState<boolean>(false);
+  const [newIngredientKcal, setNewIngredientKcal] = useState<string>('');
   const [newIngredientError, setNewIngredientError] = useState<string | null>(null);
+  const [editingIngredient, setEditingIngredient] = useState<{
+    key: string;
+    displayName: string;
+    defaultUnit: string;
+    excludeFromShoppingList: boolean;
+    kcal: string;
+  } | null>(null);
+  const [editIngredientError, setEditIngredientError] = useState<string | null>(null);
 
   // Active filters & source selection
   const [catalogSource, setCatalogSource] = useState<string>('own');
@@ -319,8 +329,9 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
   const [newCategoryInput, setNewCategoryInput] = useState<string>('');
   const [isAddingCategory, setIsAddingCategory] = useState<boolean>(false);
 
-  // Selected Recipe Detail Overlay + Portions Scaling + Image Browser ("Bilder")
+  // Selected Recipe Detail Overlay + Delete Confirm + Portions Scaling + Image Browser ("Bilder")
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
+  const [confirmDeleteRecipe, setConfirmDeleteRecipe] = useState<Recipe | null>(null);
   const [viewPortions, setViewPortions] = useState<number>(2);
   const [recipeDetailTab, setRecipeDetailTab] = useState<'info' | 'ingredients' | 'steps' | 'media'>('info');
   const [uploadingMedia, setUploadingMedia] = useState<boolean>(false);
@@ -339,6 +350,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
   const [formCustomCategory, setFormCustomCategory] = useState<string>('');
   const [formPrepTime, setFormPrepTime] = useState<string>('25');
   const [formPortions, setFormPortions] = useState<string>('2');
+  const [formKcalPerPortion, setFormKcalPerPortion] = useState<string>('');
   const [formComponents, setFormComponents] = useState<
     { id: string; name: string; amount: string; unit: string }[]
   >([]);
@@ -361,16 +373,15 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
   // Shopping List check-off state persisted per user & week
   const [checkedShoppingKeys, setCheckedShoppingKeys] = useState<Record<string, boolean>>({});
 
-  // Presentation Mode ("Wochenshow") slideshow state
+  // Presentation Mode ("Wochenshow") slideshow & Lootbox state
   const [presentationAutoPlay, setPresentationAutoPlay] = useState<boolean>(false);
   const [activePresentationDayIdx, setActivePresentationDayIdx] = useState<number>(0);
+  const [openedLootboxDates, setOpenedLootboxDates] = useState<Record<string, boolean>>({});
   const presentationScrollRef = useRef<HTMLDivElement>(null);
   const presentationDayRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  // Mobile/Tablet Left Katalog Drawer & 1:1 Pixel-Launcher Finger Swipe + 20%-Retract Drag State
-  const [isLightCatalogOpen, setIsLightCatalogOpen] = useState<boolean>(false);
+  // Mobile/Tablet Left Katalog Drawer & Unified 1:1 Pixel-Launcher Finger Swipe + 20%-Retract Drag State
   const [isLightCatalogRetracted, setIsLightCatalogRetracted] = useState<boolean>(false);
-  const [catalogDragX, setCatalogDragX] = useState<number | null>(null);
   const [isMobileNavExpanded, setIsMobileNavExpanded] = useState<boolean>(false);
   const [weekOffset, setWeekOffset] = useState<number>(0);
 
@@ -394,16 +405,18 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
     pointerId: number;
   } | null>(null);
 
-  const catalogSwipeRef = useRef<{
-    startX: number;
-    startY: number;
-    initialX: number;
-    currentX: number;
-    lastX: number;
-    lastTime: number;
-    isTracking: boolean;
-    lockedAxis: 'horizontal' | 'vertical' | null;
-  } | null>(null);
+  const catalogDrawer = useSwipeDrawer({
+    direction: 'left',
+    width: 300,
+    edgeThreshold: 200,
+    globalWindow: true,
+    enabled: activeTab === 'calendar' || activeTab === 'cycle',
+    canStart: (e) => {
+      const target = e.target as HTMLElement | null;
+      if (pointerDragOriginRef.current || target?.closest('[data-grip-drag]')) return false;
+      return true;
+    },
+  });
   const [recentDropFlash, setRecentDropFlash] = useState<{
     slotKey: string;
     targetKey: string;
@@ -442,6 +455,11 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       setFormCustomCategory('');
       setFormPrepTime(String(editingRecipe.prepTimeMinutes || 25));
       setFormPortions(String(editingRecipe.portions || defaultCyclePortions || 2));
+      setFormKcalPerPortion(
+        editingRecipe.kcalPerPortion && editingRecipe.kcalPerPortion > 0
+          ? String(editingRecipe.kcalPerPortion)
+          : ''
+      );
       setFormComponents(initialComps);
       setFormMealTypes(editingRecipe.mealTypes || []);
       setBulkComponentsText(
@@ -461,6 +479,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       setFormCustomCategory('');
       setFormPrepTime('25');
       setFormPortions(String(defaultCyclePortions || 2));
+      setFormKcalPerPortion('');
       setFormComponents([]);
       setFormMealTypes([]);
       setBulkComponentsText('');
@@ -834,6 +853,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
         return;
       }
 
+      const parsedKcal = parseInt(newIngredientKcal, 10);
       const nextMeta: Record<string, IngredientMeta> = {
         ...ingredientMeta,
         [key]: {
@@ -841,6 +861,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
           displayName: trimmed,
           defaultUnit: newIngredientUnit || undefined,
           excludeFromShoppingList: newIngredientExcludeShopping,
+          kcal: Number.isFinite(parsedKcal) && parsedKcal > 0 ? parsedKcal : undefined,
           isCustom: true,
         },
       };
@@ -848,16 +869,70 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       setNewIngredientName('');
       setNewIngredientError(null);
       setNewIngredientExcludeShopping(false);
+      setNewIngredientKcal('');
       setShowAddIngredientModal(false);
     },
     [
       newIngredientName,
       newIngredientUnit,
       newIngredientExcludeShopping,
+      newIngredientKcal,
       collectedIngredients,
       ingredientMeta,
       persistCookbook,
     ]
+  );
+
+  const handleSaveEditedIngredient = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!editingIngredient) return;
+      const trimmed = editingIngredient.displayName.trim();
+      if (!trimmed) {
+        setEditIngredientError('Bitte einen Zutatennamen eingeben.');
+        return;
+      }
+      const oldKey = editingIngredient.key;
+      const newKey = normalizeIngredientKey(trimmed);
+      if (!newKey) {
+        setEditIngredientError('Bitte einen gültigen Zutatennamen eingeben.');
+        return;
+      }
+
+      const parsedKcal = parseInt(editingIngredient.kcal, 10);
+      const cleanKcal = Number.isFinite(parsedKcal) && parsedKcal > 0 ? parsedKcal : undefined;
+      const nextMeta: Record<string, IngredientMeta> = { ...ingredientMeta };
+      const prevEntry = nextMeta[oldKey];
+
+      if (newKey !== oldKey) {
+        const nextRecipes = mergeIngredientInRecipes(recipes, trimmed, oldKey);
+        nextMeta[newKey] = {
+          ...(prevEntry || {}),
+          key: newKey,
+          displayName: trimmed,
+          defaultUnit: editingIngredient.defaultUnit || undefined,
+          excludeFromShoppingList: editingIngredient.excludeFromShoppingList,
+          kcal: cleanKcal,
+          isCustom: prevEntry?.isCustom ?? true,
+        };
+        delete nextMeta[oldKey];
+        persistCookbook({ recipes: nextRecipes, ingredientMeta: nextMeta });
+      } else {
+        nextMeta[oldKey] = {
+          ...(prevEntry || {}),
+          key: oldKey,
+          displayName: trimmed,
+          defaultUnit: editingIngredient.defaultUnit || undefined,
+          excludeFromShoppingList: editingIngredient.excludeFromShoppingList,
+          kcal: cleanKcal,
+        };
+        persistCookbook({ ingredientMeta: nextMeta });
+      }
+
+      setEditingIngredient(null);
+      setEditIngredientError(null);
+    },
+    [editingIngredient, ingredientMeta, recipes, persistCookbook]
   );
 
   const handleDeleteUnusedIngredient = useCallback(
@@ -1369,126 +1444,33 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
       }
     };
 
+    const handleWindowBlur = () => {
+      pointerDragOriginRef.current = null;
+      setPointerDrag(null);
+      setDraggedRecipeId(null);
+      setIsLightCatalogRetracted(false);
+    };
+
     window.addEventListener('pointermove', handlePointerMove, { passive: false });
     window.addEventListener('pointerup', handlePointerEnd);
     window.addEventListener('pointercancel', handlePointerEnd);
+    window.addEventListener('blur', handleWindowBlur);
     return () => {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerEnd);
       window.removeEventListener('pointercancel', handlePointerEnd);
+      window.removeEventListener('blur', handleWindowBlur);
     };
   }, [handleAssignRecipeToDate, handleAssignRecipeToCycleDay, mealSections, triggerDropFlash, scheduleCatalogRestoreAfterDrop]);
 
   // Reset swipe/drawer transient states cleanly when switching cookbook tabs (prevents Zyklus lockout)
   useEffect(() => {
-    setCatalogDragX(null);
-    catalogSwipeRef.current = null;
-    setIsLightCatalogOpen(false);
+    pointerDragOriginRef.current = null;
+    setPointerDrag(null);
+    setDraggedRecipeId(null);
+    catalogDrawer.close();
     setIsLightCatalogRetracted(false);
   }, [activeTab]);
-
-  // Mobile/Tablet Pixel-Launcher 1:1 finger-tracked swipe for left Katalog Drawer
-  useEffect(() => {
-    if (!hasLibrary || (activeTab !== 'calendar' && activeTab !== 'cycle')) return;
-    const DRAWER_W = 300;
-    const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length !== 1 || pointerDragOriginRef.current?.active || pointerDragOriginRef.current) return;
-      const target = e.target as HTMLElement | null;
-      if (
-        target?.closest('[data-grip-drag]') ||
-        target?.closest('[data-no-swipe="true"]') ||
-        target?.closest('header') ||
-        target?.closest('input') ||
-        target?.closest('select') ||
-        target?.closest('textarea')
-      ) {
-        catalogSwipeRef.current = null;
-        return;
-      }
-      const x = e.touches[0].clientX;
-      const y = e.touches[0].clientY;
-      // Allow opening pull from the left ~70% of mobile/tablet viewport across Calendar & Zyklus
-      if (!isLightCatalogOpen && x > Math.max(220, window.innerWidth * 0.7)) {
-        catalogSwipeRef.current = null;
-        return;
-      }
-      const initialX = isLightCatalogOpen ? 0 : -DRAWER_W;
-      catalogSwipeRef.current = {
-        startX: x,
-        startY: y,
-        initialX,
-        currentX: initialX,
-        lastX: x,
-        lastTime: performance.now(),
-        isTracking: false,
-        lockedAxis: null,
-      };
-    };
-
-    const onTouchMove = (e: TouchEvent) => {
-      const s = catalogSwipeRef.current;
-      if (!s || e.touches.length !== 1) return;
-      if (pointerDragOriginRef.current?.active) {
-        catalogSwipeRef.current = null;
-        setCatalogDragX(null);
-        return;
-      }
-      const x = e.touches[0].clientX;
-      const y = e.touches[0].clientY;
-      const dx = x - s.startX;
-      const dy = y - s.startY;
-
-      if (!s.lockedAxis) {
-        if (Math.hypot(dx, dy) < 8) return;
-        const movingRight = dx > 0;
-        const validDirection = (!isLightCatalogOpen && movingRight) || (isLightCatalogOpen && !movingRight);
-        if (validDirection && Math.abs(dx) > Math.abs(dy) * 0.75) {
-          s.lockedAxis = 'horizontal';
-          s.isTracking = true;
-        } else {
-          s.lockedAxis = 'vertical';
-          catalogSwipeRef.current = null;
-          return;
-        }
-      }
-
-      if (s.lockedAxis === 'horizontal') {
-        if (e.cancelable) e.preventDefault();
-        const nextX = Math.max(-DRAWER_W, Math.min(0, s.initialX + dx));
-        s.lastX = x;
-        s.lastTime = performance.now();
-        s.currentX = nextX;
-        setCatalogDragX(nextX);
-      }
-    };
-
-    const onTouchEnd = (e: TouchEvent) => {
-      const s = catalogSwipeRef.current;
-      catalogSwipeRef.current = null;
-      if (!s || !s.isTracking) {
-        setCatalogDragX(null);
-        return;
-      }
-      const endX = e.changedTouches[0]?.clientX ?? s.lastX;
-      const dt = Math.max(16, performance.now() - s.lastTime);
-      const velocity = (endX - s.lastX) / dt;
-      const progress = (s.currentX + DRAWER_W) / DRAWER_W;
-      const shouldOpen = velocity > 0.3 || (velocity >= -0.3 && progress > 0.38);
-      setCatalogDragX(null);
-      setIsLightCatalogOpen(shouldOpen);
-    };
-
-    window.addEventListener('touchstart', onTouchStart, { passive: true });
-    window.addEventListener('touchmove', onTouchMove, { passive: false });
-    window.addEventListener('touchend', onTouchEnd, { passive: true });
-    window.addEventListener('touchcancel', onTouchEnd, { passive: true });
-    return () => {
-      window.removeEventListener('touchstart', onTouchStart);
-      window.removeEventListener('touchmove', onTouchMove);
-      window.removeEventListener('touchend', onTouchEnd);
-      window.removeEventListener('touchcancel', onTouchEnd);
-    };
-  }, [hasLibrary, activeTab, isLightCatalogOpen]);
 
   // Render reusable Katalog Sidebar Content (used both in Desktop Left Sidebar AND Mobile/Tablet Swipe Katalog Drawer)
   const renderCatalogSidebarContent = (isMobileSwipeDrawer: boolean) => (
@@ -1517,7 +1499,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
           {isMobileSwipeDrawer && (
             <button
               type="button"
-              onClick={() => setIsLightCatalogOpen(false)}
+              onClick={catalogDrawer.close}
               className="w-6 h-6 rounded-lg bg-neutral-100 dark:bg-neutral-800 text-neutral-500 flex items-center justify-center cursor-pointer"
               title="Katalog schließen"
             >
@@ -1966,10 +1948,10 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
           {(activeTab === 'calendar' || activeTab === 'cycle') && (
             <div className="lg:hidden">
               {/* Left-edge Handle Tab */}
-              {!isLightCatalogOpen && catalogDragX === null && (
+              {!catalogDrawer.isOpen && catalogDrawer.dragOffset === null && (
                 <button
                   type="button"
-                  onClick={() => setIsLightCatalogOpen(true)}
+                  onClick={catalogDrawer.open}
                   style={{ backgroundColor: accentColor }}
                   className="fixed left-0 top-1/2 -translate-y-1/2 z-30 h-20 w-7 rounded-r-xl text-white shadow-lg flex flex-col items-center justify-center gap-1 cursor-pointer active:scale-95 opacity-95 touch-pan-x"
                   title="Katalog reinziehen"
@@ -1981,14 +1963,14 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
               )}
 
               {/* Backdrop synced live with finger swipe & retracted drag */}
-              {((isLightCatalogOpen && !isLightCatalogRetracted) ||
-                (catalogDragX !== null && catalogDragX > -295)) && (
+              {((catalogDrawer.isOpen && !isLightCatalogRetracted) ||
+                (catalogDrawer.dragOffset !== null && catalogDrawer.dragOffset > -295)) && (
                 <div
-                  onClick={() => setIsLightCatalogOpen(false)}
+                  onClick={catalogDrawer.close}
                   style={
-                    catalogDragX !== null
+                    catalogDrawer.dragOffset !== null
                       ? {
-                          opacity: Math.max(0, Math.min(1, (catalogDragX + 300) / 300)),
+                          opacity: Math.max(0, Math.min(1, (catalogDrawer.dragOffset + 300) / 300)),
                           transition: 'none',
                         }
                       : undefined
@@ -1999,25 +1981,25 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 />
               )}
 
-              {/* Pull-out Katalog Panel: pure inline transform (no Tailwind v4 translate-x conflict) */}
+              {/* Pull-out Katalog Panel: pure inline transform */}
               <div
                 style={{
                   transform:
-                    catalogDragX !== null
-                      ? `translateX(${catalogDragX}px)`
-                      : !isLightCatalogOpen
+                    catalogDrawer.dragOffset !== null
+                      ? `translateX(${catalogDrawer.dragOffset}px)`
+                      : !catalogDrawer.isOpen
                       ? 'translateX(-100%)'
                       : isLightCatalogRetracted
                       ? 'translateX(-80%)'
                       : 'translateX(0)',
-                  transition: catalogDragX !== null ? 'none' : undefined,
+                  transition: catalogDrawer.isDragging ? 'none' : undefined,
                 }}
                 className={`fixed ${
                   mobileBarPosition === 'bottom' ? 'top-0 bottom-[3.75rem]' : 'top-14 bottom-0'
                 } left-0 z-40 w-[300px] bg-white dark:bg-[#1A1C1F] border-r border-[#E5E3DC] dark:border-[#2B2D31] shadow-2xl p-3 flex flex-col ${
-                  catalogDragX === null ? 'transition-transform duration-200 ease-out' : ''
+                  !catalogDrawer.isDragging ? 'transition-transform duration-200 cubic-bezier(0.22, 1, 0.36, 1)' : ''
                 } ${
-                  catalogDragX === null && (!isLightCatalogOpen || isLightCatalogRetracted)
+                  catalogDrawer.dragOffset === null && (!catalogDrawer.isOpen || isLightCatalogRetracted)
                     ? 'pointer-events-none'
                     : ''
                 }`}
@@ -2073,6 +2055,25 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       Zur aktuellen Woche
                     </button>
                   )}
+                  {(() => {
+                    const weeklyKcalPerPortion = calendarDays.reduce((sum, day) => {
+                      const ids = Object.values(day.slots || {}).flat();
+                      return (
+                        sum +
+                        ids.reduce((dSum, rid) => dSum + (getRecipeById(rid)?.kcalPerPortion || 0), 0)
+                      );
+                    }, 0);
+                    if (weeklyKcalPerPortion <= 0) return null;
+                    return (
+                      <span
+                        title="Summe aller geplanten kcal pro Portion in dieser Woche"
+                        className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full bg-amber-500/12 text-amber-800 dark:text-amber-300 tabular-nums"
+                      >
+                        <Flame className="w-3 h-3" style={{ color: accentColor }} />
+                        <span>Woche: {weeklyKcalPerPortion} kcal/P</span>
+                      </span>
+                    );
+                  })()}
                 </div>
 
                 {/* Library Switcher + Plan Switcher */}
@@ -2287,6 +2288,18 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                               )}
                             </div>
                           </div>
+                          {(() => {
+                            const dayKcal = Object.values(day.slots || {})
+                              .flat()
+                              .reduce((s, rid) => s + (getRecipeById(rid)?.kcalPerPortion || 0), 0);
+                            if (dayKcal <= 0) return null;
+                            return (
+                              <div className="flex items-center justify-end lg:justify-start gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300 tabular-nums">
+                                <Flame className="w-2.5 h-2.5 shrink-0" style={{ color: accentColor }} />
+                                <span>{dayKcal} kcal/P</span>
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
 
@@ -2398,6 +2411,11 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                         <span className="block truncate font-semibold text-neutral-800 dark:text-neutral-200">
                                           {r.title}
                                         </span>
+                                        {r.kcalPerPortion && r.kcalPerPortion > 0 && (
+                                          <span className="block text-[9px] text-neutral-400 tabular-nums">
+                                            {r.kcalPerPortion} kcal/P
+                                          </span>
+                                        )}
                                       </div>
                                       {!isViewingSharedPlan && (
                                         <button
@@ -2689,6 +2707,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                           <span className="truncate block font-semibold">{r.title}</span>
                                           <span className="text-[9px] text-neutral-400 tabular-nums">
                                             {dayPortions} Port.{isScaled ? ` (Basis: ${r.portions})` : ''}
+                                            {r.kcalPerPortion && r.kcalPerPortion > 0 ? ` · ${r.kcalPerPortion} kcal/P` : ''}
                                           </span>
                                         </div>
                                         {!isViewingSharedPlan && (
@@ -3080,22 +3099,10 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
 
                             <div className="pt-3 mt-3 border-t border-[#E5E3DC] dark:border-[#2B2D31] flex items-center justify-between text-xs text-neutral-400 gap-2">
                               <span className="tabular-nums truncate">
-                                {recipe.ingredients.length} Komponenten · {recipe.portions} Port.
+                                {recipe.ingredients.length} Komp. · {recipe.portions} Port.
+                                {recipe.kcalPerPortion && recipe.kcalPerPortion > 0 ? ` · ${recipe.kcalPerPortion} kcal` : ''}
                               </span>
                               <div className="flex items-center gap-1.5">
-                                {onShareRecipe && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      onShareRecipe(recipe);
-                                    }}
-                                    className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 cursor-pointer"
-                                    title="Rezept teilen"
-                                  >
-                                    <Share2 className="w-3.5 h-3.5" />
-                                  </button>
-                                )}
                                 {isOwn && (
                                   <>
                                     <button
@@ -3114,7 +3121,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                       type="button"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        handleDeleteOwnRecipe(recipe.id);
+                                        setConfirmDeleteRecipe(recipe);
                                       }}
                                       className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-500 cursor-pointer"
                                       title="Gericht löschen"
@@ -3286,6 +3293,11 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                       {ing.defaultUnit}
                                     </span>
                                   )}
+                                  {ing.kcal && ing.kcal > 0 && (
+                                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-amber-500/12 text-amber-800 dark:text-amber-300 tabular-nums shrink-0">
+                                      {ing.kcal} kcal
+                                    </span>
+                                  )}
                                   <span className="text-[11px] text-neutral-400 tabular-nums shrink-0">
                                     {ing.recipeCount === 0
                                       ? '0× verwendet · Manuell'
@@ -3303,7 +3315,24 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                                 </span>
                               </div>
 
-                              <div className="flex items-center gap-2 shrink-0">
+                              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditIngredientError(null);
+                                    setEditingIngredient({
+                                      key: ing.key,
+                                      displayName: ing.displayName,
+                                      defaultUnit: ing.defaultUnit || '',
+                                      excludeFromShoppingList: ing.excludeFromShoppingList,
+                                      kcal: ing.kcal && ing.kcal > 0 ? String(ing.kcal) : '',
+                                    });
+                                  }}
+                                  className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
+                                  title="Zutat bearbeiten"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                </button>
                                 {ing.recipeCount === 0 && (
                                   <button
                                     type="button"
@@ -3539,6 +3568,36 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
 
               <button
                 type="button"
+                onClick={() => {
+                  const allOpen = calendarDays.every((d) => !!openedLootboxDates[d.date]);
+                  if (allOpen) {
+                    setOpenedLootboxDates({});
+                  } else {
+                    const next: Record<string, boolean> = {};
+                    calendarDays.forEach((d) => {
+                      next[d.date] = true;
+                    });
+                    setOpenedLootboxDates(next);
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border border-black/10 dark:border-white/10 bg-white dark:bg-[#252320] text-neutral-700 dark:text-neutral-200 hover:opacity-90 cursor-pointer"
+                title="Alle Tage aufdecken oder wieder verpacken"
+              >
+                {calendarDays.every((d) => !!openedLootboxDates[d.date]) ? (
+                  <>
+                    <Gift className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                    <span className="hidden sm:inline">Alle verpacken</span>
+                  </>
+                ) : (
+                  <>
+                    <PackageOpen className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                    <span className="hidden sm:inline">Alle aufdecken</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setPresentationAutoPlay((p) => !p)}
                 style={presentationAutoPlay ? { backgroundColor: accentColor, color: '#fff' } : undefined}
                 className={`hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
@@ -3685,12 +3744,20 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                             }`}
                           >
                             {recipe.prepTimeMinutes} Min · {day.portions} Portionen
+                            {recipe.kcalPerPortion && recipe.kcalPerPortion > 0 ? ` · ${recipe.kcalPerPortion} kcal/P` : ''}
                           </p>
                         </div>
                       )}
                     </div>
                   </div>
                 );
+
+                const isDayLootboxOpen = !!openedLootboxDates[day.date];
+                const dayPlannedDishes = mealSections
+                  .flatMap((sec) => day.slots[sec.id] || [])
+                  .map((rid) => getRecipeById(rid))
+                  .filter((r): r is Recipe => !!r);
+                const dayShowKcal = dayPlannedDishes.reduce((s, r) => s + (r.kcalPerPortion || 0), 0);
 
                 return (
                   <section
@@ -3700,7 +3767,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                     }}
                     className="snap-start scroll-mt-4 space-y-3"
                   >
-                    <div className="flex items-baseline justify-between gap-2 px-1">
+                    <div className="flex items-center justify-between gap-2 px-1 flex-wrap">
                       <div className="flex items-baseline gap-2.5">
                         <span
                           style={{ backgroundColor: weekdayColor }}
@@ -3712,38 +3779,119 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                         <span className="text-sm font-semibold text-neutral-500 dark:text-neutral-400 tabular-nums">
                           {day.dayMonth}
                         </span>
+                        {isDayLootboxOpen && dayShowKcal > 0 && (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-800 dark:text-amber-300 text-xs font-bold tabular-nums">
+                            <Flame className="w-3 h-3" style={{ color: accentColor }} />
+                            <span>{dayShowKcal} kcal/P</span>
+                          </span>
+                        )}
                       </div>
-                      {day.isToday && (
-                        <span
-                          style={{ backgroundColor: accentColor }}
-                          className="px-3 py-0.5 rounded-full text-white text-xs font-bold shadow-xs"
-                        >
-                          Heute
-                        </span>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {day.isToday && (
+                          <span
+                            style={{ backgroundColor: accentColor }}
+                            className="px-3 py-0.5 rounded-full text-white text-xs font-bold shadow-xs"
+                          >
+                            Heute
+                          </span>
+                        )}
+                        {isDayLootboxOpen && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setOpenedLootboxDates((prev) => ({ ...prev, [day.date]: false }))
+                            }
+                            className="px-2.5 py-1 rounded-full bg-white/80 dark:bg-[#252320] border border-black/10 dark:border-white/10 text-[11px] font-semibold text-neutral-600 dark:text-neutral-300 hover:opacity-85 cursor-pointer flex items-center gap-1"
+                          >
+                            <Gift className="w-3 h-3" style={{ color: accentColor }} />
+                            <span>Wieder verpacken</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {mealSections.map((sec) => {
-                        const secLabelLower = sec.label.toLowerCase();
-                        const SlotIcon =
-                          secLabelLower.includes('abend') || secLabelLower.includes('nacht')
-                            ? Moon
-                            : secLabelLower.includes('mittag') || secLabelLower.includes('früh')
-                            ? Sun
-                            : Utensils;
-                        const slotIds = day.slots[sec.id] || [];
-                        const slotRecipes = slotIds
-                          .map((rid) => getRecipeById(rid))
-                          .filter((r): r is Recipe => !!r);
-                        if (slotRecipes.length === 0) {
-                          return renderSlotCard(sec.label, SlotIcon, null, `${sec.id}_empty`);
+                    {!isDayLootboxOpen ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setOpenedLootboxDates((prev) => ({ ...prev, [day.date]: true }))
                         }
-                        return slotRecipes.map((r, rIdx) =>
-                          renderSlotCard(sec.label, SlotIcon, r, `${sec.id}_${r.id}_${rIdx}`)
-                        );
-                      })}
-                    </div>
+                        style={{ borderColor: `${weekdayColor}66` }}
+                        className="w-full rounded-3xl border-2 border-dashed bg-white/85 dark:bg-[#211E1A]/90 p-6 sm:p-8 flex flex-col sm:flex-row items-center justify-between gap-5 shadow-md hover:shadow-xl hover:-translate-y-0.5 transition-all duration-300 cursor-pointer group text-left"
+                      >
+                        <div className="flex items-center gap-4 sm:gap-5">
+                          {/* Interactive Ochre Treasure Chest SVG */}
+                          <div
+                            style={{ backgroundColor: `${accentColor}1A` }}
+                            className="w-20 h-20 rounded-2xl flex items-center justify-center shrink-0 group-hover:scale-105 group-hover:rotate-[-2deg] transition-transform duration-300 shadow-inner"
+                          >
+                            <svg
+                              viewBox="0 0 64 64"
+                              className="w-14 h-14 drop-shadow-xs"
+                              aria-hidden="true"
+                            >
+                              <rect x="8" y="26" width="48" height="28" rx="6" fill={accentColor} />
+                              <path
+                                d="M8 24C8 15 16 10 32 10C48 10 56 15 56 24H8Z"
+                                fill="#E39B3B"
+                              />
+                              <rect x="8" y="24" width="48" height="5" fill="#6D4514" />
+                              <rect x="27" y="22" width="10" height="12" rx="3" fill="#FFF3D6" />
+                              <circle cx="32" cy="28" r="2" fill="#6D4514" />
+                            </svg>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span
+                              style={{ color: accentColor }}
+                              className="text-xs font-extrabold uppercase tracking-wider block"
+                            >
+                              Tages-Überraschung · {fullWeekday}
+                            </span>
+                            <h4 className="text-lg sm:text-xl font-extrabold text-neutral-900 dark:text-neutral-100">
+                              {dayPlannedDishes.length > 0
+                                ? `${dayPlannedDishes.length} ${
+                                    dayPlannedDishes.length === 1 ? 'Gericht verborgen' : 'Gerichte verborgen'
+                                  }`
+                                : 'Speiseplan-Truhe noch leer'}
+                            </h4>
+                            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                              Antippen zum Aufdecken — was wird heute serviert?
+                            </p>
+                          </div>
+                        </div>
+
+                        <div
+                          style={{ backgroundColor: accentColor }}
+                          className="px-5 py-2.5 rounded-full text-white text-xs font-extrabold shadow-sm flex items-center gap-2 shrink-0 group-hover:scale-105 transition-transform"
+                        >
+                          <PackageOpen className="w-4 h-4" />
+                          <span>Truhe öffnen</span>
+                        </div>
+                      </button>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in zoom-in-95 fade-in duration-300">
+                        {mealSections.map((sec) => {
+                          const secLabelLower = sec.label.toLowerCase();
+                          const SlotIcon =
+                            secLabelLower.includes('abend') || secLabelLower.includes('nacht')
+                              ? Moon
+                              : secLabelLower.includes('mittag') || secLabelLower.includes('früh')
+                              ? Sun
+                              : Utensils;
+                          const slotIds = day.slots[sec.id] || [];
+                          const slotRecipes = slotIds
+                            .map((rid) => getRecipeById(rid))
+                            .filter((r): r is Recipe => !!r);
+                          if (slotRecipes.length === 0) {
+                            return renderSlotCard(sec.label, SlotIcon, null, `${sec.id}_empty`);
+                          }
+                          return slotRecipes.map((r, rIdx) =>
+                            renderSlotCard(sec.label, SlotIcon, r, `${sec.id}_${r.id}_${rIdx}`)
+                          );
+                        })}
+                      </div>
+                    )}
                   </section>
                 );
               })}
@@ -4246,6 +4394,13 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                     </button>
                   </div>
 
+                  {selectedRecipe.kcalPerPortion && selectedRecipe.kcalPerPortion > 0 && (
+                    <span className="flex items-center gap-1 font-semibold text-amber-700 dark:text-amber-300">
+                      <Flame className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                      {selectedRecipe.kcalPerPortion} kcal / Port.
+                    </span>
+                  )}
+
                   {viewPortions !== selectedRecipe.portions && (
                     <span
                       className="text-[10px] font-semibold px-2 py-0.5 rounded-md"
@@ -4257,35 +4412,8 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 </div>
               </div>
 
-              {/* Top-Right Controls: Als A4 PDF, Teilen, Bearbeiten, Schließen */}
+              {/* Top-Right Controls: Bearbeiten, Schließen (Teilen/PDF über Profilmenü) */}
               <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={() =>
-                    printRecipeA4(
-                      selectedRecipe,
-                      viewPortions,
-                      selectedRecipe.sharedFrom || currentUser.displayName,
-                      accentColor
-                    )
-                  }
-                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white text-xs font-semibold cursor-pointer"
-                  title="Rezept als A4 PDF drucken"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Als A4 PDF</span>
-                </button>
-
-                {onShareRecipe && (
-                  <button
-                    type="button"
-                    onClick={() => onShareRecipe(selectedRecipe)}
-                    className="p-1.5 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
-                    title="Dieses Rezept teilen"
-                  >
-                    <Share2 className="w-4 h-4" />
-                  </button>
-                )}
                 {selectedIsOwn && (
                   <button
                     type="button"
@@ -4705,20 +4833,34 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                 )}
               </div>
 
-              <div>
-                <label className="font-semibold block mb-1">Standard-Einheit (Vorauswahl in Rezepten)</label>
-                <select
-                  value={newIngredientUnit}
-                  onChange={(e) => setNewIngredientUnit(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden cursor-pointer"
-                >
-                  <option value="">Keine Vorgabe</option>
-                  {availableUnits.map((u) => (
-                    <option key={u} value={u}>
-                      {u}
-                    </option>
-                  ))}
-                </select>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">Standard-Einheit (Vorauswahl)</label>
+                  <select
+                    value={newIngredientUnit}
+                    onChange={(e) => setNewIngredientUnit(e.target.value)}
+                    className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden cursor-pointer"
+                  >
+                    <option value="">Keine Vorgabe</option>
+                    {availableUnits.map((u) => (
+                      <option key={u} value={u}>
+                        {u}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="font-semibold block mb-1">Nährwert kcal (optional)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={newIngredientKcal}
+                    onChange={(e) => setNewIngredientKcal(e.target.value)}
+                    placeholder="z. B. 130"
+                    className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden tabular-nums"
+                  />
+                </div>
               </div>
 
               <div className="p-3 rounded-2xl border border-[#E5E3DC] dark:border-[#2B2D31] bg-[#F4F3EF]/80 dark:bg-[#25272C] flex items-center justify-between gap-3">
@@ -4760,6 +4902,136 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                   className="px-4 py-2 rounded-full text-white font-bold shadow-xs cursor-pointer"
                 >
                   Zutat speichern
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL: ZUTAT BEARBEITEN (KATALOG -> ZUTATEN)            */}
+      {/* ======================================================== */}
+      {editingIngredient && (
+        <div
+          onClick={() => setEditingIngredient(null)}
+          className="fixed inset-0 bg-black/60 z-[148] flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in duration-150"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-[#1E2024] w-full max-w-md rounded-3xl p-5 shadow-2xl border border-[#E5E3DC] dark:border-[#2B2D31] space-y-4 animate-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-[#E5E3DC] dark:border-[#2B2D31]">
+              <h3 className="font-bold text-sm text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
+                <Edit3 className="w-4 h-4" style={{ color: accentColor }} />
+                <span>Zutat bearbeiten</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingIngredient(null)}
+                className="text-neutral-400 hover:text-neutral-700 cursor-pointer"
+                aria-label="Schließen"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditedIngredient} className="space-y-3.5 text-xs">
+              <div>
+                <label className="font-semibold block mb-1">Name der Zutat</label>
+                <input
+                  type="text"
+                  autoFocus
+                  value={editingIngredient.displayName}
+                  onChange={(e) => {
+                    setEditingIngredient({ ...editingIngredient, displayName: e.target.value });
+                    setEditIngredientError(null);
+                  }}
+                  className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden"
+                />
+                {editIngredientError && (
+                  <p className="text-[11px] text-red-500 mt-1 font-medium">{editIngredientError}</p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">Standard-Einheit</label>
+                  <select
+                    value={editingIngredient.defaultUnit}
+                    onChange={(e) =>
+                      setEditingIngredient({ ...editingIngredient, defaultUnit: e.target.value })
+                    }
+                    className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden cursor-pointer"
+                  >
+                    <option value="">Keine Vorgabe</option>
+                    {availableUnits.map((u) => (
+                      <option key={u} value={u}>
+                        {u}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="font-semibold block mb-1">Nährwert kcal (optional)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={editingIngredient.kcal}
+                    onChange={(e) =>
+                      setEditingIngredient({ ...editingIngredient, kcal: e.target.value })
+                    }
+                    placeholder="z. B. 130"
+                    className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden tabular-nums"
+                  />
+                </div>
+              </div>
+
+              <div className="p-3 rounded-2xl border border-[#E5E3DC] dark:border-[#2B2D31] bg-[#F4F3EF]/80 dark:bg-[#25272C] flex items-center justify-between gap-3">
+                <div>
+                  <span className="font-bold text-neutral-900 dark:text-neutral-100 block">
+                    Auf Einkaufsliste aufnehmen
+                  </span>
+                  <span className="text-[11px] text-neutral-500 block">
+                    Steuert den wöchentlichen Verbrauchs-Forecast.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={!editingIngredient.excludeFromShoppingList}
+                  onClick={() =>
+                    setEditingIngredient({
+                      ...editingIngredient,
+                      excludeFromShoppingList: !editingIngredient.excludeFromShoppingList,
+                    })
+                  }
+                  style={!editingIngredient.excludeFromShoppingList ? { backgroundColor: accentColor } : undefined}
+                  className={`w-11 h-6 rounded-full transition-colors flex items-center px-1 cursor-pointer shrink-0 ${
+                    !editingIngredient.excludeFromShoppingList
+                      ? 'justify-end'
+                      : 'bg-neutral-300 dark:bg-neutral-700 justify-start'
+                  }`}
+                >
+                  <span className="w-4 h-4 rounded-full bg-white shadow-xs" />
+                </button>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingIngredient(null)}
+                  className="px-3.5 py-2 rounded-full border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-600 dark:text-neutral-400 cursor-pointer"
+                >
+                  Abbrechen
+                </button>
+                <button
+                  type="submit"
+                  style={{ backgroundColor: accentColor }}
+                  className="px-4 py-2 rounded-full text-white font-bold shadow-xs cursor-pointer"
+                >
+                  Änderungen speichern
                 </button>
               </div>
             </form>
@@ -4883,12 +5155,14 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       });
 
                 const recId = editingRecipe ? editingRecipe.id : `r_${Date.now()}`;
+                const parsedKcal = parseInt(formKcalPerPortion, 10);
                 const newRec: Recipe = {
                   id: recId,
                   title: titleVal,
                   category: chosenCat || 'Mittagessen',
                   prepTimeMinutes: Math.max(1, parseInt(formPrepTime, 10) || 20),
                   portions: Math.max(1, parseInt(formPortions, 10) || 2),
+                  kcalPerPortion: Number.isFinite(parsedKcal) && parsedKcal > 0 ? parsedKcal : undefined,
                   description: formDescription.trim(),
                   instructions: formInstructions.split('\n').filter((l: string) => l.trim()),
                   ingredients: parsedComponents,
@@ -5286,7 +5560,7 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                       />
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-3 gap-2.5">
                       <div>
                         <label className="font-semibold block mb-1">Dauer (Min)</label>
                         <input
@@ -5304,6 +5578,17 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
                           min={1}
                           value={formPortions}
                           onChange={(e) => setFormPortions(e.target.value)}
+                          className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden tabular-nums"
+                        />
+                      </div>
+                      <div>
+                        <label className="font-semibold block mb-1">kcal / Portion</label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={formKcalPerPortion}
+                          onChange={(e) => setFormKcalPerPortion(e.target.value)}
+                          placeholder="opt."
                           className="w-full p-2.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] outline-hidden tabular-nums"
                         />
                       </div>
@@ -5721,6 +6006,52 @@ export const CookbookView: React.FC<CookbookViewProps> = ({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Confirm Delete Recipe Modal */}
+      {confirmDeleteRecipe && (
+        <div
+          onClick={() => setConfirmDeleteRecipe(null)}
+          className="fixed inset-0 z-[155] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-[#1E2024] w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-[#E5E3DC] dark:border-[#2B2D31] space-y-4 animate-in zoom-in-95 duration-150 text-xs"
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-red-500/15 text-red-500 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                  Gericht wirklich löschen?
+                </h3>
+                <p className="text-neutral-500 leading-relaxed">
+                  Möchtest du <strong className="text-neutral-900 dark:text-neutral-100">„{confirmDeleteRecipe.title}“</strong> wirklich dauerhaft aus deinem Katalog entfernen?
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteRecipe(null)}
+                className="px-3.5 py-2 rounded-full border border-[#E5E3DC] dark:border-[#2F3136] text-neutral-600 dark:text-neutral-300 font-semibold cursor-pointer"
+              >
+                Abbrechen
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleDeleteOwnRecipe(confirmDeleteRecipe.id);
+                  setConfirmDeleteRecipe(null);
+                }}
+                className="px-4 py-2 rounded-full bg-red-600 hover:bg-red-700 text-white font-bold shadow-xs cursor-pointer"
+              >
+                Endgültig löschen
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

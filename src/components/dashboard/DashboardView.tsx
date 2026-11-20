@@ -29,6 +29,8 @@ import {
   ArrowRight,
   Cpu,
   Briefcase,
+  Rss,
+  Pencil,
 } from 'lucide-react';
 import {
   User,
@@ -52,6 +54,7 @@ import {
   SystemHealth,
   ProjectItem,
   SmarthomeState,
+  RssSource,
 } from '../../types';
 import { api } from '../../services/api';
 import { generateWeeklyShoppingList } from '../../services/shoppingListService';
@@ -183,8 +186,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [smarthomeState, setSmarthomeState] = useState<SmarthomeState | null>(null);
+  const [rssSources, setRssSources] = useState<RssSource[]>([]);
   const [pulseTiles, setPulseTiles] = useState<Record<string, number>>({});
   const [globalSearch, setGlobalSearch] = useState('');
+  const [isEditMode, setIsEditMode] = useState(false);
 
   const [financeTx, setFinanceTx] = useState<FinanceTransaction[]>(() => {
     try {
@@ -207,7 +212,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const loadDashboardData = useCallback(async () => {
     setLoading(true);
     try {
-      const [notesRes, tasksRes, wikiRes, cookbookRes, healthRes, projectsRes, smarthomeRes] = await Promise.all([
+      const [notesRes, tasksRes, wikiRes, cookbookRes, healthRes, projectsRes, smarthomeRes, rssRes] = await Promise.all([
         enabledModules.notes !== false
           ? api.fetchNotes(currentUser.username, activeProfileId).catch(() => [] as NoteMetadata[])
           : Promise.resolve([] as NoteMetadata[]),
@@ -227,6 +232,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         enabledModules.smarthome
           ? api.fetchSmarthomeState(currentUser.username).catch(() => null)
           : Promise.resolve(null),
+        enabledModules.rss !== false
+          ? api.fetchRssSources(currentUser.username).catch(() => [] as RssSource[])
+          : Promise.resolve([] as RssSource[]),
       ]);
 
       setNotes(notesRes);
@@ -234,6 +242,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       setWikiArticles(wikiRes);
       setProjects(projectsRes);
       setSmarthomeState(smarthomeRes);
+      setRssSources(rssRes);
       if (healthRes) setSystemHealth(healthRes);
 
       if (cookbookRes) {
@@ -265,7 +274,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     } finally {
       setLoading(false);
     }
-  }, [currentUser.username, activeProfileId, enabledModules.notes, enabledModules.wiki, enabledModules.recipes, enabledModules.projects, enabledModules.smarthome]);
+  }, [currentUser.username, activeProfileId, enabledModules.notes, enabledModules.wiki, enabledModules.recipes, enabledModules.projects, enabledModules.smarthome, enabledModules.rss]);
 
   useEffect(() => {
     loadDashboardData();
@@ -624,6 +633,28 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         });
     }
 
+    if (enabledModules.rss !== false && rssSources.length > 0) {
+      rssSources
+        .filter(
+          (src) =>
+            src.title.toLowerCase().includes(q) ||
+            (src.category || '').toLowerCase().includes(q) ||
+            src.url.toLowerCase().includes(q)
+        )
+        .slice(0, 4)
+        .forEach((src) =>
+          results.push({
+            id: `rss_${src.id}`,
+            module: 'rss',
+            moduleLabel: 'RSS Feed',
+            color: accentColors.rss || '#D97706',
+            title: src.title,
+            subtitle: `${src.category || 'Feed'} · ${src.enabled === false ? 'Pausiert' : 'Aktiv'}`,
+            onClick: () => onNavigateToModule('rss'),
+          })
+        );
+    }
+
     return results.slice(0, 18);
   }, [
     globalSearch,
@@ -636,6 +667,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     financeTx,
     projects,
     smarthomeState,
+    rssSources,
     accentColors,
     onNavigateToModule,
   ]);
@@ -1509,20 +1541,33 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <span className="truncate">Finanzen</span>
                   </button>
                 )}
+
+                {enabledModules.rss !== false && (
+                  <button
+                    type="button"
+                    onClick={() => onNavigateToModule('rss')}
+                    className="min-h-[44px] p-2.5 rounded-2xl bg-[#FBFBFA] dark:bg-[#25272C] border border-[#E5E3DC] dark:border-[#32353B] hover:border-neutral-400 flex items-center gap-2 text-xs font-semibold cursor-pointer active:scale-[0.98] transition-all"
+                  >
+                    <Rss className="w-4 h-4 shrink-0" style={{ color: accentColors.rss || '#D97706' }} />
+                    <span className="truncate">RSS Feed</span>
+                  </button>
+                )}
               </div>
             </div>
 
             <div className="pt-3 mt-3 border-t border-[#E5E3DC]/70 dark:border-[#2B2D31] flex items-center justify-between text-xs">
-              <span className="text-[11px] text-neutral-400">Kacheln konfigurierbar</span>
-              <button
-                type="button"
-                onClick={onOpenDashboardSettings}
-                style={{ color: dashboardAccent }}
-                className="font-bold flex items-center gap-1 hover:underline cursor-pointer"
-              >
-                <span>Anpassen</span>
-                <ArrowUpRight className="w-3.5 h-3.5" />
-              </button>
+              <span className="text-[11px] text-neutral-400">Schnellzugriff auf Module</span>
+              {isEditMode && (
+                <button
+                  type="button"
+                  onClick={onOpenDashboardSettings}
+                  style={{ color: dashboardAccent }}
+                  className="font-bold flex items-center gap-1 hover:underline cursor-pointer"
+                >
+                  <span>Kacheln bearbeiten</span>
+                  <ArrowUpRight className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
           </div>
         );
@@ -1693,6 +1738,83 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         );
       }
 
+      case 'rss_overview': {
+        const modColor = accentColors.rss || '#D97706';
+        const activeSources = rssSources.filter((s) => s.enabled !== false);
+        const categories = Array.from(new Set(activeSources.map((s) => s.category || 'Allgemein')));
+        return (
+          <div
+            key={widgetId}
+            className="snap-start min-h-[268px] flex flex-col justify-between p-5 rounded-3xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-xs"
+          >
+            <div className="space-y-3.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    style={{ backgroundColor: modColor }}
+                    className="w-10 h-10 rounded-2xl text-white flex items-center justify-center shadow-xs shrink-0"
+                  >
+                    <Rss className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100 leading-tight">
+                      RSS Feed / News
+                    </h3>
+                    <span className="text-[11px] text-neutral-500">Live-Quellen ohne Speicherung</span>
+                  </div>
+                </div>
+                <span className="text-2xl font-extrabold tabular-nums" style={{ color: modColor }}>
+                  {activeSources.length}
+                </span>
+              </div>
+
+              {activeSources.length === 0 ? (
+                <div className="py-6 text-center rounded-2xl bg-[#F4F3EF]/70 dark:bg-[#25272C] text-xs text-neutral-500">
+                  Noch keine aktiven RSS-Quellen hinterlegt.
+                </div>
+              ) : (
+                <div className="space-y-1.5 max-h-44 overflow-y-auto pr-0.5">
+                  {activeSources.slice(0, 4).map((src) => (
+                    <button
+                      key={src.id}
+                      type="button"
+                      onClick={() => onNavigateToModule('rss')}
+                      className="w-full p-2 rounded-xl bg-[#FBFBFA] dark:bg-[#25272C] border border-[#E5E3DC]/80 dark:border-[#32353B] hover:border-neutral-400 flex items-center justify-between gap-2 text-left cursor-pointer transition-colors"
+                    >
+                      <div className="min-w-0">
+                        <span className="text-xs font-semibold text-neutral-900 dark:text-neutral-100 block truncate">
+                          {src.title}
+                        </span>
+                        <span className="text-[10px] text-neutral-400 block truncate">
+                          {src.category || 'Feed'}
+                          {src.hidePaid ? ' · Bezahlschranken gefiltert' : ''}
+                        </span>
+                      </div>
+                      <ArrowUpRight className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 mt-3 border-t border-[#E5E3DC]/70 dark:border-[#2B2D31] flex items-center justify-between text-xs">
+              <span className="text-[11px] text-neutral-400 truncate pr-2">
+                {categories.length > 0 ? `${categories.slice(0, 2).join(', ')}` : 'Reader-Modus bereit'}
+              </span>
+              <button
+                type="button"
+                onClick={() => onNavigateToModule('rss')}
+                style={{ color: modColor }}
+                className="font-bold flex items-center gap-1 hover:underline cursor-pointer shrink-0"
+              >
+                <span>Zu RSS Feed</span>
+                <ArrowUpRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        );
+      }
+
       default:
         return null;
     }
@@ -1701,8 +1823,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   return (
     <div className="flex-1 h-full overflow-y-auto snap-y snap-proximity scroll-smooth bg-[#FAF9F5] dark:bg-[#141517] px-3.5 py-4 md:p-6">
       <div className="max-w-7xl mx-auto space-y-4 md:space-y-6 pb-16 lg:pb-8">
-        {/* Compact Dashboard Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 sm:p-5 rounded-3xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-2xs">
+        {/* Compact Dashboard Header with subtle top-right Pencil Edit-Mode Toggle */}
+        <div className="flex items-center justify-between gap-3 p-4 sm:p-5 rounded-3xl bg-white dark:bg-[#1E2024] border border-[#E5E3DC] dark:border-[#2B2D31] shadow-2xs">
           <div className="flex items-center gap-3 min-w-0">
             <div
               style={{ backgroundColor: dashboardAccent }}
@@ -1721,12 +1843,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0 self-start sm:self-center">
             <button
               type="button"
               onClick={() => setRefreshTick((t) => t + 1)}
-              className="min-h-[40px] px-3 py-1.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] hover:border-neutral-400 text-xs font-semibold flex items-center gap-1.5 cursor-pointer active:scale-95 transition-all"
+              className="min-w-[40px] min-h-[40px] px-2.5 sm:px-3 py-1.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] hover:border-neutral-400 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all"
               title="Daten neu laden"
+              aria-label="Daten neu laden"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
               <span className="hidden sm:inline">Aktualisieren</span>
@@ -1734,15 +1857,51 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
             <button
               type="button"
-              onClick={onOpenDashboardSettings}
-              style={{ backgroundColor: dashboardAccent }}
-              className="min-h-[40px] px-3.5 py-1.5 rounded-xl text-white text-xs font-bold flex items-center gap-1.5 shadow-xs hover:opacity-95 cursor-pointer active:scale-95 transition-all"
+              onClick={() => setIsEditMode((v) => !v)}
+              style={isEditMode ? { backgroundColor: dashboardAccent, color: '#FFFFFF', borderColor: dashboardAccent } : undefined}
+              className={`min-w-[40px] min-h-[40px] p-2 rounded-xl border transition-all cursor-pointer active:scale-95 flex items-center justify-center ${
+                isEditMode
+                  ? 'shadow-xs'
+                  : 'border-[#E5E3DC] dark:border-[#2F3136] bg-[#F4F3EF] dark:bg-[#25272C] text-neutral-600 dark:text-neutral-300 hover:border-neutral-400'
+              }`}
+              title={isEditMode ? 'Edit-Mode beenden' : 'Kacheln bearbeiten (Edit-Mode)'}
+              aria-label={isEditMode ? 'Edit-Mode beenden' : 'Kacheln bearbeiten'}
             >
-              <SlidersHorizontal className="w-3.5 h-3.5" />
-              <span>Kacheln anpassen</span>
+              {isEditMode ? <Check className="w-4 h-4" /> : <Pencil className="w-4 h-4" />}
             </button>
           </div>
         </div>
+
+        {/* Edit Mode Contextual Bar */}
+        {isEditMode && (
+          <div
+            style={{ borderColor: `${dashboardAccent}55` }}
+            className="p-3.5 rounded-2xl border-2 bg-white dark:bg-[#1E2024] flex flex-wrap items-center justify-between gap-2.5 shadow-xs"
+          >
+            <div className="flex items-center gap-2 text-xs font-semibold text-neutral-800 dark:text-neutral-200">
+              <Pencil className="w-3.5 h-3.5 shrink-0" style={{ color: dashboardAccent }} />
+              <span>Edit-Mode aktiv — Dashboard-Kacheln verwalten oder hinzufügen</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onOpenDashboardSettings}
+                style={{ backgroundColor: dashboardAccent }}
+                className="min-h-[38px] px-3.5 py-1.5 rounded-xl text-white text-xs font-bold flex items-center gap-1.5 shadow-xs hover:opacity-95 cursor-pointer active:scale-95 transition-all"
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                <span>Kacheln erstellen &amp; wählen</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsEditMode(false)}
+                className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[#E5E3DC] dark:border-[#2F3136] text-xs font-semibold text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
+              >
+                Fertig
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Global Multi-Module Search Bar */}
         <div className="relative">

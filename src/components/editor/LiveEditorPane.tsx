@@ -267,9 +267,10 @@ interface MarkdownLineRowProps {
   ytDisplayMode: YouTubeDisplayMode | undefined;
   imgDisplayMode: 'embed' | 'link' | undefined;
   onRegisterTextarea: (idx: number, el: HTMLTextAreaElement | null) => void;
-  onFocusLine: (idx: number, cursorPos?: number) => void;
+  onFocusLine: (idx: number, cursorStart?: number, cursorEnd?: number) => void;
   onBlurLine: (idx: number) => void;
   onUpdateLine: (idx: number, newText: string) => void;
+  onSplitLine: (idx: number, beforeCursor: string, afterCursor: string) => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>, idx: number) => void;
   onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>, idx: number) => void;
   onToggleTaskCheckbox: (idx: number, completed: boolean) => void;
@@ -299,6 +300,7 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
     onFocusLine,
     onBlurLine,
     onUpdateLine,
+    onSplitLine,
     onKeyDown,
     onPaste,
     onToggleTaskCheckbox,
@@ -314,13 +316,23 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
   }) => {
     const isComposingRef = useRef(false);
     const localInputRef = useRef<HTMLTextAreaElement | null>(null);
+    const renderedDivRef = useRef<HTMLDivElement | null>(null);
     const [localDraft, setLocalDraft] = useState(rawLine);
+    const lastEmittedRawRef = useRef<string>(rawLine);
 
     useEffect(() => {
-      if (!isComposingRef.current) {
+      if (rawLine !== lastEmittedRawRef.current) {
+        lastEmittedRawRef.current = rawLine;
         setLocalDraft(rawLine);
+        isComposingRef.current = false;
+      } else if (!isComposingRef.current) {
+        const isFocusedHere =
+          localInputRef.current !== null && document.activeElement === localInputRef.current;
+        if (!isActive || !isFocusedHere) {
+          setLocalDraft(rawLine);
+        }
       }
-    }, [rawLine]);
+    }, [rawLine, isActive]);
 
     useLayoutEffect(() => {
       if (isActive && localInputRef.current) {
@@ -472,8 +484,42 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
       });
     };
 
+    const promoteSingleLineSelection = () => {
+      if (isReadOnly || isActive) return false;
+      const divEl = renderedDivRef.current;
+      const sel = window.getSelection();
+      if (!divEl || !sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+      if (!sel.anchorNode || !sel.focusNode) return false;
+      if (!divEl.contains(sel.anchorNode) || !divEl.contains(sel.focusNode)) {
+        // Multi-line selection across rows: preserve native selection for copying
+        return false;
+      }
+      try {
+        const range = sel.getRangeAt(0);
+        const preStart = document.createRange();
+        preStart.selectNodeContents(divEl);
+        preStart.setEnd(range.startContainer, range.startOffset);
+        const preEnd = document.createRange();
+        preEnd.selectNodeContents(divEl);
+        preEnd.setEnd(range.endContainer, range.endOffset);
+        const rawStart = Math.max(0, Math.min(rawLine.length, rawPrefixLen + preStart.toString().length));
+        const rawEnd = Math.max(rawStart, Math.min(rawLine.length, rawPrefixLen + preEnd.toString().length));
+        if (rawEnd > rawStart) {
+          sel.removeAllRanges();
+          onFocusLine(idx, rawStart, rawEnd);
+          return true;
+        }
+      } catch {}
+      return false;
+    };
+
     return (
-      <div data-line-row="true" data-line-idx={idx} className="group relative flex flex-col py-[2px]">
+      <div
+        data-line-row="true"
+        data-line-idx={idx}
+        style={{ scrollMarginTop: '3.75rem' }}
+        className="group relative flex flex-col py-[2px]"
+      >
         <div className="flex items-start gap-2">
           {/* Task Checkbox & Calendar Due Date Button */}
           {isTask && (
@@ -515,19 +561,47 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
               onCompositionEnd={(e) => {
                 isComposingRef.current = false;
                 const val = e.currentTarget.value;
+                if (val.includes('\n')) {
+                  const nlIdx = val.indexOf('\n');
+                  const beforePart = val.slice(0, nlIdx);
+                  const afterPart = val.slice(nlIdx + 1).replace(/\r/g, '');
+                  lastEmittedRawRef.current = beforePart;
+                  setLocalDraft(beforePart);
+                  onSplitLine(idx, beforePart, afterPart);
+                  return;
+                }
+                lastEmittedRawRef.current = val;
                 setLocalDraft(val);
                 onUpdateLine(idx, val);
               }}
               onChange={(e) => {
                 const val = e.target.value;
+                const nativeComposing = Boolean((e.nativeEvent as any)?.isComposing);
+                if (!nativeComposing) isComposingRef.current = false;
+                if (val.includes('\n') && !nativeComposing) {
+                  const nlIdx = val.indexOf('\n');
+                  const beforePart = val.slice(0, nlIdx);
+                  const afterPart = val.slice(nlIdx + 1).replace(/\r/g, '');
+                  lastEmittedRawRef.current = beforePart;
+                  setLocalDraft(beforePart);
+                  onSplitLine(idx, beforePart, afterPart);
+                  return;
+                }
                 setLocalDraft(val);
                 resizeTextarea(e.currentTarget);
                 if (!isComposingRef.current) {
+                  lastEmittedRawRef.current = val;
                   onUpdateLine(idx, val);
                 }
               }}
-              onFocus={() => onFocusLine(idx)}
-              onBlur={() => onBlurLine(idx)}
+              onFocus={() => {
+                isComposingRef.current = false;
+                onFocusLine(idx);
+              }}
+              onBlur={() => {
+                isComposingRef.current = false;
+                onBlurLine(idx);
+              }}
               onKeyDown={(e) => onKeyDown(e, idx)}
               onPaste={(e) => onPaste(e, idx)}
               readOnly={isReadOnly}
@@ -543,9 +617,33 @@ const MarkdownLineRow: React.FC<MarkdownLineRowProps> = React.memo(
             />
           ) : (
             <div
+              ref={renderedDivRef}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                if (isReadOnly) return;
+                window.setTimeout(() => {
+                  if (!promoteSingleLineSelection()) {
+                    const offset = getClickCharOffset(e, cleanText, rawPrefixLen);
+                    onFocusLine(idx, offset);
+                  }
+                }, 0);
+              }}
+              onMouseUp={() => {
+                if (isReadOnly) return;
+                window.setTimeout(() => {
+                  promoteSingleLineSelection();
+                }, 0);
+              }}
+              onTouchEnd={() => {
+                if (isReadOnly) return;
+                window.setTimeout(() => {
+                  promoteSingleLineSelection();
+                }, 40);
+              }}
               onClick={(e) => {
                 e.stopPropagation();
                 if (isReadOnly) return;
+                if (promoteSingleLineSelection()) return;
                 const sel = window.getSelection();
                 if (sel && !sel.isCollapsed && sel.toString().length > 0) {
                   return;
@@ -779,7 +877,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
 
   const lastEmittedRef = useRef<string>(content);
   const lastNotePathRef = useRef<string | null | undefined>(noteContext?.notePath);
-  const pendingCursorRef = useRef<{ line: number; pos: number } | null>(null);
+  const pendingCursorRef = useRef<{ line: number; pos: number; end?: number } | null>(null);
   const textareaMapRef = useRef<Map<number, HTMLTextAreaElement>>(new Map());
   const activeTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const blurTimerRef = useRef<number | null>(null);
@@ -873,7 +971,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
     }
   }, [content, noteContext?.notePath]);
 
-  // Synchronous layout-phase cursor positioning (zero race when switching lines cleanly)
+  // Synchronous layout-phase cursor positioning (only runs on line focus/split/merge, never overrides typing cursor)
   useLayoutEffect(() => {
     if (focusedLineIndex === null) return;
     const el = textareaMapRef.current.get(focusedLineIndex) || null;
@@ -886,8 +984,10 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
         el.focus({ preventScroll: false });
       }
       const pos = Math.max(0, Math.min(el.value.length, pending.pos));
+      const endPos =
+        pending.end !== undefined ? Math.max(pos, Math.min(el.value.length, pending.end)) : pos;
       try {
-        el.setSelectionRange(pos, pos);
+        el.setSelectionRange(pos, endPos);
       } catch {}
       resizeTextarea(el);
       pendingCursorRef.current = null;
@@ -895,7 +995,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
       el.focus({ preventScroll: false });
       resizeTextarea(el);
     }
-  }, [focusedLineIndex, draftLines]);
+  }, [focusedLineIndex, draftLines.length]);
 
   // Translate wheel & desktop mouse-drag into crisp horizontal scroll (touch uses native OS momentum pan-x)
   useEffect(() => {
@@ -961,7 +1061,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
     [onChange]
   );
 
-  const focusLineAt = useCallback((index: number, cursorPosition?: number) => {
+  const focusLineAt = useCallback((index: number, cursorStart?: number, cursorEnd?: number) => {
     if (blurTimerRef.current !== null) {
       window.clearTimeout(blurTimerRef.current);
       blurTimerRef.current = null;
@@ -969,26 +1069,27 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
     const currentLines = draftLinesRef.current;
     const safeIdx = Math.max(0, Math.min(currentLines.length - 1, index));
     const targetLen = currentLines[safeIdx]?.length ?? 0;
-    const pos = cursorPosition !== undefined ? Math.max(0, Math.min(targetLen, cursorPosition)) : targetLen;
+    const pos = cursorStart !== undefined ? Math.max(0, Math.min(targetLen, cursorStart)) : targetLen;
+    const end = cursorEnd !== undefined ? Math.max(pos, Math.min(targetLen, cursorEnd)) : pos;
 
-    pendingCursorRef.current = { line: safeIdx, pos };
+    pendingCursorRef.current = { line: safeIdx, pos, end };
     focusedLineRef.current = safeIdx;
     setFocusedLineIndex(safeIdx);
 
     if (activeTextareaRef.current && focusedLineRef.current === safeIdx && document.activeElement === activeTextareaRef.current) {
       try {
-        activeTextareaRef.current.setSelectionRange(pos, pos);
+        activeTextareaRef.current.setSelectionRange(pos, end);
       } catch {}
     }
   }, []);
 
-  const handleRowFocus = useCallback((idx: number, cursorPos?: number) => {
+  const handleRowFocus = useCallback((idx: number, cursorStart?: number, cursorEnd?: number) => {
     if (blurTimerRef.current !== null) {
       window.clearTimeout(blurTimerRef.current);
       blurTimerRef.current = null;
     }
-    if (cursorPos !== undefined) {
-      focusLineAt(idx, cursorPos);
+    if (cursorStart !== undefined) {
+      focusLineAt(idx, cursorStart, cursorEnd);
     } else if (focusedLineRef.current !== idx) {
       focusedLineRef.current = idx;
       setFocusedLineIndex(idx);
@@ -1106,6 +1207,57 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
     [noteContext]
   );
 
+  const splitLineAt = useCallback(
+    (index: number, beforeCursor: string, afterCursor: string) => {
+      const currentLines = draftLinesRef.current;
+      const taskMatch = beforeCursor.match(/^([ \t]*)- \[([ xX])\][ ](.*)$/);
+      const bulletMatch = beforeCursor.match(/^([ \t]*[-*])[ ](.*)$/);
+      const numMatch = beforeCursor.match(/^([ \t]*)(\d+)\.[ ](.*)$/);
+      const quoteMatch = beforeCursor.match(/^([ \t]*>[ ]?)(.*)$/);
+
+      let nextPrefix = '';
+
+      if (taskMatch) {
+        if (taskMatch[3].trim() === '' && afterCursor.trim() === '') {
+          const updated = [...currentLines];
+          updated[index] = '';
+          commitLines(updated);
+          focusLineAt(index, 0);
+          return;
+        }
+        nextPrefix = '- [ ] ';
+      } else if (bulletMatch) {
+        if (bulletMatch[2].trim() === '' && afterCursor.trim() === '') {
+          const updated = [...currentLines];
+          updated[index] = '';
+          commitLines(updated);
+          focusLineAt(index, 0);
+          return;
+        }
+        nextPrefix = `${bulletMatch[1]} `;
+      } else if (numMatch) {
+        if (numMatch[3].trim() === '' && afterCursor.trim() === '') {
+          const updated = [...currentLines];
+          updated[index] = '';
+          commitLines(updated);
+          focusLineAt(index, 0);
+          return;
+        }
+        const nextNum = parseInt(numMatch[2], 10) + 1;
+        nextPrefix = `${numMatch[1]}${nextNum}. `;
+      } else if (quoteMatch && quoteMatch[2].trim() !== '') {
+        nextPrefix = quoteMatch[1];
+      }
+
+      const updated = [...currentLines];
+      updated[index] = beforeCursor;
+      updated.splice(index + 1, 0, nextPrefix + afterCursor);
+      commitLines(updated);
+      focusLineAt(index + 1, nextPrefix.length);
+    },
+    [commitLines, focusLineAt]
+  );
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>, index: number) => {
       const el = e.currentTarget;
@@ -1118,55 +1270,11 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
         e.preventDefault();
         const beforeCursor = currentVal.substring(0, cursor);
         const afterCursor = currentVal.substring(cursor);
-
-        const taskMatch = beforeCursor.match(/^([ \t]*)- \[([ xX])\][ ](.*)$/);
-        const bulletMatch = beforeCursor.match(/^([ \t]*[-*])[ ](.*)$/);
-        const numMatch = beforeCursor.match(/^([ \t]*)(\d+)\.[ ](.*)$/);
-        const quoteMatch = beforeCursor.match(/^([ \t]*>[ ]?)(.*)$/);
-
-        let nextPrefix = '';
-
-        if (taskMatch) {
-          if (taskMatch[3].trim() === '' && afterCursor.trim() === '') {
-            const updated = [...currentLines];
-            updated[index] = '';
-            commitLines(updated);
-            focusLineAt(index, 0);
-            return;
-          }
-          nextPrefix = '- [ ] ';
-        } else if (bulletMatch) {
-          if (bulletMatch[2].trim() === '' && afterCursor.trim() === '') {
-            const updated = [...currentLines];
-            updated[index] = '';
-            commitLines(updated);
-            focusLineAt(index, 0);
-            return;
-          }
-          nextPrefix = `${bulletMatch[1]} `;
-        } else if (numMatch) {
-          if (numMatch[3].trim() === '' && afterCursor.trim() === '') {
-            const updated = [...currentLines];
-            updated[index] = '';
-            commitLines(updated);
-            focusLineAt(index, 0);
-            return;
-          }
-          const nextNum = parseInt(numMatch[2], 10) + 1;
-          nextPrefix = `${numMatch[1]}${nextNum}. `;
-        } else if (quoteMatch && quoteMatch[2].trim() !== '') {
-          nextPrefix = quoteMatch[1];
-        }
-
-        const updated = [...currentLines];
-        updated[index] = beforeCursor;
-        updated.splice(index + 1, 0, nextPrefix + afterCursor);
-        commitLines(updated);
-        focusLineAt(index + 1, nextPrefix.length);
+        splitLineAt(index, beforeCursor, afterCursor);
         return;
       }
 
-      // 2. BACKSPACE: Line merging & prefix clearing
+      // 2. BACKSPACE & DELETE (Entf): Line merging & prefix clearing
       if (e.key === 'Backspace') {
         if (cursor === 0 && (el.selectionEnd ?? 0) === 0 && index > 0) {
           e.preventDefault();
@@ -1188,6 +1296,20 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
           e.preventDefault();
           updateLine(index, '');
           focusLineAt(index, 0);
+          return;
+        }
+      }
+
+      if (e.key === 'Delete') {
+        const selEnd = el.selectionEnd ?? cursor;
+        if (cursor === currentVal.length && selEnd === currentVal.length && index < currentLines.length - 1) {
+          e.preventDefault();
+          const nextLine = currentLines[index + 1] ?? '';
+          const updated = [...currentLines];
+          updated[index] = currentVal + nextLine;
+          updated.splice(index + 1, 1);
+          commitLines(updated);
+          focusLineAt(index, currentVal.length);
           return;
         }
       }
@@ -1476,7 +1598,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
         }
         setIsDraggingImage(false);
       }}
-      className="flex-1 h-full flex flex-col bg-[#FBFBFA] dark:bg-[#18191B] overflow-hidden select-text relative"
+      className="flex-1 min-h-0 h-full flex flex-col bg-[#FBFBFA] dark:bg-[#18191B] overflow-hidden select-text relative"
     >
       {/* Hidden File & Camera Inputs for Desktop / Tablet / Mobile */}
       <input
@@ -1549,12 +1671,12 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
         </div>
       )}
 
-      {/* Classic Toolbar Header (Collapsible & Horizontally Scrollable) */}
+      {/* Classic Toolbar Header (Sticky at top, Collapsible & Horizontally Scrollable) */}
       {!isReadOnly && showToolbar && (
         <div
           data-no-swipe="true"
           data-keep-editor-focus="true"
-          className="border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA]/95 dark:bg-[#1D1F23]/95 shrink-0 select-none animate-in fade-in duration-100 relative"
+          className="sticky top-0 z-30 border-b border-[#E5E3DC] dark:border-[#2F3136] bg-[#FBFBFA]/95 dark:bg-[#1D1F23]/95 backdrop-blur-md shrink-0 select-none animate-in fade-in duration-100"
         >
           <div className="flex items-center px-2 py-1 min-w-0">
             <div
@@ -1835,6 +1957,7 @@ export const LiveEditorPane: React.FC<LiveEditorPaneProps> = React.memo(({
               onFocusLine={handleRowFocus}
               onBlurLine={handleRowBlur}
               onUpdateLine={updateLine}
+              onSplitLine={splitLineAt}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               onToggleTaskCheckbox={handleToggleTaskCheckbox}

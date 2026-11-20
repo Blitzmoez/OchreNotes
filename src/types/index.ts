@@ -121,7 +121,7 @@ export interface GraphData {
   links: GraphLink[];
 }
 
-export type SuiteModuleId = 'dashboard' | 'notes' | 'wiki' | 'recipes' | 'finance' | 'smarthome' | 'projects';
+export type SuiteModuleId = 'dashboard' | 'notes' | 'wiki' | 'recipes' | 'finance' | 'smarthome' | 'projects' | 'rss';
 
 export interface EnabledModules {
   dashboard: boolean;
@@ -131,6 +131,7 @@ export interface EnabledModules {
   finance: boolean;
   smarthome: boolean;
   projects: boolean;
+  rss?: boolean;
 }
 
 export type NoteProfileId = 'profile1' | 'profile2';
@@ -143,6 +144,7 @@ export interface ModuleColors {
   finance: string;
   smarthome?: string;
   projects?: string;
+  rss?: string;
 }
 
 export interface NoteProfileConfig {
@@ -153,11 +155,24 @@ export interface NoteProfileConfig {
 
 export interface OfflineQueueItem {
   id: string;
-  action: 'saveNote' | 'saveWiki' | 'saveCookbook' | 'saveFinance';
+  action: 'saveNote' | 'toggleTask' | 'saveWiki' | 'saveCookbook' | 'saveProject' | 'saveFinance';
   payload: any;
   timestamp: number;
   attempts?: number;
   lastError?: string;
+}
+
+export interface OfflineConflictItem {
+  id: string;
+  module: SuiteModuleId;
+  resourceKey: string;
+  title: string;
+  localData: any;
+  serverData: any;
+  localTimestamp: number;
+  serverTimestamp: number;
+  localSummary: string;
+  serverSummary: string;
 }
 
 export interface SuiteProfileSettings {
@@ -165,6 +180,7 @@ export interface SuiteProfileSettings {
   activeProfileId: NoteProfileId;
   mobileBarPosition?: 'top' | 'bottom';
   moduleOrder?: SuiteModuleId[];
+  offlineModules?: Partial<Record<SuiteModuleId, boolean>>;
   profile1: NoteProfileConfig;
   profile2: NoteProfileConfig;
 }
@@ -180,6 +196,7 @@ export type DashboardWidgetId =
   | 'finance_recent_tx'
   | 'smarthome_overview'
   | 'projects_open'
+  | 'rss_overview'
   | 'system_health'
   | 'quick_actions';
 
@@ -286,6 +303,7 @@ export interface IngredientMeta {
   excludeFromShoppingList?: boolean;
   defaultUnit?: string;
   isCustom?: boolean;
+  kcal?: number;
 }
 
 export interface RecipeIngredient {
@@ -301,6 +319,7 @@ export interface Recipe {
   mealTypes?: string[]; // Multiple choice e.g. ['Mittag', 'Abend']
   prepTimeMinutes: number;
   portions: number;
+  kcalPerPortion?: number;
   description: string;
   instructions: string[];
   ingredients: RecipeIngredient[];
@@ -438,7 +457,7 @@ export interface SmarthomeDiscoveredBroker {
 export interface SmarthomeDbSource {
   id: string;
   name: string;
-  kind: 'http-json' | 'influx-v1' | 'influx-v2' | 'prometheus';
+  kind: 'http-json' | 'influx-v1' | 'influx-v2' | 'prometheus' | 'iobroker';
   url: string;
   pollIntervalSec: number;
   authHeader?: string;
@@ -452,7 +471,27 @@ export interface SmarthomeDbSource {
   lastSyncAt?: number;
 }
 
-export type SmarthomeTimeRange = '1h' | '6h' | '24h' | '7d' | '30d' | 'ytd';
+export type SmarthomeTimeRange = '5m' | '15m' | '1h' | '6h' | '24h' | '7d' | '30d' | 'ytd';
+
+export interface SmarthomeReferenceLine {
+  id: string;
+  label: string;
+  value: number;
+  color: string;
+}
+
+export interface SmarthomeTileField {
+  id: string;
+  label: string;
+  kind: 'value' | 'switch';
+  sourceType: 'mqtt' | 'db';
+  sourceId: string;
+  topicOrPath: string;
+  jsonPath?: string;
+  unit?: string;
+  payloadOn?: string;
+  payloadOff?: string;
+}
 
 export interface SmarthomeTileCalculation {
   mode: 'none' | 'formula' | 'delta_since';
@@ -470,6 +509,7 @@ export interface SmarthomeTile {
   tab?: string;
   group?: string;
   size: SmarthomeTileSize;
+  tileKind?: 'value' | 'chart' | 'switch' | 'composite' | 'camera';
   sourceType: 'mqtt' | 'db';
   sourceId: string;
   topicOrPath: string;
@@ -477,6 +517,16 @@ export interface SmarthomeTile {
   unit?: string;
   displayMode?: 'value' | 'chart';
   timeRange?: SmarthomeTimeRange;
+  yMin?: number;
+  yMax?: number;
+  referenceLines?: SmarthomeReferenceLine[];
+  fields?: SmarthomeTileField[];
+  cameraUrl?: string;
+  cameraRefreshMs?: number;
+  actionPath?: string;
+  actionMethod?: 'GET' | 'POST';
+  switchPayloadOn?: string;
+  switchPayloadOff?: string;
   calculation?: SmarthomeTileCalculation;
   icon?: string;
   isAdminPreset?: boolean;
@@ -527,6 +577,21 @@ export interface ProjectColumnConfig {
   color?: string;
 }
 
+export interface ProjectMilestone {
+  id: string;
+  title: string;
+  targetDate: string; // YYYY-MM-DD
+  description?: string;
+  completed?: boolean;
+}
+
+export interface ProjectProtocolEntry {
+  id: string;
+  text: string;
+  author: string;
+  createdAt: number;
+}
+
 export interface ProjectTask {
   id: string;
   title: string;
@@ -535,8 +600,10 @@ export interface ProjectTask {
   assignee: string;
   assignees?: string[];
   priority: 'low' | 'medium' | 'high';
-  startDate: string; // YYYY-MM-DD
-  dueDate: string; // YYYY-MM-DD
+  startDate?: string; // YYYY-MM-DD (optional)
+  dueDate?: string; // YYYY-MM-DD (optional)
+  milestoneId?: string;
+  protocols?: ProjectProtocolEntry[];
   createdAt?: number;
 }
 
@@ -549,6 +616,11 @@ export interface ProjectItem {
   profile?: NoteProfileId;
   visibility: ProjectVisibility;
   sharedWithUsers: string[];
+  externalMembers?: string[];
+  milestones?: ProjectMilestone[];
+  protocols?: ProjectProtocolEntry[];
+  archived?: boolean;
+  archivedAt?: number;
   status: ProjectStatus;
   color?: string;
   startDate?: string;
@@ -559,6 +631,43 @@ export interface ProjectItem {
   tasks: ProjectTask[];
   createdAt?: number;
   updatedAt: number;
+}
+
+// RSS Reader / News Feed Types
+export interface RssSource {
+  id: string;
+  title: string;
+  url: string;
+  category: string;
+  enabled: boolean;
+  hidePaid: boolean;
+  createdAt?: number;
+}
+
+export interface RssArticle {
+  id: string;
+  sourceId: string;
+  sourceTitle: string;
+  category: string;
+  title: string;
+  link: string;
+  pubDate: string;
+  timestamp: number;
+  summary: string;
+  contentText?: string;
+  author?: string;
+  isPaid: boolean;
+  categories?: string[];
+}
+
+export interface RssReaderResponse {
+  url: string;
+  title: string;
+  siteName?: string;
+  byline?: string;
+  publishedAt?: string;
+  paragraphs: string[];
+  leadImage?: string;
 }
 
 export interface ChangelogSection {
@@ -577,6 +686,7 @@ export interface ChangelogResponse {
   raw: string;
   updatedAt?: string;
 }
+
 
 
 

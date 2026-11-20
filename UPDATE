@@ -2,7 +2,46 @@
 
 Diese Datei befindet sich im Wurzelverzeichnis (`UPDATE`) und kann jederzeit manuell gepflegt oder erweitert werden. Neue Abschnitte mit `## Version – Datum` werden automatisch unter **Einstellungen → Über / Updates** angezeigt.
 
-## v2.5.0 – 2026-11-18
+## v0.4 – 2026-11-20
+
+### Smarthome & Dashboard
+- **Smarthome Mobil-Speichern & Bearbeiten**: Kacheln lassen sich im Mobil-Browser zuverlässig über die fixierte Fußleiste speichern; der Löschen-Button befindet sich übersichtlich im Bearbeiten-Dialog.
+- **Dashboard Edit-Mode**: Das Anpassen des Dashboards ist über ein dezentes Stift-Symbol oben rechts umschaltbar – im Normalbetrieb bleiben alle Kacheln ruhig und fokussiert.
+
+### Projekte
+- **Profil-Umschaltung im Profilmenü**: Wechsel zwischen Privat und Business (inkl. eigener Akzentfarbe) analog zu Notes direkt im Profilmenü.
+- **Kompakter Mobil-Header & Meilenstein-Bubbles**: Der mobile Projektheader minimiert sich beim Scrollen oder Fokus auf Aufgaben und lässt sich über den linken Pfeil jederzeit wieder einblenden; Meilensteine besitzen interaktive Timeline-Bubbles mit Popover-Infos.
+- **Projekt- & Aufgaben-Protokolle**: Eigene Protokoll-Buttons in Header und Aufgaben öffnen ein Zeitstempel-Protokoll zur fortlaufenden Dokumentation.
+- **Projekt-Archiv**: Abgeschlossene Projekte lassen sich archivieren, im maximierten Archiv mit Suche & Sortierung verwalten und bei Bedarf wiederherstellen.
+
+### Notizen, RSS Reader & Katalog
+- **Notizen-Editor & Leiste**: Doppelte Leerzeilen bei Enter auf Mobilgeräten behoben, direkte Überschreibung per Wisch-/Wortauswahl korrigiert und stabilere Sticky-Formatierungs- & Tab-Leisten auf Mobilgeräten.
+- **RSS Reader Volltext**: Erweiterte Dekodierung und mehrstufige Artikel-Extraktion (inkl. JSON-LD & Feed-Volltext) liefern bereinigte Leseansichten ohne Werbereste.
+- **Swipe-Vaults mit Haptik & einheitlicher Export**: Vereinheitlichtes 1:1-Wischverhalten (Fling, Zurückschnappen bei Pause und dezente Haptik) über alle Vaults sowie zentrales „Teilen, Drucken & Export“ im Profilmenü (kontextgenauer DIN-A4-Druck und PDF-Export für Notiz, Wiki, Rezept, Essensplan, Projekt, Einzelaufgabe oder RSS-Artikel; manueller Offline-Schalter pro Modul entfernt).
+
+## v0.3 – 2026-11-19
+
+### RSS Reader / News Feed
+- **Neues Modul „RSS Reader“**: Live-Abruf von RSS 2.0 & Atom Quellen mit integriertem Vault-Quellenverzeichnis und Kategorie-Filter ohne Speicherung der Artikel.
+- **Bezahlte Artikel filtern & In-App-Reader**: Paywall-/Plus-Artikel per Schalter ausblenden und Artikel bereinigt ohne Werbung im ablenkungsfreien Reader direkt in der Suite lesen.
+
+### Einstellungen, PDF & Offline-Modus
+- **Einstellungen**: Desktop-Navigationspfeile für Haupt- und Modul-Tabs erleichtern den Wechsel bis „Über / Updates“.
+- **PDF-Teilen für alle Module**: Plattformübergreifendes „Als PDF teilen“ / PDF-Download für Dashboard, Notizen, Wiki, Essensplan, Finanzen, Projekte, Smarthome und RSS Reader.
+- **Offline-Modus pro Modul & Konfliktlösung**: Pro Modul schaltbarer PWA-Offline-Modus mit „Vorher / Nachher“-Konfliktlösung im Profilmenü.
+
+### Smarthome
+- **Verbindungs-Tests mit Diagnose**: Direkte Test-Buttons für MQTT-Broker und Datenbanken liefern Latenz, Status und Live-Wertvorschau.
+- **Konfigurierbare Kurven & Desktop-Charts**: Größere Desktop-Charts mit Y-Achsen-Min/Max, Schwellwert-/Referenzlinien sowie 5m- & 15m-Intervallen.
+- **ioBroker, Kombi-Kacheln & Videofeeds**: Simple-API Schaltersteuerung (inkl. ioBroker Datenpunkte), mehrteilige Kombi-Kacheln mit Schaltern und RTSP/MJPEG-Kamerakacheln.
+
+### Notizen, Projekte, Finanzen & Essensplan
+- **Notizen**: `Entf`-Taste am Zeilenende führt Folgezeilen zusammen, Sticky Toolbar mit sauberem Scroll-Container und ruhiger Cursor ohne Springen.
+- **Projekte**: Optionale Daten, sortierbare & filterbare Liste, Meilensteine mit ETA-Countdown und Warnungen, externe Personenliste pro Projekt, Profil 1/2 Namen & Verschieben sowie dezente Spaltentönung.
+- **Finanzen**: Desktop-Subtabs & Mobile Daumen-Menü, Suche/Filter über alle Transaktionen & Kreditoren, CSV-Import-Vorschau mit Duplikatschutz sowie Kontostand-Abgleich inklusive „Füllfinanz“.
+- **Essensplan**: Interaktive Lootbox-Wochenshow pro Wochentag, kcal-Angaben für Gerichte & Zutaten, Zutaten bearbeiten, Löschbestätigung und stabiles Mobile Katalog-Drag.
+
+## v0.2 – 2026-11-18
 
 ### Smarthome
 - **InfluxDB v1 & v2 Telemetrie**: Unterstützung für InfluxDB v1 (InfluxQL) und InfluxDB v2 (Flux) inklusive 24h-Verlaufskurven (SVG-Chart mit Min/Max und Zeitachse).

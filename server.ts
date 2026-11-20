@@ -5,6 +5,7 @@ import path from 'path';
 import net from 'net';
 import mqtt, { type MqttClient } from 'mqtt';
 import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2603,6 +2604,9 @@ async function createServer() {
     }
     fm += `prepTimeMinutes: ${Number(recipe.prepTimeMinutes) || 20}\n`;
     fm += `portions: ${Math.max(1, Number(recipe.portions) || 2)}\n`;
+    if (typeof recipe.kcalPerPortion === 'number' && Number.isFinite(recipe.kcalPerPortion) && recipe.kcalPerPortion > 0) {
+      fm += `kcalPerPortion: ${Math.round(recipe.kcalPerPortion)}\n`;
+    }
     fm += `tags: ${tagsYaml}\n`;
     fm += `mediaDir: "${mediaDir}"\n`;
     if (recipe.sharedFrom) {
@@ -2654,6 +2658,7 @@ async function createServer() {
     let mealTypes: string[] = [];
     let prepTimeMinutes = 20;
     let portions = 2;
+    let kcalPerPortion: number | undefined;
     let tags: string[] = [];
     let mediaDir = '';
     let sharedFrom: string | undefined;
@@ -2679,6 +2684,11 @@ async function createServer() {
       if (pTime) prepTimeMinutes = parseInt(pTime[1], 10) || 20;
       const pPortions = fm.match(/^portions:\s*(\d+)/m);
       if (pPortions) portions = Math.max(1, parseInt(pPortions[1], 10) || 2);
+      const pKcal = fm.match(/^kcalPerPortion:\s*(\d+)/m);
+      if (pKcal) {
+        const parsedK = parseInt(pKcal[1], 10);
+        if (Number.isFinite(parsedK) && parsedK > 0) kcalPerPortion = parsedK;
+      }
       const tMatch = fm.match(/^tags:\s*\[(.*)\]/m);
       if (tMatch) {
         tags = tMatch[1]
@@ -2760,6 +2770,7 @@ async function createServer() {
       mealTypes,
       prepTimeMinutes,
       portions,
+      kcalPerPortion,
       description: descLines.join('\n').trim(),
       instructions,
       ingredients,
@@ -4226,6 +4237,18 @@ async function createServer() {
         String(project.id || `proj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`)
           .replace(/[^a-zA-Z0-9_-]/g, '_');
       const now = Date.now();
+      const normalizeProtocols = (arr: any): any[] =>
+        Array.isArray(arr)
+          ? arr
+              .filter((p: any) => p && String(p.text || '').trim())
+              .map((p: any) => ({
+                id: String(p.id || `prot_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`),
+                text: String(p.text).trim(),
+                author: String(p.author || 'Unbekannt').trim(),
+                createdAt: Number(p.createdAt) || now,
+              }))
+          : [];
+
       const normTasks = Array.isArray(project.tasks)
         ? project.tasks.map((t: any) => {
             const assignees = Array.isArray(t.assignees)
@@ -4237,15 +4260,39 @@ async function createServer() {
               ...t,
               assignees,
               assignee: assignees[0] || t.assignee || '',
+              startDate: t.startDate ? String(t.startDate).trim() : undefined,
+              dueDate: t.dueDate ? String(t.dueDate).trim() : undefined,
+              milestoneId: t.milestoneId ? String(t.milestoneId).trim() : undefined,
+              protocols: normalizeProtocols(t.protocols),
             };
           })
+        : [];
+      const normMilestones = Array.isArray(project.milestones)
+        ? project.milestones
+            .filter((m: any) => m && m.title)
+            .map((m: any) => ({
+              id: String(m.id || `ms_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`),
+              title: String(m.title).trim(),
+              targetDate: m.targetDate ? String(m.targetDate).trim() : m.dueDate ? String(m.dueDate).trim() : '',
+              completed: Boolean(m.completed),
+              description: m.description ? String(m.description).trim() : undefined,
+            }))
         : [];
       const saved = {
         ...project,
         id: safeId,
         profile: project.profile === 'profile2' ? 'profile2' : 'profile1',
         visibility: project.visibility === 'shared' ? 'shared' : 'private',
+        startDate: project.startDate ? String(project.startDate).trim() : undefined,
+        dueDate: project.dueDate ? String(project.dueDate).trim() : undefined,
         sharedWithUsers: Array.isArray(project.sharedWithUsers) ? project.sharedWithUsers : [],
+        externalMembers: Array.isArray(project.externalMembers)
+          ? project.externalMembers.map((x: any) => String(x || '').trim()).filter(Boolean)
+          : [],
+        milestones: normMilestones,
+        protocols: normalizeProtocols(project.protocols),
+        archived: Boolean(project.archived),
+        archivedAt: project.archived ? Number(project.archivedAt) || now : undefined,
         linkedNotePaths: Array.isArray(project.linkedNotePaths) ? project.linkedNotePaths : [],
         linkedWikiSlugs: Array.isArray(project.linkedWikiSlugs) ? project.linkedWikiSlugs : [],
         columns: Array.isArray(project.columns) && project.columns.length > 0 ? project.columns : undefined,
@@ -4603,6 +4650,10 @@ async function createServer() {
 
   function resolveTimeRangeMs(timeRange?: string): number {
     switch (timeRange) {
+      case '5m':
+        return 300_000;
+      case '15m':
+        return 900_000;
       case '1h':
         return 3600_000;
       case '6h':
@@ -4623,6 +4674,10 @@ async function createServer() {
 
   function resolveFluxDuration(timeRange?: string): string {
     switch (timeRange) {
+      case '5m':
+        return '-5m';
+      case '15m':
+        return '-15m';
       case '1h':
         return '-1h';
       case '6h':
@@ -4641,6 +4696,10 @@ async function createServer() {
 
   function resolveInfluxWindowInterval(timeRange?: string): string {
     switch (timeRange) {
+      case '5m':
+        return '10s';
+      case '15m':
+        return '30s';
       case '1h':
         return '1m';
       case '6h':
@@ -4994,6 +5053,68 @@ async function createServer() {
     }
   }
 
+  async function queryIoBrokerDataPoint(src: any, datapoint: string): Promise<string | null> {
+    const baseUrl = String(src.url || '').replace(/\/+$/, '');
+    const dp = String(datapoint || '').trim().replace(/^\/+/, '');
+    if (!baseUrl || !dp) return null;
+
+    const headers: Record<string, string> = {};
+    if (src.authHeader) {
+      headers['Authorization'] = src.authHeader;
+    } else if (src.username || src.password) {
+      headers['Authorization'] = 'Basic ' + Buffer.from(`${src.username || ''}:${src.password || ''}`).toString('base64');
+    }
+
+    const fetchWithTimeout = async (url: string) => {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 3500);
+      try {
+        const resp = await fetch(url, { headers, signal: controller.signal });
+        clearTimeout(t);
+        return resp;
+      } catch {
+        clearTimeout(t);
+        return null;
+      }
+    };
+
+    const plainResp = await fetchWithTimeout(`${baseUrl}/getPlainValue/${encodeURIComponent(dp)}`);
+    if (plainResp && plainResp.ok) {
+      const txt = (await plainResp.text()).trim();
+      if (txt.startsWith('"') && txt.endsWith('"')) {
+        try {
+          return String(JSON.parse(txt));
+        } catch {
+          return txt.slice(1, -1);
+        }
+      }
+      return txt;
+    }
+
+    const jsonResp = await fetchWithTimeout(`${baseUrl}/get/${encodeURIComponent(dp)}`);
+    if (jsonResp && jsonResp.ok) {
+      try {
+        const data = await jsonResp.json();
+        if (data && data.val !== undefined) return String(data.val);
+        return typeof data === 'object' ? JSON.stringify(data) : String(data);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  function extractPayloadByJsonPath(rawText: string, jsonPath?: string): string {
+    if (!jsonPath || !rawText.trim().startsWith('{')) return rawText;
+    try {
+      const parsed = JSON.parse(rawText);
+      const extracted = extractJsonPathValue(parsed, jsonPath);
+      return extracted !== '' ? extracted : rawText;
+    } catch {
+      return rawText;
+    }
+  }
+
   async function syncMqttConnections() {
     const cfg = await loadSmarthomeConfig();
     const activeIds = new Set(cfg.brokers.filter((b) => b.enabled !== false).map((b) => b.id));
@@ -5046,21 +5167,14 @@ async function createServer() {
           recordMqttDiscoveredTopic(broker.id, topic, text);
           recordSmarthomeValue(`${broker.id}::${topic}`, text);
 
-          // Update any MQTT tile on this broker/topic that uses jsonPath or formula calculations
+          // Update any MQTT tile (top-level + composite fields) on this broker/topic
           try {
             const latestCfg = await loadSmarthomeConfig();
             const matching = latestCfg.tiles.filter(
               (t) => t.sourceType === 'mqtt' && t.sourceId === broker.id && t.topicOrPath === topic
             );
             for (const tile of matching) {
-              let effectiveRaw = text;
-              if (tile.jsonPath && text.trim().startsWith('{')) {
-                try {
-                  const parsed = JSON.parse(text);
-                  const extracted = extractJsonPathValue(parsed, tile.jsonPath);
-                  if (extracted !== '') effectiveRaw = extracted;
-                } catch {}
-              }
+              const effectiveRaw = extractPayloadByJsonPath(text, tile.jsonPath);
               const parsedNum = parseNumericString(effectiveRaw);
               const { displayValue, numericValue } = applyTileCalculation(tile, effectiveRaw, parsedNum, undefined);
               if (tile.jsonPath || tile.calculation?.formula) {
@@ -5068,6 +5182,20 @@ async function createServer() {
                   rawValue: effectiveRaw,
                   numericOverride: numericValue,
                 });
+              }
+            }
+            for (const tile of latestCfg.tiles) {
+              if (!Array.isArray(tile.fields) || tile.fields.length === 0) continue;
+              for (const field of tile.fields) {
+                const fieldSourceType = field.sourceType || tile.sourceType;
+                const fieldSourceId = field.sourceId || tile.sourceId;
+                if (fieldSourceType === 'mqtt' && fieldSourceId === broker.id && field.topicOrPath === topic) {
+                  const effectiveRaw = extractPayloadByJsonPath(text, field.jsonPath);
+                  recordSmarthomeValue(`field:${tile.id}:${field.id}`, effectiveRaw, {
+                    rawValue: text,
+                    numericOverride: parseNumericString(effectiveRaw),
+                  });
+                }
               }
             }
           } catch {}
@@ -5101,17 +5229,60 @@ async function createServer() {
     for (const src of sources) {
       if (src.enabled === false) continue;
       const matchingTiles = cfg.tiles.filter((tile) => tile.sourceType === 'db' && tile.sourceId === src.id);
-      if (matchingTiles.length === 0) continue;
+      const tilesWithMatchingFields = cfg.tiles.filter(
+        (tile) =>
+          Array.isArray(tile.fields) &&
+          tile.fields.some((f: any) => (f.sourceType || tile.sourceType) === 'db' && (f.sourceId || tile.sourceId) === src.id)
+      );
+      if (matchingTiles.length === 0 && tilesWithMatchingFields.length === 0) continue;
 
       try {
-        if (src.kind === 'influx-v1' || src.kind === 'influx-v2' || src.kind === 'prometheus') {
+        if (src.kind === 'iobroker') {
           for (const tile of matchingTiles) {
-            const resData =
-              src.kind === 'influx-v1'
-                ? await queryInfluxV1Tile(src, tile)
-                : src.kind === 'influx-v2'
-                  ? await queryInfluxV2Tile(src, tile)
-                  : await queryPrometheusTile(src, tile);
+            if (!tile.topicOrPath) continue;
+            const valStr = await queryIoBrokerDataPoint(src, tile.topicOrPath);
+            if (valStr !== null) {
+              src.lastSyncAt = Date.now();
+              const extracted = extractPayloadByJsonPath(valStr, tile.jsonPath);
+              const num = parseNumericString(extracted);
+              const { displayValue, numericValue } = applyTileCalculation(tile, extracted, num, undefined);
+              recordSmarthomeValue(`${src.id}::${tile.topicOrPath}`, extracted, { numericOverride: num });
+              recordSmarthomeValue(`tile:${tile.id}`, displayValue, {
+                rawValue: extracted,
+                numericOverride: numericValue,
+              });
+            }
+          }
+          for (const tile of tilesWithMatchingFields) {
+            for (const field of tile.fields || []) {
+              const fSrcType = field.sourceType || tile.sourceType;
+              const fSrcId = field.sourceId || tile.sourceId;
+              if (fSrcType !== 'db' || fSrcId !== src.id || !field.topicOrPath) continue;
+              const valStr = await queryIoBrokerDataPoint(src, field.topicOrPath);
+              if (valStr !== null) {
+                src.lastSyncAt = Date.now();
+                const extracted = extractPayloadByJsonPath(valStr, field.jsonPath);
+                recordSmarthomeValue(`field:${tile.id}:${field.id}`, extracted, {
+                  rawValue: valStr,
+                  numericOverride: parseNumericString(extracted),
+                });
+              }
+            }
+          }
+          continue;
+        }
+
+        if (src.kind === 'influx-v1' || src.kind === 'influx-v2' || src.kind === 'prometheus') {
+          const queryFn =
+            src.kind === 'influx-v1'
+              ? queryInfluxV1Tile
+              : src.kind === 'influx-v2'
+                ? queryInfluxV2Tile
+                : queryPrometheusTile;
+
+          for (const tile of matchingTiles) {
+            if (!tile.topicOrPath) continue;
+            const resData = await queryFn(src, tile);
             if (!resData) continue;
             src.lastSyncAt = Date.now();
             const refNum =
@@ -5134,6 +5305,27 @@ async function createServer() {
               recordSmarthomeValue(`${src.id}::${tile.topicOrPath}`, resData.latestStr, {
                 numericOverride: resData.latestNum,
                 referenceValue: refNum,
+                series: resData.series,
+              });
+            }
+          }
+
+          for (const tile of tilesWithMatchingFields) {
+            for (const field of tile.fields || []) {
+              const fSrcType = field.sourceType || tile.sourceType;
+              const fSrcId = field.sourceId || tile.sourceId;
+              if (fSrcType !== 'db' || fSrcId !== src.id || !field.topicOrPath) continue;
+              const resData = await queryFn(src, {
+                topicOrPath: field.topicOrPath,
+                jsonPath: field.jsonPath,
+                timeRange: tile.timeRange || '24h',
+                displayMode: 'value',
+              });
+              if (!resData) continue;
+              src.lastSyncAt = Date.now();
+              recordSmarthomeValue(`field:${tile.id}:${field.id}`, resData.latestStr, {
+                rawValue: resData.latestStr,
+                numericOverride: resData.latestNum,
                 series: resData.series,
               });
             }
@@ -5164,6 +5356,20 @@ async function createServer() {
               recordSmarthomeValue(`tile:${tile.id}`, displayValue, {
                 rawValue: extracted,
                 numericOverride: numericValue,
+              });
+            }
+          }
+        }
+        for (const tile of tilesWithMatchingFields) {
+          for (const field of tile.fields || []) {
+            const fSrcType = field.sourceType || tile.sourceType;
+            const fSrcId = field.sourceId || tile.sourceId;
+            if (fSrcType !== 'db' || fSrcId !== src.id) continue;
+            const extracted = extractJsonPathValue(json, field.jsonPath || field.topicOrPath);
+            if (extracted !== '') {
+              recordSmarthomeValue(`field:${tile.id}:${field.id}`, extracted, {
+                rawValue: extracted,
+                numericOverride: parseNumericString(extracted),
               });
             }
           }
@@ -5283,120 +5489,442 @@ async function createServer() {
     }
   });
 
-  app.post('/api/smarthome/brokers', async (req, res) => {
+  app.post('/api/smarthome/test-mqtt', async (req, res) => {
     const broker = req.body;
-    if (!broker || !broker.host) {
-      return res.status(400).json({ error: 'Host fehlt' });
+    const host = String(broker?.host || '').trim();
+    const port = Number(broker?.port) || 1883;
+    const protocol = broker?.protocol === 'mqtts' || broker?.protocol === 'ws' ? broker.protocol : 'mqtt';
+    if (!host) {
+      return res.json({ ok: false, latencyMs: 0, message: 'Host-Adresse fehlt.' });
     }
+    const started = Date.now();
+    const url = `${protocol}://${host}:${port}`;
     try {
-      const cfg = await loadSmarthomeConfig();
-      const id = broker.id || `mqtt_${Date.now()}`;
-      const record = {
-        id,
-        name: broker.name || broker.host,
-        host: broker.host.trim(),
-        port: Number(broker.port) || 1883,
-        protocol: broker.protocol || 'mqtt',
-        username: broker.username || '',
-        password: broker.password || '',
-        enabled: broker.enabled !== false,
-      };
-      const idx = cfg.brokers.findIndex((b) => b.id === id);
-      if (idx >= 0) {
-        const old = mqttClientPool.get(id);
-        if (old) {
+      const result = await new Promise<{ ok: boolean; latencyMs: number; message: string; detail?: string }>((resolve) => {
+        let settled = false;
+        const finish = (ok: boolean, message: string, detail?: string) => {
+          if (settled) return;
+          settled = true;
           try {
-            old.end(true);
+            testClient.end(true);
           } catch {}
-          mqttClientPool.delete(id);
-        }
-        cfg.brokers[idx] = record;
-      } else {
-        cfg.brokers.push(record);
+          resolve({ ok, latencyMs: Date.now() - started, message, detail });
+        };
+
+        const testClient = mqtt.connect(url, {
+          username: broker?.username || undefined,
+          password: broker?.password || undefined,
+          reconnectPeriod: 0,
+          connectTimeout: 4000,
+          clientId: `ochresuite_probe_${Date.now().toString(36)}`,
+        });
+
+        const timer = setTimeout(() => {
+          finish(false, `Zeitüberschreitung nach 4,5s beim Verbinden mit ${host}:${port}`, url);
+        }, 4500);
+
+        testClient.on('connect', () => {
+          clearTimeout(timer);
+          finish(true, `MQTT-Broker erfolgreich verbunden (${url})`, `Antwortzeit: ${Date.now() - started} ms`);
+        });
+        testClient.on('error', (err) => {
+          clearTimeout(timer);
+          finish(false, `MQTT-Fehler: ${err.message}`, url);
+        });
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.json({ ok: false, latencyMs: Date.now() - started, message: err.message || 'Unbekannter Fehler' });
+    }
+  });
+
+  app.post('/api/smarthome/test-db', async (req, res) => {
+    const src = req.body?.source || req.body;
+    const samplePath = String(req.body?.samplePath || '').trim();
+    const baseUrl = String(src?.url || '').trim().replace(/\/+$/, '');
+    const kind = String(src?.kind || 'http-json');
+    if (!baseUrl) {
+      return res.json({ ok: false, latencyMs: 0, message: 'URL der Datenquelle fehlt.' });
+    }
+    const started = Date.now();
+    const headers: Record<string, string> = {};
+    if (src?.authHeader) {
+      headers['Authorization'] = src.authHeader;
+    } else if ((kind === 'influx-v1' || kind === 'iobroker') && (src?.username || src?.password)) {
+      headers['Authorization'] = 'Basic ' + Buffer.from(`${src.username || ''}:${src.password || ''}`).toString('base64');
+    } else if (kind === 'influx-v2' && src?.password) {
+      headers['Authorization'] = `Token ${src.password}`;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      let targetUrl = baseUrl;
+      let detail = '';
+      let sampleValue: string | undefined;
+      if (kind === 'influx-v1') {
+        const db = String(src?.database || '').trim();
+        const params = new URLSearchParams({ q: db ? 'SHOW MEASUREMENTS LIMIT 3' : 'SHOW DATABASES' });
+        if (db) params.set('db', db);
+        if (src?.username && !src?.authHeader) params.set('u', String(src.username));
+        if (src?.password && !src?.authHeader) params.set('p', String(src.password));
+        targetUrl = `${baseUrl}/query?${params.toString()}`;
+      } else if (kind === 'influx-v2') {
+        targetUrl = `${baseUrl}/health`;
+      } else if (kind === 'prometheus') {
+        targetUrl = `${baseUrl}/api/v1/status/runtimeinfo`;
+      } else if (kind === 'iobroker') {
+        targetUrl = samplePath ? `${baseUrl}/getPlainValue/${encodeURIComponent(samplePath)}` : `${baseUrl}/help`;
       }
-      await saveSmarthomeConfig(cfg);
-      await syncMqttConnections();
-      res.json({ success: true, broker: { ...record, status: mqttBrokerStatus.get(id) || 'connecting' } });
+
+      const resp = await fetch(targetUrl, { headers, signal: controller.signal });
+      clearTimeout(timer);
+      const latencyMs = Date.now() - started;
+
+      if (!resp.ok && kind === 'iobroker' && resp.status === 404) {
+        const altResp = await fetch(`${baseUrl}/get/system.adapter.admin.0.alive`, { headers });
+        if (altResp.ok) {
+          const altTxt = await altResp.text();
+          return res.json({
+            ok: true,
+            latencyMs: Date.now() - started,
+            message: `ioBroker Simple-API erreichbar (HTTP ${altResp.status})`,
+            detail: altTxt.slice(0, 120),
+            sampleValue: altTxt.slice(0, 80),
+          });
+        }
+      }
+
+      if (!resp.ok) {
+        const errTxt = await resp.text().catch(() => '');
+        return res.json({
+          ok: false,
+          latencyMs,
+          message: `HTTP ${resp.status} (${resp.statusText || 'Fehler'}) bei ${targetUrl}`,
+          detail: errTxt.slice(0, 140),
+        });
+      }
+
+      const rawBody = await resp.text();
+      if (kind === 'influx-v1') {
+        try {
+          const parsed = JSON.parse(rawBody);
+          const vals = parsed?.results?.[0]?.series?.[0]?.values || [];
+          detail = vals.length > 0 ? `Beispiel: ${vals.slice(0, 3).map((v: any[]) => v[0]).join(', ')}` : 'InfluxDB v1 antwortet.';
+          sampleValue = vals[0]?.[0] ? String(vals[0][0]) : undefined;
+        } catch {
+          detail = rawBody.slice(0, 100);
+        }
+      } else {
+        detail = rawBody.slice(0, 120);
+        if (samplePath && kind === 'http-json') {
+          try {
+            sampleValue = extractJsonPathValue(JSON.parse(rawBody), samplePath);
+          } catch {}
+        } else if (kind === 'iobroker' && samplePath) {
+          sampleValue = rawBody.trim();
+        }
+      }
+
+      res.json({
+        ok: true,
+        latencyMs,
+        message: `Verbindung erfolgreich (${kind}, HTTP ${resp.status}, ${latencyMs} ms)`,
+        detail,
+        sampleValue,
+      });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      clearTimeout(timer);
+      res.json({
+        ok: false,
+        latencyMs: Date.now() - started,
+        message: `Verbindungsfehler: ${err?.name === 'AbortError' ? 'Zeitüberschreitung (5s)' : err?.message || 'Unbekannt'}`,
+        detail: baseUrl,
+      });
     }
   });
 
-  app.delete('/api/smarthome/brokers', async (req, res) => {
-    const id = String(req.query.id || '');
-    if (!id) return res.status(400).json({ error: 'Broker-ID fehlt' });
+  app.post('/api/smarthome/action', async (req, res) => {
+    const { tileId, fieldId, targetState, value } = req.body || {};
+    if (!tileId) {
+      return res.status(400).json({ ok: false, message: 'tileId ist erforderlich' });
+    }
     try {
       const cfg = await loadSmarthomeConfig();
-      cfg.brokers = cfg.brokers.filter((b) => b.id !== id);
-      await saveSmarthomeConfig(cfg);
-      await syncMqttConnections();
-      res.json({ success: true });
+      const tile = cfg.tiles.find((t) => t.id === tileId);
+      if (!tile) return res.status(404).json({ ok: false, message: 'Kachel nicht gefunden' });
+
+      const field = fieldId && Array.isArray(tile.fields)
+        ? tile.fields.find((f: any) => f.id === fieldId)
+        : undefined;
+
+      const sourceType = field?.sourceType || tile.sourceType;
+      const sourceId = field?.sourceId || tile.sourceId;
+      const actionPath = field?.topicOrPath || tile.actionPath || tile.topicOrPath;
+      const computedVal =
+        value !== undefined
+          ? value
+          : targetState
+            ? (field?.payloadOn || tile.switchPayloadOn || 'true')
+            : (field?.payloadOff || tile.switchPayloadOff || 'false');
+      const strVal = String(computedVal);
+
+      if (sourceType === 'mqtt') {
+        const client = mqttClientPool.get(sourceId);
+        if (!client || !client.connected) {
+          return res.status(503).json({ ok: false, message: 'MQTT-Broker nicht verbunden.' });
+        }
+        if (!actionPath) {
+          return res.status(400).json({ ok: false, message: 'Kein Ziel-Topic konfiguriert.' });
+        }
+        await new Promise<void>((resolve, reject) => {
+          client.publish(actionPath, strVal, { qos: 0 }, (err) => {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+        if (field) {
+          recordSmarthomeValue(`field:${tile.id}:${field.id}`, strVal, {
+            rawValue: strVal,
+            numericOverride: parseNumericString(strVal),
+          });
+        } else {
+          recordSmarthomeValue(`tile:${tile.id}`, strVal, {
+            rawValue: strVal,
+            numericOverride: parseNumericString(strVal),
+          });
+        }
+        return res.json({ ok: true, success: true, value: strVal, newValue: strVal, message: `MQTT -> ${actionPath}: ${strVal}` });
+      }
+
+      const src = cfg.dbSources.find((s) => s.id === sourceId);
+      if (!src) return res.status(404).json({ ok: false, message: 'Datenquelle nicht gefunden' });
+
+      const baseUrl = String(src.url || '').replace(/\/+$/, '');
+      const headers: Record<string, string> = {};
+      if (src.authHeader) headers['Authorization'] = src.authHeader;
+      else if (src.username || src.password) {
+        headers['Authorization'] = 'Basic ' + Buffer.from(`${src.username || ''}:${src.password || ''}`).toString('base64');
+      }
+
+      if (src.kind === 'iobroker') {
+        const dp = String(actionPath || '').trim().replace(/^\/+/, '');
+        if (!dp) return res.status(400).json({ ok: false, message: 'Datenpunkt fehlt.' });
+        const targetUrl = `${baseUrl}/set/${encodeURIComponent(dp)}?value=${encodeURIComponent(strVal)}`;
+        const resp = await fetch(targetUrl, { headers });
+        if (!resp.ok) {
+          return res.status(resp.status).json({ ok: false, message: `ioBroker HTTP ${resp.status}` });
+        }
+      } else {
+        const url = actionPath && /^https?:\/\//i.test(actionPath)
+          ? actionPath
+          : `${baseUrl}${actionPath?.startsWith('/') ? actionPath : `/${actionPath || ''}`}`;
+        const method = tile.actionMethod === 'GET' ? 'GET' : 'POST';
+        const resp = await fetch(url, {
+          method,
+          headers: method === 'POST' ? { ...headers, 'Content-Type': 'application/json' } : headers,
+          body: method === 'POST' ? JSON.stringify({ value: strVal }) : undefined,
+        });
+        if (!resp.ok) {
+          return res.status(resp.status).json({ ok: false, message: `HTTP Aktion fehlgeschlagen (${resp.status})` });
+        }
+      }
+
+      if (field) {
+        recordSmarthomeValue(`field:${tile.id}:${field.id}`, strVal, {
+          rawValue: strVal,
+          numericOverride: parseNumericString(strVal),
+        });
+      } else {
+        recordSmarthomeValue(`tile:${tile.id}`, strVal, {
+          rawValue: strVal,
+          numericOverride: parseNumericString(strVal),
+        });
+      }
+      res.json({ ok: true, success: true, value: strVal, newValue: strVal });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ ok: false, message: err.message });
     }
   });
 
-  app.post('/api/smarthome/db-sources', async (req, res) => {
-    const src = req.body;
-    if (!src || !src.url) return res.status(400).json({ error: 'Datenbank / JSON URL fehlt' });
+  function sendCameraSvgFallback(res: express.Response, title: string, detail: string) {
+    const safeTitle = title.replace(/[<>&"]/g, '');
+    const safeDetail = detail.replace(/[<>&"]/g, '');
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+      <rect width="640" height="360" fill="#18181b"/>
+      <rect x="20" y="20" width="600" height="320" rx="16" fill="#27272a" stroke="#3f3f46" stroke-width="2"/>
+      <circle cx="320" cy="140" r="28" fill="#d97706" fill-opacity="0.2" stroke="#f59e0b" stroke-width="2"/>
+      <text x="320" y="205" text-anchor="middle" fill="#fafafa" font-family="sans-serif" font-size="18" font-weight="bold">${safeTitle}</text>
+      <text x="320" y="236" text-anchor="middle" fill="#a1a1aa" font-family="sans-serif" font-size="13">${safeDetail}</text>
+    </svg>`;
+    res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(svg);
+  }
+
+  app.get('/api/smarthome/camera/:tileId/snapshot', async (req, res) => {
     try {
       const cfg = await loadSmarthomeConfig();
-      const id = src.id || `db_${Date.now()}`;
-      const record = {
-        id,
-        name: src.name || 'Telemetrie-Quelle',
-        kind: src.kind || 'http-json',
-        url: src.url.trim(),
-        pollIntervalSec: Math.max(5, Number(src.pollIntervalSec) || 30),
-        authHeader: src.authHeader || undefined,
-        database: src.database ? String(src.database).trim() : undefined,
-        retentionPolicy: src.retentionPolicy ? String(src.retentionPolicy).trim() : undefined,
-        org: src.org ? String(src.org).trim() : undefined,
-        bucket: src.bucket ? String(src.bucket).trim() : undefined,
-        username: src.username ? String(src.username).trim() : undefined,
-        password: src.password || undefined,
-        enabled: src.enabled !== false,
-        lastSyncAt: src.lastSyncAt || undefined,
+      const tile = cfg.tiles.find((t) => t.id === req.params.tileId);
+      const snapUrl = String(tile?.cameraUrl || tile?.cameraSnapshotUrl || tile?.cameraStreamUrl || '').trim();
+      if (!tile || !snapUrl) {
+        return sendCameraSvgFallback(res, 'Keine Kamera-URL', 'Snapshot- oder Stream-URL in der Kachel hinterlegen');
+      }
+      if (/^rtsp:\/\//i.test(snapUrl)) {
+        const ff = spawn('ffmpeg', [
+          '-rtsp_transport', 'tcp',
+          '-i', snapUrl,
+          '-frames:v', '1',
+          '-f', 'image2pipe',
+          '-vcodec', 'mjpeg',
+          'pipe:1',
+        ]);
+        const chunks: Buffer[] = [];
+        let responded = false;
+        const killer = setTimeout(() => {
+          try { ff.kill('SIGKILL'); } catch {}
+          if (!responded) {
+            responded = true;
+            sendCameraSvgFallback(res, tile.title || 'RTSP Kamera', 'Zeitüberschreitung beim Abrufen des RTSP-Frames');
+          }
+        }, 6000);
+        ff.stdout.on('data', (c: Buffer) => chunks.push(c));
+        ff.on('error', () => {
+          clearTimeout(killer);
+          if (!responded) {
+            responded = true;
+            sendCameraSvgFallback(res, tile.title || 'RTSP Kamera', 'ffmpeg ist im Container nicht installiert – HTTP-Snapshot-URL nutzen');
+          }
+        });
+        ff.on('close', () => {
+          clearTimeout(killer);
+          if (responded) return;
+          responded = true;
+          if (chunks.length > 0) {
+            res.setHeader('Content-Type', 'image/jpeg');
+            res.setHeader('Cache-Control', 'no-store');
+            res.send(Buffer.concat(chunks));
+          } else {
+            sendCameraSvgFallback(res, tile.title || 'RTSP Kamera', 'RTSP-Kamera lieferte kein Bild');
+          }
+        });
+        return;
+      }
+
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 5000);
+      const resp = await fetch(snapUrl, { signal: controller.signal });
+      clearTimeout(t);
+      if (!resp.ok) {
+        return sendCameraSvgFallback(res, tile.title || 'Kamera', `Kamera antwortete mit HTTP ${resp.status}`);
+      }
+      const buf = Buffer.from(await resp.arrayBuffer());
+      res.setHeader('Content-Type', resp.headers.get('content-type') || 'image/jpeg');
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(buf);
+    } catch (err: any) {
+      sendCameraSvgFallback(res, 'Kamera nicht erreichbar', err?.message || 'Netzwerkfehler');
+    }
+  });
+
+  app.get('/api/smarthome/camera/:tileId/stream', async (req, res) => {
+    try {
+      const cfg = await loadSmarthomeConfig();
+      const tile = cfg.tiles.find((t) => t.id === req.params.tileId);
+      const streamUrl = String(tile?.cameraUrl || tile?.cameraStreamUrl || tile?.cameraSnapshotUrl || '').trim();
+      if (!tile || !streamUrl) {
+        return sendCameraSvgFallback(res, 'Keine Kamera-URL', 'Bitte Stream-URL in der Kachel hinterlegen');
+      }
+
+      if (/^rtsp:\/\//i.test(streamUrl)) {
+        const ff = spawn('ffmpeg', [
+          '-rtsp_transport', 'tcp',
+          '-i', streamUrl,
+          '-f', 'mpjpeg',
+          '-q:v', '6',
+          '-r', '6',
+          'pipe:1',
+        ]);
+        let started = false;
+        const startupTimeout = setTimeout(() => {
+          if (!started) {
+            try { ff.kill('SIGKILL'); } catch {}
+            if (!res.headersSent) {
+              sendCameraSvgFallback(res, tile.title || 'RTSP Stream', 'RTSP-Stream verbindet nicht innerhalb von 6s');
+            }
+          }
+        }, 6000);
+
+        ff.on('error', () => {
+          clearTimeout(startupTimeout);
+          if (!res.headersSent) {
+            sendCameraSvgFallback(res, tile.title || 'RTSP Stream', 'ffmpeg fehlt auf dem Server – bitte HTTP MJPEG/Snapshot-URL verwenden');
+          }
+        });
+
+        ff.stdout.on('data', (chunk: Buffer) => {
+          if (!started) {
+            started = true;
+            clearTimeout(startupTimeout);
+            res.setHeader('Content-Type', 'multipart/x-mixed-replace; boundary=ffmpeg');
+            res.setHeader('Cache-Control', 'no-store');
+          }
+          try {
+            res.write(chunk);
+          } catch {
+            try { ff.kill('SIGKILL'); } catch {}
+          }
+        });
+
+        ff.on('close', () => {
+          clearTimeout(startupTimeout);
+          if (!res.headersSent) {
+            sendCameraSvgFallback(res, tile.title || 'RTSP Stream', 'RTSP-Verbindung beendet');
+          } else {
+            try { res.end(); } catch {}
+          }
+        });
+
+        req.on('close', () => {
+          clearTimeout(startupTimeout);
+          try { ff.kill('SIGKILL'); } catch {}
+        });
+        return;
+      }
+
+      const controller = new AbortController();
+      req.on('close', () => controller.abort());
+      const resp = await fetch(streamUrl, { signal: controller.signal });
+      if (!resp.ok || !resp.body) {
+        return sendCameraSvgFallback(res, tile.title || 'Kamera', `HTTP ${resp.status}`);
+      }
+      const ctype = resp.headers.get('content-type') || 'image/jpeg';
+      res.setHeader('Content-Type', ctype);
+      res.setHeader('Cache-Control', 'no-store');
+      const reader = resp.body.getReader();
+      const pump = async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) res.write(Buffer.from(value));
+          }
+        } catch {}
+        try { res.end(); } catch {}
       };
-      const idx = cfg.dbSources.findIndex((s) => s.id === id);
-      if (idx >= 0) cfg.dbSources[idx] = record;
-      else cfg.dbSources.push(record);
-      await saveSmarthomeConfig(cfg);
-      await pollAllDbSources(id);
-      res.json({ success: true, source: record });
+      pump();
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  app.delete('/api/smarthome/db-sources', async (req, res) => {
-    const id = String(req.query.id || '');
-    if (!id) return res.status(400).json({ error: 'Source-ID fehlt' });
-    try {
-      const cfg = await loadSmarthomeConfig();
-      cfg.dbSources = cfg.dbSources.filter((s) => s.id !== id);
-      await saveSmarthomeConfig(cfg);
-      res.json({ success: true });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  app.post('/api/smarthome/db-sources/poll', async (req, res) => {
-    const sourceId = req.body?.sourceId;
-    try {
-      await pollAllDbSources(sourceId);
-      const values: Record<string, any> = {};
-      for (const [k, v] of smarthomeLiveValues.entries()) values[k] = v;
-      res.json({ success: true, values });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      if (!res.headersSent) {
+        sendCameraSvgFallback(res, 'Kamera-Stream', err?.message || 'Fehler beim Laden');
+      }
     }
   });
 
   app.post('/api/smarthome/tiles', async (req, res) => {
     const tile = req.body;
-    if (!tile || !tile.title || !tile.topicOrPath) {
+    const isComposite = tile?.tileKind === 'composite' && Array.isArray(tile?.fields) && tile.fields.length > 0;
+    const isCamera = tile?.tileKind === 'camera' && Boolean(tile?.cameraUrl || tile?.cameraStreamUrl || tile?.cameraSnapshotUrl);
+    if (!tile || !tile.title || (!tile.topicOrPath && !isComposite && !isCamera)) {
       return res.status(400).json({ error: 'Titel oder Topic/Pfad fehlt' });
     }
     try {
@@ -5405,11 +5933,17 @@ async function createServer() {
       const record = {
         ...tile,
         id,
+        topicOrPath: String(tile.topicOrPath || '').trim(),
+        tileKind: tile.tileKind || 'value',
         size: tile.size === 'wide' || tile.size === 'lg' ? tile.size : 'sm',
         displayMode: tile.displayMode || 'value',
         tab: tile.tab ? String(tile.tab).trim() : undefined,
         group: tile.group ? String(tile.group).trim() : undefined,
         timeRange: tile.timeRange || '24h',
+        yMin: typeof tile.yMin === 'number' && Number.isFinite(tile.yMin) ? tile.yMin : undefined,
+        yMax: typeof tile.yMax === 'number' && Number.isFinite(tile.yMax) ? tile.yMax : undefined,
+        referenceLines: Array.isArray(tile.referenceLines) ? tile.referenceLines : undefined,
+        fields: Array.isArray(tile.fields) ? tile.fields : undefined,
         calculation: tile.calculation || undefined,
         isAdminPreset: Boolean(tile.isAdminPreset),
       };
@@ -5419,20 +5953,14 @@ async function createServer() {
       await saveSmarthomeConfig(cfg);
 
       // Subscribe active MQTT client immediately & evaluate DB/formula immediately
-      if (record.sourceType === 'mqtt') {
+      if (record.sourceType === 'mqtt' && record.topicOrPath) {
         const client = mqttClientPool.get(record.sourceId);
         if (client?.connected) {
           client.subscribe(record.topicOrPath, { qos: 0 }, () => {});
         }
         const existingRaw = smarthomeLiveValues.get(`${record.sourceId}::${record.topicOrPath}`);
         if (existingRaw && (record.jsonPath || record.calculation?.formula)) {
-          let effectiveRaw = existingRaw.value;
-          if (record.jsonPath && effectiveRaw.trim().startsWith('{')) {
-            try {
-              const extracted = extractJsonPathValue(JSON.parse(effectiveRaw), record.jsonPath);
-              if (extracted !== '') effectiveRaw = extracted;
-            } catch {}
-          }
+          const effectiveRaw = extractPayloadByJsonPath(existingRaw.value, record.jsonPath);
           const num = parseNumericString(effectiveRaw);
           const { displayValue, numericValue } = applyTileCalculation(record, effectiveRaw, num, undefined);
           recordSmarthomeValue(`tile:${record.id}`, displayValue, {
@@ -5440,8 +5968,8 @@ async function createServer() {
             numericOverride: numericValue,
           });
         }
-      } else if (record.sourceType === 'db') {
-        await pollAllDbSources(record.sourceId);
+      } else if (record.sourceType === 'db' || (Array.isArray(record.fields) && record.fields.length > 0)) {
+        await pollAllDbSources();
       }
 
       res.json({ success: true, tile: record });
@@ -5485,6 +6013,453 @@ async function createServer() {
       res.json({ success: true, tile: copy });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // =========================================================================
+  // RSS FEED / NEWS READER (Sources in Vault, Articles strictly ephemeral)
+  // =========================================================================
+  function getRssSourcesPath(username: string): string {
+    const userBase = getUserBaseDir(path.basename(username || 'michael'));
+    if (!fs.existsSync(userBase)) fs.mkdirSync(userBase, { recursive: true, mode: 0o775 });
+    return path.join(userBase, 'rss_sources.json');
+  }
+
+  function decodeXmlEntities(str: string): string {
+    return str
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&apos;/g, "'")
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&auml;/g, 'ä')
+      .replace(/&ouml;/g, 'ö')
+      .replace(/&uuml;/g, 'ü')
+      .replace(/&Auml;/g, 'Ä')
+      .replace(/&Ouml;/g, 'Ö')
+      .replace(/&Uuml;/g, 'Ü')
+      .replace(/&szlig;/g, 'ß')
+      .replace(/&ndash;/g, '–')
+      .replace(/&mdash;/g, '—')
+      .replace(/&bdquo;/g, '„')
+      .replace(/&ldquo;/g, '“')
+      .replace(/&rdquo;/g, '”')
+      .replace(/&lsquo;/g, '‘')
+      .replace(/&rsquo;/g, '’')
+      .replace(/&hellip;/g, '…')
+      .replace(/&euro;/g, '€')
+      .replace(/&#(\d+);/g, (_m, n) => String.fromCharCode(Number(n)))
+      .replace(/&#x([0-9a-fA-F]+);/g, (_m, h) => String.fromCharCode(parseInt(h, 16)));
+  }
+
+  function stripHtmlTags(html: string): string {
+    return decodeXmlEntities(html.replace(/<[^>]+>/g, ' '))
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function extractParagraphTextFromHtml(html: string): string {
+    if (!html) return '';
+    const cleaned = decodeXmlEntities(
+      html
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/(p|div|li|h1|h2|h3|h4|blockquote)>/gi, '\n')
+    ).replace(/<[^>]+>/g, ' ');
+    return cleaned
+      .split(/\n+/)
+      .map((l) => l.replace(/\s+/g, ' ').trim())
+      .filter((l) => l.length > 0)
+      .join('\n\n');
+  }
+
+  function detectPaidArticle(title: string, summary: string, link: string, rawBlock: string): boolean {
+    const combined = `${title} ${summary} ${link}`.toLowerCase();
+    if (
+      /\b(plus|abo|paywall|premium|bezahlartikel|für abonnenten|exklusiv für abonnenten|sz-plus|faz\+|heise\+|spiegel\+|welt\+|bildplus|zeit\+)\b/i.test(combined) ||
+      /(\[\+\]|★\s*plus|abonnenten-artikel)/i.test(`${title} ${summary}`) ||
+      /paywall|subscriber-only|requires-subscription/i.test(rawBlock)
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function parseRssOrAtomFeed(xml: string, source: any): Array<{
+    id: string;
+    sourceId: string;
+    sourceTitle: string;
+    category: string;
+    title: string;
+    link: string;
+    pubDate: string;
+    timestamp: number;
+    summary: string;
+    contentText?: string;
+    author?: string;
+    isPaid: boolean;
+    categories?: string[];
+  }> {
+    const articles: any[] = [];
+    const sourceTitle = source.title || source.name || source.url;
+    const sourceCategory = source.category || 'Allgemein';
+    const extractTag = (block: string, tag: string): string => {
+      const m = block.match(new RegExp(`<${tag}(?:\\s+[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+      return m ? decodeXmlEntities(m[1]).trim() : '';
+    };
+
+    const itemMatches = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
+    for (let i = 0; i < itemMatches.length; i++) {
+      const block = itemMatches[i];
+      const title = stripHtmlTags(extractTag(block, 'title'));
+      const rawLink = extractTag(block, 'link') || extractTag(block, 'guid');
+      const link = stripHtmlTags(rawLink);
+      if (!title && !link) continue;
+      const contentEncoded = extractTag(block, 'content:encoded');
+      const rawDesc = extractTag(block, 'description');
+      const fullContentHtml = contentEncoded.length >= rawDesc.length ? contentEncoded : rawDesc;
+      const contentText = extractParagraphTextFromHtml(fullContentHtml);
+      const summary = stripHtmlTags(rawDesc || contentEncoded).slice(0, 340);
+      const pubDate = extractTag(block, 'pubDate') || extractTag(block, 'dc:date');
+      const publishedTs = pubDate ? Date.parse(pubDate) || 0 : 0;
+      const author = stripHtmlTags(extractTag(block, 'dc:creator') || extractTag(block, 'author'));
+      articles.push({
+        id: `${source.id}_${i}_${Buffer.from(link || title).toString('base64').slice(0, 10)}`,
+        sourceId: source.id,
+        sourceTitle,
+        category: sourceCategory,
+        title: title || link,
+        link,
+        pubDate: pubDate || '',
+        timestamp: publishedTs,
+        summary,
+        contentText: contentText || undefined,
+        author: author || undefined,
+        isPaid: detectPaidArticle(title, summary, link, block),
+        categories: sourceCategory ? [sourceCategory] : [],
+      });
+    }
+
+    if (articles.length === 0) {
+      const entryMatches = xml.match(/<entry\b[\s\S]*?<\/entry>/gi) || [];
+      for (let i = 0; i < entryMatches.length; i++) {
+        const block = entryMatches[i];
+        const title = stripHtmlTags(extractTag(block, 'title'));
+        const linkMatch =
+          block.match(/<link\b[^>]*rel=["']alternate["'][^>]*href=["']([^"']+)["']/i) ||
+          block.match(/<link\b[^>]*href=["']([^"']+)["']/i);
+        const link = linkMatch ? decodeXmlEntities(linkMatch[1]) : stripHtmlTags(extractTag(block, 'id'));
+        if (!title && !link) continue;
+        const atomContent = extractTag(block, 'content');
+        const atomSummary = extractTag(block, 'summary');
+        const fullContentHtml = atomContent.length >= atomSummary.length ? atomContent : atomSummary;
+        const contentText = extractParagraphTextFromHtml(fullContentHtml);
+        const summary = stripHtmlTags(atomSummary || atomContent).slice(0, 340);
+        const pubDate = extractTag(block, 'published') || extractTag(block, 'updated');
+        const publishedTs = pubDate ? Date.parse(pubDate) || 0 : 0;
+        const authorMatch = block.match(/<author>[\s\S]*?<name>([\s\S]*?)<\/name>[\s\S]*?<\/author>/i);
+        const author = authorMatch ? stripHtmlTags(authorMatch[1]) : '';
+        articles.push({
+          id: `${source.id}_atom_${i}_${Buffer.from(link || title).toString('base64').slice(0, 10)}`,
+          sourceId: source.id,
+          sourceTitle,
+          category: sourceCategory,
+          title: title || link,
+          link,
+          pubDate: pubDate || '',
+          timestamp: publishedTs,
+          summary,
+          contentText: contentText || undefined,
+          author: author || undefined,
+          isPaid: detectPaidArticle(title, summary, link, block),
+          categories: sourceCategory ? [sourceCategory] : [],
+        });
+      }
+    }
+    return articles;
+  }
+
+  app.get('/api/rss/sources', async (req, res) => {
+    const username = path.basename(String(req.query.username || 'michael'));
+    try {
+      const fp = getRssSourcesPath(username);
+      if (!fs.existsSync(fp)) return res.json({ sources: [] });
+      const parsed = JSON.parse(await fsp.readFile(fp, 'utf-8'));
+      const rawList = Array.isArray(parsed.sources) ? parsed.sources : [];
+      const normalized = rawList.map((s: any) => ({
+        id: String(s.id || `rss_${Date.now()}`),
+        title: String(s.title || s.name || s.url),
+        url: String(s.url || ''),
+        category: String(s.category || 'Allgemein'),
+        enabled: s.enabled !== false,
+        hidePaid: Boolean(s.hidePaid),
+        createdAt: s.createdAt,
+      }));
+      res.json({ sources: normalized });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/rss/sources', async (req, res) => {
+    const { username, sources } = req.body || {};
+    const safeUser = path.basename(String(username || 'michael'));
+    if (!Array.isArray(sources)) {
+      return res.status(400).json({ error: 'sources Array fehlt' });
+    }
+    try {
+      const fp = getRssSourcesPath(safeUser);
+      const cleanSources = sources
+        .filter((s: any) => s && s.url)
+        .map((s: any) => ({
+          id: String(s.id || `rss_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`),
+          title: String(s.title || s.name || s.url).trim(),
+          url: String(s.url).trim(),
+          category: String(s.category || 'Allgemein').trim(),
+          enabled: s.enabled !== false,
+          hidePaid: Boolean(s.hidePaid),
+          createdAt: s.createdAt || Date.now(),
+        }));
+      await fsp.writeFile(fp, JSON.stringify({ sources: cleanSources }, null, 2), 'utf-8');
+      res.json({ success: true, sources: cleanSources });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/rss/feed', async (req, res) => {
+    const { sources, hidePaidGlobal } = req.body || {};
+    const list = Array.isArray(sources) ? sources.filter((s: any) => s && s.url && s.enabled !== false) : [];
+    if (list.length === 0) {
+      return res.json({ articles: [], errors: [] });
+    }
+    const errors: Array<{ sourceId: string; title: string; error: string }> = [];
+    const results = await Promise.all(
+      list.map(async (src: any) => {
+        const srcTitle = String(src.title || src.name || src.url);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000);
+        try {
+          const resp = await fetch(src.url, {
+            headers: {
+              'User-Agent': 'OchreSuite-RSS/0.3 (+https://ochresuite.local)',
+              Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8',
+            },
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          if (!resp.ok) {
+            errors.push({ sourceId: src.id, title: srcTitle, error: `HTTP ${resp.status}` });
+            return [];
+          }
+          const xml = await resp.text();
+          const parsed = parseRssOrAtomFeed(xml, src);
+          return (hidePaidGlobal || src.hidePaid) ? parsed.filter((a) => !a.isPaid) : parsed;
+        } catch (err: any) {
+          clearTimeout(timer);
+          errors.push({
+            sourceId: src.id,
+            title: srcTitle,
+            error: err?.name === 'AbortError' ? 'Zeitüberschreitung (8s)' : err?.message || 'Abruf fehlgeschlagen',
+          });
+          return [];
+        }
+      })
+    );
+    const articles = results
+      .flat()
+      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+      .slice(0, 180);
+    // Ephemeral only: Articles are strictly returned to client memory and never written to disk
+    res.json({ articles, errors });
+  });
+
+  app.post('/api/rss/reader', async (req, res) => {
+    const { url, fallbackTitle, fallbackSummary, fallbackContent } = req.body || {};
+    if (!url || !/^https?:\/\//i.test(String(url))) {
+      return res.status(400).json({ error: 'Gültige Artikel-URL erforderlich' });
+    }
+    const buildFallbackParagraphs = (): string[] => {
+      const srcText = String(fallbackContent || fallbackSummary || '').trim();
+      if (!srcText) return [];
+      return srcText
+        .split(/\n{2,}/)
+        .map((p) => p.trim())
+        .filter(Boolean);
+    };
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 9000);
+    try {
+      const resp = await fetch(String(url), {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
+        },
+        redirect: 'follow',
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!resp.ok) {
+        const fb = buildFallbackParagraphs();
+        return res.json({
+          title: fallbackTitle || String(url),
+          url: String(url),
+          paragraphs: fb.length > 0 ? fb : ['Artikel konnte nicht direkt geladen werden.'],
+        });
+      }
+      const rawHtml = await resp.text();
+      const titleMatch =
+        rawHtml.match(/<meta\b[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["']/i) ||
+        rawHtml.match(/<meta\b[^>]*content=["']([^"']+)["'][^>]*property=["']og:title["']/i) ||
+        rawHtml.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i) ||
+        rawHtml.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+      const siteMatch =
+        rawHtml.match(/<meta\b[^>]*property=["']og:site_name["'][^>]*content=["']([^"']+)["']/i) ||
+        rawHtml.match(/<meta\b[^>]*content=["']([^"']+)["'][^>]*property=["']og:site_name["']/i);
+      const imgMatch =
+        rawHtml.match(/<meta\b[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i) ||
+        rawHtml.match(/<meta\b[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i);
+      const authorMatch =
+        rawHtml.match(/<meta\b[^>]*name=["']author["'][^>]*content=["']([^"']+)["']/i) ||
+        rawHtml.match(/<meta\b[^>]*content=["']([^"']+)["'][^>]*name=["']author["']/i);
+      const metaDescMatch =
+        rawHtml.match(/<meta\b[^>]*property=["']og:description["'][^>]*content=["']([^"']+)["']/i) ||
+        rawHtml.match(/<meta\b[^>]*name=["']description["'][^>]*content=["']([^"']+)["']/i);
+
+      // 1) Extract JSON-LD articleBody & structured fields before stripping <script>
+      let jsonLdBody = '';
+      let jsonLdHeadline = '';
+      let jsonLdAuthor = '';
+      const ldJsonRegex = /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+      let ldMatch: RegExpExecArray | null;
+      while ((ldMatch = ldJsonRegex.exec(rawHtml)) !== null) {
+        try {
+          const parsed = JSON.parse(ldMatch[1].trim());
+          const nodes = Array.isArray(parsed)
+            ? parsed
+            : Array.isArray(parsed?.['@graph'])
+              ? parsed['@graph']
+              : [parsed];
+          for (const node of nodes) {
+            if (!node || typeof node !== 'object') continue;
+            if (typeof node.articleBody === 'string' && node.articleBody.length > jsonLdBody.length) {
+              jsonLdBody = node.articleBody;
+            }
+            if (!jsonLdHeadline && typeof node.headline === 'string') {
+              jsonLdHeadline = node.headline;
+            }
+            if (!jsonLdAuthor && node.author) {
+              if (typeof node.author === 'string') jsonLdAuthor = node.author;
+              else if (Array.isArray(node.author) && node.author[0]?.name) jsonLdAuthor = node.author[0].name;
+              else if (typeof node.author?.name === 'string') jsonLdAuthor = node.author.name;
+            }
+          }
+        } catch {
+          // Ignore malformed JSON-LD blocks
+        }
+      }
+
+      // 2) Clean noise tags without greedy non-nesting <div> erasure
+      let cleaned = rawHtml
+        .replace(/<!--[\s\S]*?-->/g, ' ')
+        .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<noscript\b[\s\S]*?<\/noscript>/gi, ' ')
+        .replace(/<svg\b[\s\S]*?<\/svg>/gi, ' ')
+        .replace(/<template\b[\s\S]*?<\/template>/gi, ' ')
+        .replace(/<(nav|aside|form|footer|dialog)\b[\s\S]*?<\/\1>/gi, ' ');
+
+      const articleContainers = cleaned.match(/<article\b[\s\S]*?<\/article>/gi);
+      if (articleContainers && articleContainers.length > 0) {
+        const bestArticle = articleContainers.sort((a, b) => stripHtmlTags(b).length - stripHtmlTags(a).length)[0];
+        if (stripHtmlTags(bestArticle).length >= 160) {
+          cleaned = bestArticle;
+        }
+      } else {
+        const mainMatch = cleaned.match(/<main\b[\s\S]*?<\/main>/i);
+        if (mainMatch && stripHtmlTags(mainMatch[0]).length >= 160) {
+          cleaned = mainMatch[0];
+        }
+      }
+
+      const boilerplateRe =
+        /^(anzeige|werbung|advertisement|cookie|datenschutz|impressum|jetzt abonnieren|mehr zum thema|alles lesen|newsletter abonnieren|folgen sie uns|teilen auf|kommentare laden|java?script)/i;
+
+      const blocks: string[] = [];
+      const seenSet = new Set<string>();
+      const pushBlock = (val: string, prefix = '') => {
+        const clean = val.trim();
+        if (!clean || seenSet.has(clean)) return;
+        if (boilerplateRe.test(clean)) return;
+        seenSet.add(clean);
+        blocks.push(prefix ? `${prefix}${clean}` : clean);
+      };
+
+      const blockRegex = /<(p|h2|h3|h4|blockquote|li)\b[^>]*>([\s\S]*?)<\/\1>/gi;
+      let match: RegExpExecArray | null;
+      while ((match = blockRegex.exec(cleaned)) !== null) {
+        const tag = match[1].toLowerCase();
+        const text = stripHtmlTags(match[2]);
+        if (!text) continue;
+        if (tag === 'p' && text.length < 18) continue;
+        if ((tag === 'li' || tag === 'blockquote') && text.length < 20) continue;
+        if ((tag === 'h2' || tag === 'h3' || tag === 'h4') && text.length < 6) continue;
+        if (tag === 'h2' || tag === 'h3' || tag === 'h4') {
+          pushBlock(text, '## ');
+        } else if (tag === 'blockquote') {
+          pushBlock(text, '> ');
+        } else {
+          pushBlock(text);
+        }
+      }
+
+      // 3) Fallback to JSON-LD articleBody if HTML <p> extraction yielded too little text
+      const totalHtmlChars = blocks.join(' ').length;
+      if (jsonLdBody && totalHtmlChars < jsonLdBody.length * 0.6) {
+        const ldParagraphs = decodeXmlEntities(jsonLdBody)
+          .split(/\n{2,}|(?<=[.!?])\s+(?=[A-ZÄÖÜ])/)
+          .map((s) => s.replace(/\s+/g, ' ').trim())
+          .filter((s) => s.length >= 20);
+        if (ldParagraphs.length > blocks.length) {
+          blocks.length = 0;
+          ldParagraphs.forEach((p) => pushBlock(p));
+        }
+      }
+
+      // 4) Fallback to RSS feed full content / summary / og:description
+      let finalParagraphs = blocks.slice(0, 140);
+      if (finalParagraphs.length === 0) {
+        finalParagraphs = buildFallbackParagraphs();
+      }
+      if (finalParagraphs.length === 0 && metaDescMatch) {
+        const desc = decodeXmlEntities(metaDescMatch[1]).trim();
+        if (desc) finalParagraphs = [desc];
+      }
+      if (finalParagraphs.length === 0) {
+        finalParagraphs = ['Dieser Artikel enthält leider nur dynamisch nachgeladene Inhalte. Öffne bei Bedarf die Originalquelle über den Link unten.'];
+      }
+
+      res.json({
+        title: titleMatch ? stripHtmlTags(titleMatch[1]) : jsonLdHeadline || fallbackTitle || String(url),
+        siteName: siteMatch ? decodeXmlEntities(siteMatch[1]) : undefined,
+        byline: authorMatch ? decodeXmlEntities(authorMatch[1]) : jsonLdAuthor || undefined,
+        leadImage: imgMatch ? decodeXmlEntities(imgMatch[1]) : undefined,
+        paragraphs: finalParagraphs,
+        url: String(url),
+      });
+    } catch (err: any) {
+      clearTimeout(timer);
+      const fb = buildFallbackParagraphs();
+      res.json({
+        title: fallbackTitle || String(url),
+        url: String(url),
+        paragraphs: fb.length > 0 ? fb : [`Ladefehler: ${err?.message || 'Unbekannt'}`],
+      });
     }
   });
 

@@ -10,6 +10,7 @@ export interface CollectedIngredient {
   excludeFromShoppingList: boolean;
   defaultUnit?: string;
   isCustom?: boolean;
+  kcal?: number;
 }
 
 export interface IngredientDuplicatePair {
@@ -152,6 +153,7 @@ export function collectIngredientsFromRecipes(
       excludeFromShoppingList: !!ingredientMeta[b.key]?.excludeFromShoppingList,
       defaultUnit: ingredientMeta[b.key]?.defaultUnit,
       isCustom: !!ingredientMeta[b.key]?.isCustom,
+      kcal: ingredientMeta[b.key]?.kcal,
     }))
     .sort((a, b) => a.displayName.localeCompare(b.displayName, 'de', { sensitivity: 'base' }));
 }

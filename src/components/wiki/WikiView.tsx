@@ -29,7 +29,6 @@ import {
   Layers,
   Globe,
   Lock,
-  Printer,
   Briefcase,
 } from 'lucide-react';
 import {
@@ -43,7 +42,7 @@ import {
   ProjectItem,
 } from '../../types';
 import { api } from '../../services/api';
-import { printWikiArticleA4 } from '../../services/printService';
+import { useSwipeDrawer } from '../../hooks/useSwipeDrawer';
 
 interface WikiViewProps {
   username: string;
@@ -150,20 +149,15 @@ export const WikiView: React.FC<WikiViewProps> = ({
   const [mode, setMode] = useState<'read' | 'edit'>('read');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
-  const [isMobileIndexOpen, setIsMobileIndexOpen] = useState(false);
 
-  // 1:1 Pixel-Launcher finger-tracked swipe for mobile Wiki index drawer
-  const [wikiDragX, setWikiDragX] = useState<number | null>(null);
-  const wikiSwipeRef = useRef<{
-    startX: number;
-    startY: number;
-    initialX: number;
-    currentX: number;
-    lastX: number;
-    lastTime: number;
-    isTracking: boolean;
-    lockedAxis: 'horizontal' | 'vertical' | null;
-  } | null>(null);
+  // Unified Pixel-Launcher 1:1 finger-tracked swipe for mobile Wiki Vault drawer
+  const wikiDrawer = useSwipeDrawer({
+    direction: 'left',
+    width: 288,
+    edgeThreshold: 140,
+    globalWindow: true,
+    enabled: true,
+  });
 
   // Draft state when editing or creating
   const [draft, setDraft] = useState<WikiArticle | null>(null);
@@ -223,102 +217,6 @@ export const WikiView: React.FC<WikiViewProps> = ({
   useEffect(() => {
     loadArticles(initialSelectedSlug || undefined);
   }, [username]);
-
-  // 1:1 Finger-tracked Pixel Launcher drawer swipe on Mobile/Tablet
-  useEffect(() => {
-    const DRAWER_W = 288;
-    const onTouchStart = (e: TouchEvent) => {
-      if (window.innerWidth >= 1024 || e.touches.length !== 1) return;
-      const target = e.target as HTMLElement | null;
-      if (
-        target?.closest('[data-no-swipe="true"]') ||
-        target?.closest('header') ||
-        target?.closest('button') ||
-        target?.closest('input') ||
-        target?.closest('select') ||
-        target?.closest('textarea')
-      ) {
-        wikiSwipeRef.current = null;
-        return;
-      }
-      const x = e.touches[0].clientX;
-      const y = e.touches[0].clientY;
-      if (!isMobileIndexOpen && x > Math.max(180, window.innerWidth * 0.55)) {
-        wikiSwipeRef.current = null;
-        return;
-      }
-      const initialX = isMobileIndexOpen ? 0 : -DRAWER_W;
-      wikiSwipeRef.current = {
-        startX: x,
-        startY: y,
-        initialX,
-        currentX: initialX,
-        lastX: x,
-        lastTime: performance.now(),
-        isTracking: false,
-        lockedAxis: null,
-      };
-    };
-
-    const onTouchMove = (e: TouchEvent) => {
-      const s = wikiSwipeRef.current;
-      if (!s || e.touches.length !== 1) return;
-      const x = e.touches[0].clientX;
-      const y = e.touches[0].clientY;
-      const dx = x - s.startX;
-      const dy = y - s.startY;
-      if (!s.lockedAxis) {
-        if (Math.hypot(dx, dy) < 8) return;
-        const movingRight = dx > 0;
-        const valid = (!isMobileIndexOpen && movingRight) || (isMobileIndexOpen && !movingRight);
-        if (valid && Math.abs(dx) > Math.abs(dy) * 0.85) {
-          s.lockedAxis = 'horizontal';
-          s.isTracking = true;
-        } else {
-          s.lockedAxis = 'vertical';
-          wikiSwipeRef.current = null;
-          return;
-        }
-      }
-      if (s.lockedAxis === 'horizontal') {
-        if (e.cancelable) e.preventDefault();
-        const nextX = Math.max(-DRAWER_W, Math.min(0, s.initialX + dx));
-        s.lastX = x;
-        s.lastTime = performance.now();
-        s.currentX = nextX;
-        setWikiDragX(nextX);
-      }
-    };
-
-    const onTouchEnd = (e: TouchEvent) => {
-      const s = wikiSwipeRef.current;
-      wikiSwipeRef.current = null;
-      if (!s || !s.isTracking) {
-        setWikiDragX(null);
-        return;
-      }
-      const endX = e.changedTouches[0]?.clientX ?? s.lastX;
-      const dt = Math.max(16, performance.now() - s.lastTime);
-      const velocity = (endX - s.lastX) / dt;
-      const progress = (s.currentX + DRAWER_W) / DRAWER_W;
-      const shouldOpen = !isMobileIndexOpen
-        ? velocity > 0.25 || (velocity >= -0.2 && progress > 0.28)
-        : !(velocity < -0.25 || (velocity <= 0.2 && progress < 0.7));
-      setWikiDragX(null);
-      setIsMobileIndexOpen(shouldOpen);
-    };
-
-    window.addEventListener('touchstart', onTouchStart, { passive: true });
-    window.addEventListener('touchmove', onTouchMove, { passive: false });
-    window.addEventListener('touchend', onTouchEnd, { passive: true });
-    window.addEventListener('touchcancel', onTouchEnd, { passive: true });
-    return () => {
-      window.removeEventListener('touchstart', onTouchStart);
-      window.removeEventListener('touchmove', onTouchMove);
-      window.removeEventListener('touchend', onTouchEnd);
-      window.removeEventListener('touchcancel', onTouchEnd);
-    };
-  }, [isMobileIndexOpen]);
 
   const activeArticle = useMemo(
     () => articles.find((a) => a.slug === selectedSlug) || null,
@@ -461,7 +359,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
     setTagsInput(newArt.tags.join(', '));
     setMediaError(null);
     setMode('edit');
-    setIsMobileIndexOpen(false);
+    wikiDrawer.close();
   };
 
   const handleStartEdit = (article: WikiArticle) => {
@@ -982,7 +880,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
         <div className="flex items-center gap-2 min-w-0">
           <button
             type="button"
-            onClick={() => setIsMobileIndexOpen(!isMobileIndexOpen)}
+            onClick={wikiDrawer.toggle}
             className="lg:hidden p-2 -ml-1 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#23252A] text-neutral-700 dark:text-neutral-200 cursor-pointer"
             aria-label="Wiki-Artikel-Index öffnen"
           >
@@ -1052,26 +950,26 @@ export const WikiView: React.FC<WikiViewProps> = ({
         {/* Mobile Left-Edge Pull Tab (matching Notes & Projects) */}
         <button
           type="button"
-          onClick={() => setIsMobileIndexOpen((v) => !v)}
+          onClick={wikiDrawer.toggle}
           style={{
             backgroundColor: accentColor,
-            ...(wikiDragX !== null
-              ? { left: `${Math.max(0, 288 + wikiDragX)}px`, transition: 'none' }
+            ...(wikiDrawer.dragOffset !== null
+              ? { left: `${Math.max(0, 288 + wikiDrawer.dragOffset)}px`, transition: 'none' }
               : {}),
           }}
           className={`lg:hidden fixed top-1/2 -translate-y-1/2 z-40 h-14 flex items-center justify-center text-white shadow-lg cursor-pointer active:scale-95 ${
-            wikiDragX !== null ? 'transition-none' : 'transition-all duration-200'
+            wikiDrawer.isDragging ? 'transition-none' : 'transition-all duration-200'
           } ${
-            wikiDragX !== null
+            wikiDrawer.dragOffset !== null
               ? 'w-6 rounded-r-xl'
-              : isMobileIndexOpen
+              : wikiDrawer.isOpen
               ? 'left-72 w-7 rounded-r-xl'
               : 'left-0 w-5 rounded-r-xl opacity-90 hover:opacity-100 hover:w-6.5'
           }`}
-          title={isMobileIndexOpen ? 'Wiki Light Vault schließen' : 'Wiki Light Vault öffnen'}
+          title={wikiDrawer.isOpen ? 'Wiki Light Vault schließen' : 'Wiki Light Vault öffnen'}
           aria-label="Wiki Light Vault umschalten"
         >
-          {isMobileIndexOpen ? (
+          {wikiDrawer.isOpen ? (
             <ChevronLeft className="w-4 h-4" />
           ) : (
             <div className="flex flex-col items-center gap-1 py-1">
@@ -1091,7 +989,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
                   </span>
                   <button
                     type="button"
-                    onClick={() => setIsMobileIndexOpen(false)}
+                    onClick={wikiDrawer.close}
                     className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
                   >
                     <X className="w-4 h-4" />
@@ -1153,7 +1051,7 @@ export const WikiView: React.FC<WikiViewProps> = ({
                           setSelectedSlug(art.slug);
                           setMode('read');
                           setDraft(null);
-                          setIsMobileIndexOpen(false);
+                          wikiDrawer.close();
                         }}
                         className={`w-full text-left p-2.5 rounded-xl transition-colors cursor-pointer flex items-start justify-between gap-2 border ${
                           isActive
@@ -1208,16 +1106,13 @@ export const WikiView: React.FC<WikiViewProps> = ({
               </aside>
 
               {/* Mobile Light Vault Swipe Drawer */}
-              {(isMobileIndexOpen || wikiDragX !== null) && (
+              {(wikiDrawer.isOpen || wikiDrawer.dragOffset !== null) && (
                 <div
-                  onClick={() => {
-                    setWikiDragX(null);
-                    setIsMobileIndexOpen(false);
-                  }}
+                  onClick={wikiDrawer.close}
                   style={
-                    wikiDragX !== null
+                    wikiDrawer.dragOffset !== null
                       ? {
-                          opacity: Math.max(0.08, Math.min(1, (wikiDragX + 288) / 288)),
+                          opacity: Math.max(0.08, Math.min(1, (wikiDrawer.dragOffset + 288) / 288)),
                           transition: 'none',
                         }
                       : undefined
@@ -1228,12 +1123,12 @@ export const WikiView: React.FC<WikiViewProps> = ({
                     onClick={(e) => e.stopPropagation()}
                     style={{
                       transform:
-                        wikiDragX !== null
-                          ? `translateX(${wikiDragX}px)`
-                          : isMobileIndexOpen
+                        wikiDrawer.dragOffset !== null
+                          ? `translateX(${wikiDrawer.dragOffset}px)`
+                          : wikiDrawer.isOpen
                           ? 'translateX(0)'
                           : 'translateX(-100%)',
-                      transition: wikiDragX !== null ? 'none' : 'transform 220ms ease-out',
+                      transition: wikiDrawer.isDragging ? 'none' : 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)',
                     }}
                     className={`w-72 ${
                       mobileBarPosition === 'bottom' ? 'h-[calc(100dvh-3.75rem)]' : 'h-full'
@@ -1823,16 +1718,6 @@ export const WikiView: React.FC<WikiViewProps> = ({
                       >
                         <Edit3 className="w-3.5 h-3.5" />
                         <span>Bearbeiten</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => printWikiArticleA4(activeArticle)}
-                        className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[#E5E3DC] dark:border-[#2F3136] bg-white dark:bg-[#23252A] text-xs font-semibold text-neutral-700 dark:text-neutral-200 hover:border-[var(--wiki-accent)] cursor-pointer"
-                        title="Wiki-Artikel als A4 PDF / Druck exportieren"
-                      >
-                        <Printer className="w-3.5 h-3.5 text-[var(--wiki-accent)]" />
-                        <span>Als A4 PDF</span>
                       </button>
 
                       <button

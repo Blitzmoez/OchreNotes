@@ -35,16 +35,26 @@ import {
   SmarthomeDiscoveredTopic,
   ProjectItem,
   ChangelogResponse,
+  SuiteModuleId,
+  OfflineConflictItem,
+  RssSource,
+  RssArticle,
+  RssReaderResponse,
 } from '../types';
 
 const OFFLINE_QUEUE_KEY = 'ochrenotes_offline_queue';
 const CLIENT_LOGS_KEY = 'ochrenotes_client_logs';
+const OFFLINE_CONFLICTS_KEY = 'ochre_offline_conflicts';
+const OFFLINE_MODULES_KEY = 'ochre_offline_modules_map';
 const MAX_CLIENT_LOGS = 150;
 
 class ApiService {
   private isOnline: boolean = typeof navigator !== 'undefined' ? navigator.onLine : true;
   private offlineSyncQueue: OfflineQueueItem[] = [];
   private queueListeners: Set<(count: number) => void> = new Set();
+  private offlineConflicts: OfflineConflictItem[] = [];
+  private conflictListeners: Set<(items: OfflineConflictItem[]) => void> = new Set();
+  private offlineModulesMap: Partial<Record<SuiteModuleId, boolean>> = {};
   private clientLogs: SystemLog[] = [];
   private isFlushing = false;
 
@@ -52,6 +62,8 @@ class ApiService {
     if (typeof window !== 'undefined') {
       this.loadLogs();
       this.loadQueue();
+      this.loadConflicts();
+      this.loadOfflineModulesMap();
 
       window.addEventListener('online', () => {
         this.isOnline = true;
@@ -126,7 +138,139 @@ class ApiService {
     if (action === 'toggleTask') {
       return `toggleTask:${payload?.username || ''}:${payload?.profile || 'profile1'}:${payload?.notePath || ''}:${payload?.lineIndex ?? ''}`;
     }
+    if (action === 'saveWiki') {
+      return `saveWiki:${payload?.username || ''}:${payload?.article?.slug || ''}`;
+    }
+    if (action === 'saveCookbook') {
+      return `saveCookbook:${payload?.username || ''}`;
+    }
+    if (action === 'saveProject') {
+      return `saveProject:${payload?.username || ''}:${payload?.project?.id || ''}`;
+    }
     return `${action}:${JSON.stringify(payload || {})}`;
+  }
+
+  private loadOfflineModulesMap() {
+    try {
+      const saved = localStorage.getItem(OFFLINE_MODULES_KEY);
+      if (saved) this.offlineModulesMap = JSON.parse(saved) || {};
+    } catch {
+      this.offlineModulesMap = {};
+    }
+  }
+
+  public setOfflineModulesMap(_map: Partial<Record<SuiteModuleId, boolean>>) {
+    this.offlineModulesMap = {};
+  }
+
+  public isModuleOfflineEnabled(_moduleId: SuiteModuleId): boolean {
+    return false;
+  }
+
+  public shouldUseOfflineMode(_moduleId: SuiteModuleId): boolean {
+    return typeof navigator !== 'undefined' && !navigator.onLine;
+  }
+
+  public getModuleOfflineSnapshot<T>(moduleId: SuiteModuleId, key: string): { data: T; savedAt: number } | null {
+    try {
+      const raw = localStorage.getItem(`ochre_offline_snap_${moduleId}_${key}`);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  public setModuleOfflineSnapshot<T>(moduleId: SuiteModuleId, key: string, data: T, savedAt = Date.now()) {
+    try {
+      localStorage.setItem(`ochre_offline_snap_${moduleId}_${key}`, JSON.stringify({ data, savedAt }));
+    } catch {}
+  }
+
+  private loadConflicts() {
+    try {
+      const saved = localStorage.getItem(OFFLINE_CONFLICTS_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) this.offlineConflicts = parsed;
+      }
+    } catch {
+      this.offlineConflicts = [];
+    }
+  }
+
+  private saveConflicts() {
+    try {
+      localStorage.setItem(OFFLINE_CONFLICTS_KEY, JSON.stringify(this.offlineConflicts));
+    } catch {}
+    this.conflictListeners.forEach((cb) => {
+      try {
+        cb([...this.offlineConflicts]);
+      } catch {}
+    });
+  }
+
+  public getOfflineConflicts(): OfflineConflictItem[] {
+    return [...this.offlineConflicts];
+  }
+
+  public subscribeOfflineConflicts(listener: (items: OfflineConflictItem[]) => void): () => void {
+    this.conflictListeners.add(listener);
+    listener([...this.offlineConflicts]);
+    return () => {
+      this.conflictListeners.delete(listener);
+    };
+  }
+
+  public addOfflineConflict(item: OfflineConflictItem) {
+    this.offlineConflicts = [
+      ...this.offlineConflicts.filter((c) => c.resourceKey !== item.resourceKey),
+      item,
+    ];
+    this.saveConflicts();
+    this.addClientLog('warn', `Sync-Konflikt erkannt: ${item.title} (${item.module})`, 'CONFLICT');
+  }
+
+  public async resolveOfflineConflict(conflictId: string, resolution: 'local' | 'server'): Promise<void> {
+    const target = this.offlineConflicts.find((c) => c.id === conflictId);
+    if (!target) return;
+    if (resolution === 'local') {
+      if (target.module === 'projects' && target.localData?.project) {
+        const res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(target.localData.project),
+        });
+        if (!res.ok) throw new Error('Projekt-Konflikt konnte nicht auf Server geschrieben werden');
+      } else if (target.module === 'wiki' && target.localData?.article) {
+        const res = await fetch('/api/wiki/articles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(target.localData),
+        });
+        if (!res.ok) throw new Error('Wiki-Konflikt konnte nicht auf Server geschrieben werden');
+      } else if (target.module === 'recipes' && target.localData) {
+        const res = await fetch('/api/cookbook/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(target.localData),
+        });
+        if (!res.ok) throw new Error('Essensplan-Konflikt konnte nicht auf Server geschrieben werden');
+      } else if (target.module === 'notes' && target.localData) {
+        const res = await fetch('/api/vault/notes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(target.localData),
+        });
+        if (!res.ok) throw new Error('Notiz-Konflikt konnte nicht auf Server geschrieben werden');
+      }
+    }
+    this.offlineConflicts = this.offlineConflicts.filter((c) => c.id !== conflictId);
+    this.saveConflicts();
+    this.addClientLog(
+      'info',
+      `Konflikt gelöst (${resolution === 'local' ? 'Lokal übernommen' : 'Server behalten'}): ${target.title}`,
+      'CONFLICT'
+    );
   }
 
   private loadQueue() {
@@ -289,8 +433,76 @@ class ApiService {
               throw new Error(`HTTP ${res.status}`);
             }
             processed++;
+          } else if (item.action === 'saveWiki') {
+            const p = item.payload;
+            const res = await fetch('/api/wiki/articles', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(p),
+            });
+            if (!res.ok) {
+              if (res.status >= 400 && res.status < 500) {
+                dropped++;
+                continue;
+              }
+              throw new Error(`HTTP ${res.status}`);
+            }
+            processed++;
+          } else if (item.action === 'saveCookbook') {
+            const p = item.payload;
+            const res = await fetch('/api/cookbook/save', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(p),
+            });
+            if (!res.ok) {
+              if (res.status >= 400 && res.status < 500) {
+                dropped++;
+                continue;
+              }
+              throw new Error(`HTTP ${res.status}`);
+            }
+            processed++;
+          } else if (item.action === 'saveProject') {
+            const p = item.payload;
+            // Check server version timestamp for conflict detection
+            try {
+              const checkRes = await fetch(`/api/projects?username=${encodeURIComponent(p.username)}`);
+              if (checkRes.ok) {
+                const list: ProjectItem[] = await checkRes.json();
+                const srv = list.find((x) => x.id === p.project?.id);
+                if (srv && srv.updatedAt > (p.baseUpdatedAt || item.timestamp) && srv.updatedAt !== p.project?.updatedAt) {
+                  this.addOfflineConflict({
+                    id: `conf_${Date.now()}_${p.project.id}`,
+                    module: 'projects',
+                    resourceKey: `project:${p.project.id}`,
+                    title: p.project.title || 'Projekt',
+                    localData: { project: p.project },
+                    serverData: srv,
+                    localTimestamp: item.timestamp,
+                    serverTimestamp: srv.updatedAt,
+                    localSummary: `${p.project.tasks?.length || 0} Aufgaben (Lokal: ${new Date(item.timestamp).toLocaleTimeString('de-DE')})`,
+                    serverSummary: `${srv.tasks?.length || 0} Aufgaben (Server: ${new Date(srv.updatedAt).toLocaleTimeString('de-DE')})`,
+                  });
+                  processed++;
+                  continue;
+                }
+              }
+            } catch {}
+            const res = await fetch('/api/projects', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(p.project),
+            });
+            if (!res.ok) {
+              if (res.status >= 400 && res.status < 500) {
+                dropped++;
+                continue;
+              }
+              throw new Error(`HTTP ${res.status}`);
+            }
+            processed++;
           } else {
-            // Drop unrecognized legacy queue actions cleanly
             dropped++;
           }
         } catch (err: any) {
@@ -732,6 +944,14 @@ class ApiService {
     oldSlug?: string,
     oldVisibility?: WikiVisibility
   ): Promise<WikiArticle> {
+    if (!navigator.onLine) {
+      const snap = this.getModuleOfflineSnapshot<WikiArticle[]>('wiki', username)?.data || [];
+      const merged = [article, ...snap.filter((a) => a.slug !== (oldSlug || article.slug))];
+      this.setModuleOfflineSnapshot('wiki', username, merged);
+      localStorage.setItem(`ochre_wiki_cache_${username}`, JSON.stringify(merged));
+      this.enqueueOffline('saveWiki', { username, article, oldSlug, oldVisibility }, 'Offline');
+      return article;
+    }
     const res = await fetch('/api/wiki/articles', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -803,9 +1023,17 @@ class ApiService {
     sharedCatalogs: SharedCookbookCatalog[];
     sharedPlans: SharedMealPlan[];
   }> {
-    const res = await fetch(`/api/cookbook?username=${encodeURIComponent(username)}`);
-    if (!res.ok) throw new Error('Fehler beim Laden des Essensplans');
-    return await res.json();
+    try {
+      const res = await fetch(`/api/cookbook?username=${encodeURIComponent(username)}`);
+      if (!res.ok) throw new Error('Fehler beim Laden des Essensplans');
+      const data = await res.json();
+      this.setModuleOfflineSnapshot('recipes', username, data);
+      return data;
+    } catch (err) {
+      const snap = this.getModuleOfflineSnapshot<any>('recipes', username);
+      if (snap?.data) return snap.data;
+      throw err;
+    }
   }
 
   async createOrUpdateMealLibrary(payload: {
@@ -897,12 +1125,23 @@ class ApiService {
       dismissedDuplicates?: string[];
     }
   ): Promise<boolean> {
-    const res = await fetch('/api/cookbook/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, ...payload }),
-    });
-    return res.ok;
+    if (!navigator.onLine) {
+      const snap = this.getModuleOfflineSnapshot<any>('recipes', username)?.data || {};
+      this.setModuleOfflineSnapshot('recipes', username, { ...snap, ...payload });
+      this.enqueueOffline('saveCookbook', { username, ...payload }, 'Offline');
+      return true;
+    }
+    try {
+      const res = await fetch('/api/cookbook/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, ...payload }),
+      });
+      return res.ok;
+    } catch (err: any) {
+      this.enqueueOffline('saveCookbook', { username, ...payload }, err?.message || 'Netzwerkfehler');
+      return true;
+    }
   }
 
   async shareCookbookRecipe(fromUsername: string, toUsername: string, recipe: Recipe): Promise<{ success: boolean }> {
@@ -1039,17 +1278,31 @@ class ApiService {
   }
 
   async saveProject(username: string, project: ProjectItem): Promise<ProjectItem> {
-    const res = await fetch('/api/projects', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...project, ownerUsername: project.ownerUsername || username }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'Projekt konnte nicht gespeichert werden');
+    const cachedListRaw = localStorage.getItem(`ochre_projects_cache_${username}`);
+    const cachedList: ProjectItem[] = cachedListRaw ? JSON.parse(cachedListRaw) : [];
+    const baseUpdatedAt = cachedList.find((p) => p.id === project.id)?.updatedAt || project.updatedAt;
+    if (!navigator.onLine) {
+      const next = [project, ...cachedList.filter((p) => p.id !== project.id)];
+      localStorage.setItem(`ochre_projects_cache_${username}`, JSON.stringify(next));
+      this.enqueueOffline('saveProject', { username, project, baseUpdatedAt }, 'Offline');
+      return project;
     }
-    const data = await res.json();
-    return data.project || data;
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...project, ownerUsername: project.ownerUsername || username }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Projekt konnte nicht gespeichert werden');
+      }
+      const data = await res.json();
+      return data.project || data;
+    } catch (err: any) {
+      this.enqueueOffline('saveProject', { username, project, baseUpdatedAt }, err?.message || 'Netzwerkfehler');
+      return project;
+    }
   }
 
   async deleteProject(username: string, projectId: string): Promise<boolean> {
@@ -1165,6 +1418,106 @@ class ApiService {
     } catch {
       return [];
     }
+  }
+
+  async testSmarthomeMqtt(broker: Partial<SmarthomeBrokerConfig>): Promise<{
+    ok: boolean;
+    latencyMs: number;
+    message: string;
+    detail?: string;
+  }> {
+    const res = await fetch('/api/smarthome/test-mqtt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(broker),
+    });
+    return await res.json();
+  }
+
+  async testSmarthomeDb(
+    source: Partial<SmarthomeDbSource>,
+    samplePath?: string
+  ): Promise<{
+    ok: boolean;
+    latencyMs: number;
+    message: string;
+    detail?: string;
+    sampleValue?: string;
+  }> {
+    const res = await fetch('/api/smarthome/test-db', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, samplePath }),
+    });
+    return await res.json();
+  }
+
+  async triggerSmarthomeAction(payload: {
+    tileId: string;
+    fieldId?: string;
+    targetState: boolean;
+    value?: string;
+  }): Promise<{ ok: boolean; value?: string; message?: string }> {
+    const res = await fetch('/api/smarthome/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return await res.json();
+  }
+
+  // RSS Reader API (Sources persisted in Vault, Articles live-only)
+  async fetchRssSources(username: string): Promise<RssSource[]> {
+    try {
+      const res = await fetch(`/api/rss/sources?username=${encodeURIComponent(username)}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      const list = Array.isArray(data.sources) ? data.sources : Array.isArray(data) ? data : [];
+      this.setModuleOfflineSnapshot('rss', username, list);
+      return list;
+    } catch {
+      return this.getModuleOfflineSnapshot<RssSource[]>('rss', username)?.data || [];
+    }
+  }
+
+  async saveRssSources(username: string, sources: RssSource[]): Promise<RssSource[]> {
+    this.setModuleOfflineSnapshot('rss', username, sources);
+    const res = await fetch('/api/rss/sources', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, sources }),
+    });
+    if (!res.ok) throw new Error('RSS-Quellen konnten nicht gespeichert werden');
+    const data = await res.json();
+    return Array.isArray(data.sources) ? data.sources : sources;
+  }
+
+  async fetchRssFeed(
+    sources: RssSource[],
+    hidePaidGlobal: boolean
+  ): Promise<{ articles: RssArticle[]; errors: { sourceId: string; title: string; error: string }[] }> {
+    const res = await fetch('/api/rss/feed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sources, hidePaidGlobal }),
+    });
+    if (!res.ok) throw new Error('Feed konnte nicht abgerufen werden');
+    return await res.json();
+  }
+
+  async fetchRssArticleReader(
+    url: string,
+    fallbackTitle?: string,
+    fallbackSummary?: string,
+    fallbackContent?: string
+  ): Promise<RssReaderResponse> {
+    const res = await fetch('/api/rss/reader', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, fallbackTitle, fallbackSummary, fallbackContent }),
+    });
+    if (!res.ok) throw new Error('Artikel konnte nicht geladen werden');
+    return await res.json();
   }
 
   async fetchChangelog(): Promise<ChangelogResponse> {
